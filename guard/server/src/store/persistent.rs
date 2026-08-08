@@ -233,6 +233,19 @@ impl IntegrationRepository {
                 "MQTT command action is not allowed".to_string(),
             ));
         }
+        let required_scope =
+            crate::integration::model::mqtt_action_scope(action).ok_or_else(|| {
+                GuardError::InvalidIdentity("MQTT command action scope is undefined".to_string())
+            })?;
+        if !integration
+            .scopes
+            .iter()
+            .any(|scope| scope == "*" || scope == required_scope)
+        {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT command scope is not allowed".to_string(),
+            ));
+        }
         Ok(config)
     }
 

@@ -171,7 +171,78 @@ fn mqtt_command_failure_queues_correlated_result() {
             let payload: base::serde_json::Value =
                 base::serde_json::from_slice(&records[0].payload).unwrap();
             assert_eq!(payload["command_id"], "cmd-result-1");
+            assert_eq!(payload["action"], "stream.start");
             assert_eq!(payload["state"], "failed");
+            assert!(payload["result"].is_null());
+        });
+}
+
+#[test]
+fn mqtt_phase9_business_action_uses_shared_runtime_state_and_result_envelope() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let store = InMemoryGuardStore::default();
+            let executor = MqttCommandExecutor::new(OperationService::default(), store.clone())
+                .with_result_outbox(
+                    OutboxRepository::from(store.clone()),
+                    HashMap::from([("app-1".to_string(), "gmv/command-results/app-1".to_string())]),
+                );
+            executor
+                .execute(RoutedCommand {
+                    command_id: "cmd-runtime-status-1".to_string(),
+                    integration_id: "app-1".to_string(),
+                    expires_at_ms: i64::MAX,
+                    action: CommandAction::Business("runtime.status.get"),
+                    target: "query".to_string(),
+                    payload: base::serde_json::json!({}),
+                })
+                .await
+                .unwrap();
+
+            let records = store.outbox_records(10);
+            assert_eq!(records.len(), 1);
+            let payload: base::serde_json::Value =
+                base::serde_json::from_slice(&records[0].payload).unwrap();
+            assert_eq!(payload["action"], "runtime.status.get");
+            assert_eq!(payload["state"], "succeeded");
+            assert_eq!(payload["result"]["guard_available"], true);
+            assert_eq!(payload["result"]["streams"], 0);
+            assert_eq!(payload["result"]["ai_tasks"], 0);
+        });
+}
+
+#[test]
+fn every_phase9_mqtt_action_reaches_a_concrete_executor_branch() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let executor = MqttCommandExecutor::new(
+                OperationService::default(),
+                InMemoryGuardStore::default(),
+            );
+            for action in gmv_guard_server::integration::model::MQTT_COMMAND_ACTIONS
+                .iter()
+                .skip(9)
+            {
+                let result = executor
+                    .execute(RoutedCommand {
+                        command_id: format!("dispatch-{}", action.replace('.', "-")),
+                        integration_id: "app-1".to_string(),
+                        expires_at_ms: i64::MAX,
+                        action: CommandAction::Business(action),
+                        target: "target-1".to_string(),
+                        payload: base::serde_json::json!({}),
+                    })
+                    .await;
+                assert!(
+                    result
+                        .as_ref()
+                        .err()
+                        .is_none_or(|error| !error.to_string().contains("has no executor")),
+                    "missing MQTT executor branch: {action}"
+                );
+            }
         });
 }
 

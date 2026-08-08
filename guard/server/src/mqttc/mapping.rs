@@ -14,6 +14,7 @@ pub enum CommandAction {
     AiStart,
     AiCancel,
     PlaybackTicketRenew,
+    Business(&'static str),
 }
 
 impl CommandAction {
@@ -28,7 +29,11 @@ impl CommandAction {
             "ai.start" => Some(Self::AiStart),
             "ai.cancel" => Some(Self::AiCancel),
             "playback.ticket.renew" => Some(Self::PlaybackTicketRenew),
-            _ => None,
+            _ => crate::integration::model::MQTT_COMMAND_ACTIONS
+                .iter()
+                .copied()
+                .find(|candidate| *candidate == value)
+                .map(Self::Business),
         }
     }
 
@@ -43,6 +48,7 @@ impl CommandAction {
             Self::AiStart => "ai.start",
             Self::AiCancel => "ai.cancel",
             Self::PlaybackTicketRenew => "playback.ticket.renew",
+            Self::Business(action) => action,
         }
     }
 }

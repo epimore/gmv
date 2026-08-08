@@ -10,6 +10,7 @@ use gmv_guard_server::core::{
 };
 use gmv_guard_server::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
 use gmv_guard_server::operation::{OperationService, OperationStatus};
+use gmv_guard_server::outbox::OutboxRepository;
 use gmv_guard_server::registry::{RegisterRequest, RegistryService};
 use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_guard_server::store::model::{
@@ -772,10 +773,14 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             assert!(store.get_stream_session_owner(&stream.stream_id).is_some());
 
             let operations = OperationService::default();
-            let executor = MqttCommandExecutor::new(operations.clone(), store);
+            let executor = MqttCommandExecutor::new(operations.clone(), store.clone())
+                .with_result_outbox(
+                    OutboxRepository::from(store.clone()),
+                    HashMap::from([("app-1".to_string(), "gmv/command-results/app-1".to_string())]),
+                );
             executor
                 .execute(RoutedCommand {
-                    integration_id: String::new(),
+                    integration_id: "app-1".to_string(),
                     expires_at_ms: i64::MAX,
                     command_id: "mqtt-live-1".to_string(),
                     action: CommandAction::StreamStart,
@@ -788,6 +793,18 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 operations.get("mqtt-live-1").unwrap().status,
                 OperationStatus::Succeeded
             );
+            let result_record = store
+                .outbox_records(10)
+                .into_iter()
+                .find(|record| record.event_id == "mqtt-live-1")
+                .unwrap();
+            let result: base::serde_json::Value =
+                base::serde_json::from_slice(&result_record.payload).unwrap();
+            assert_eq!(result["action"], "stream.start");
+            assert_eq!(result["state"], "succeeded");
+            assert!(result["result"]["stream_id"].as_str().is_some());
+            assert!(result["result"]["endpoint"].as_str().is_some());
+            assert!(result["result"]["subscription_id"].as_str().is_some());
             executor
                 .execute(RoutedCommand {
                     integration_id: String::new(),

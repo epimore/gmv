@@ -129,7 +129,7 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                 inbound_enabled: true,
                 outbound_enabled: false,
                 enabled: true,
-                scopes: vec![],
+                scopes: vec!["streams:write".to_string()],
                 expires_at_ms: None,
                 config_version: 1,
                 created_by: "test".to_string(),
@@ -187,6 +187,24 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                     .await
                     .is_err()
             );
+            integration.scopes.clear();
+            integration.updated_at_ms = 150;
+            integrations.upsert(&integration).await.unwrap();
+            let scope_revoked = payload.replace_ascii(b"cmd-1", b"cmd-4");
+            assert!(
+                policy
+                    .decode_authorized_topic_with_repository(
+                        "gmv/commands/app-1",
+                        &scope_revoked,
+                        1500,
+                        "v5",
+                        &commands,
+                        &integrations,
+                    )
+                    .await
+                    .is_err()
+            );
+            integration.scopes.push("streams:write".to_string());
             integration.enabled = false;
             integration.updated_at_ms = 200;
             integrations.upsert(&integration).await.unwrap();

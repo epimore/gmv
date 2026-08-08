@@ -1,6 +1,6 @@
 use crate::core::{GuardError, GuardResult};
 
-pub const MQTT_COMMAND_ACTIONS: [&str; 9] = [
+pub const MQTT_COMMAND_ACTIONS: &[&str] = &[
     "stream.start",
     "stream.stop",
     "stream.playback",
@@ -10,7 +10,227 @@ pub const MQTT_COMMAND_ACTIONS: [&str; 9] = [
     "ai.start",
     "ai.cancel",
     "playback.ticket.renew",
+    "system.dashboard.get",
+    "media.transport.get",
+    "media.operation.list",
+    "media.operation.get",
+    "media.operation.continue",
+    "media.operation.cancel",
+    "node.list",
+    "lease.list",
+    "gb.session_config.get",
+    "gb.device.list",
+    "gb.device.create",
+    "gb.device.get",
+    "gb.device.update",
+    "gb.device.delete",
+    "gb.channel.list",
+    "gb.channel.get",
+    "gb.channel.update",
+    "gb.resource.list",
+    "gb.resource.confirm",
+    "gb.resource.reset",
+    "gb.image.list",
+    "gb.image.snapshot",
+    "gb.image.access",
+    "gb.image.cover",
+    "gb.record.list",
+    "gb.record.query",
+    "cloud_recording.list",
+    "cloud_recording.create",
+    "cloud_recording.get",
+    "cloud_recording.stop",
+    "cloud_recording.delete",
+    "cloud_recording.access",
+    "broadcast.start",
+    "broadcast.get",
+    "broadcast.stop_target",
+    "broadcast.stop_all",
+    "device.list",
+    "stream.list",
+    "gb.stream.list",
+    "gb.stream.management",
+    "gb.stream.history",
+    "gb.stream.stop",
+    "stream.release",
+    "stream.speed.set",
+    "playback.seek",
+    "playback.speed.set",
+    "playback.state.set",
+    "playback.presence.heartbeat",
+    "stream.output.list",
+    "stream.output.create",
+    "stream.output.close",
+    "ai.list",
+    "runtime.status.get",
 ];
+
+pub fn mqtt_action_scope(action: &str) -> Option<&'static str> {
+    match action {
+        "system.dashboard.get" | "runtime.status.get" => Some("runtime:read"),
+        "media.transport.get" | "media.operation.list" | "media.operation.get" => {
+            Some("streams:read")
+        }
+        "media.operation.continue" | "media.operation.cancel" => Some("streams:write"),
+        "node.list" => Some("nodes:read"),
+        "lease.list" => Some("leases:read"),
+        "gb.session_config.get"
+        | "gb.device.list"
+        | "gb.device.get"
+        | "gb.channel.list"
+        | "gb.channel.get"
+        | "gb.resource.list"
+        | "device.list" => Some("devices:read"),
+        "gb.device.create"
+        | "gb.device.update"
+        | "gb.device.delete"
+        | "gb.channel.update"
+        | "gb.resource.confirm"
+        | "gb.resource.reset" => Some("devices:write"),
+        "device.ptz" => Some("devices:control"),
+        "gb.image.list" | "gb.image.access" => Some("images:read"),
+        "gb.image.snapshot" | "gb.image.cover" => Some("devices:control"),
+        "gb.record.list" | "cloud_recording.list" | "cloud_recording.get" => {
+            Some("recordings:read")
+        }
+        "gb.record.query"
+        | "cloud_recording.create"
+        | "cloud_recording.stop"
+        | "cloud_recording.delete"
+        | "cloud_recording.access" => Some("recordings:write"),
+        "device.broadcast"
+        | "broadcast.start"
+        | "broadcast.get"
+        | "broadcast.stop_target"
+        | "broadcast.stop_all" => Some("audio:control"),
+        "stream.start" => Some("streams:preview"),
+        "stream.playback"
+        | "playback.seek"
+        | "playback.speed.set"
+        | "playback.state.set"
+        | "playback.presence.heartbeat"
+        | "playback.ticket.renew" => Some("streams:playback"),
+        "stream.download"
+        | "stream.stop"
+        | "gb.stream.stop"
+        | "stream.release"
+        | "stream.speed.set"
+        | "stream.output.create"
+        | "stream.output.close" => Some("streams:write"),
+        "stream.list" | "gb.stream.list" | "gb.stream.management" | "stream.output.list" => {
+            Some("streams:read")
+        }
+        "gb.stream.history" => Some("devices:read"),
+        "ai.list" => Some("ai:read"),
+        "ai.start" | "ai.cancel" => Some("ai:write"),
+        _ => None,
+    }
+}
+
+pub fn mqtt_action_for_http(method: &str, path: &str) -> Option<&'static str> {
+    match (method, path) {
+        ("get", "/dashboard") => Some("system.dashboard.get"),
+        ("get", "/media/transport") => Some("media.transport.get"),
+        ("get", "/media/operations") => Some("media.operation.list"),
+        ("get", "/media/operations/{operation_id}") => Some("media.operation.get"),
+        ("post", "/media/operations/{operation_id}/continue") => Some("media.operation.continue"),
+        ("post", "/media/operations/{operation_id}/cancel") => Some("media.operation.cancel"),
+        ("get", "/nodes") => Some("node.list"),
+        ("get", "/leases") => Some("lease.list"),
+        ("get", "/gb28181/session-nodes/{node_id}/config") => Some("gb.session_config.get"),
+        ("get", "/gb28181/devices") => Some("gb.device.list"),
+        ("post", "/gb28181/devices") => Some("gb.device.create"),
+        ("get", "/gb28181/devices/{device_id}") => Some("gb.device.get"),
+        ("post", "/gb28181/devices/{device_id}") => Some("gb.device.update"),
+        ("post", "/gb28181/devices/{device_id}/delete") => Some("gb.device.delete"),
+        ("get", "/gb28181/devices/{device_id}/channels") => Some("gb.channel.list"),
+        ("get", "/gb28181/devices/{device_id}/resources") => Some("gb.resource.list"),
+        ("post", "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation") => {
+            Some("gb.resource.confirm")
+        }
+        ("post", "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset") => {
+            Some("gb.resource.reset")
+        }
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}") => Some("gb.channel.get"),
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}") => Some("gb.channel.update"),
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/preview") => {
+            Some("stream.start")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/playback") => {
+            Some("stream.playback")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/ptz") => Some("device.ptz"),
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => {
+            Some("gb.image.list")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images") => {
+            Some("gb.image.snapshot")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access") => {
+            Some("gb.image.access")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover") => {
+            Some("gb.image.cover")
+        }
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/records") => {
+            Some("gb.record.list")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/records/query") => {
+            Some("gb.record.query")
+        }
+        ("get", "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings") => {
+            Some("cloud_recording.list")
+        }
+        ("post", "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings") => {
+            Some("cloud_recording.create")
+        }
+        ("get", "/gb28181/cloud-recordings/{task_id}") => Some("cloud_recording.get"),
+        ("post", "/gb28181/cloud-recordings/{task_id}/stop") => Some("cloud_recording.stop"),
+        ("post", "/gb28181/cloud-recordings/{task_id}/delete") => Some("cloud_recording.delete"),
+        ("post", "/gb28181/cloud-recordings/{task_id}/access") => Some("cloud_recording.access"),
+        ("post", "/gb28181/broadcasts/start") => Some("broadcast.start"),
+        ("get", "/gb28181/broadcasts/{broadcast_id}") => Some("broadcast.get"),
+        ("post", "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop") => {
+            Some("broadcast.stop_target")
+        }
+        ("post", "/gb28181/broadcasts/{broadcast_id}/stop-all") => Some("broadcast.stop_all"),
+        ("get", "/devices") => Some("device.list"),
+        ("post", "/devices/{device_id}/preview") => Some("stream.start"),
+        ("post", "/devices/{device_id}/playback") => Some("stream.playback"),
+        ("post", "/devices/{device_id}/download") => Some("stream.download"),
+        ("post", "/devices/{device_id}/ptz") => Some("device.ptz"),
+        ("get", "/streams") => Some("stream.list"),
+        ("get", "/gb28181/streams") => Some("gb.stream.list"),
+        ("get", "/gb28181/streams/{stream_id}/management") => Some("gb.stream.management"),
+        ("get", "/gb28181/stream-history") => Some("gb.stream.history"),
+        ("post", "/gb28181/streams/{stream_id}/stop") => Some("gb.stream.stop"),
+        ("post", "/streams/{stream_id}/stop") => Some("stream.stop"),
+        ("post", "/streams/{stream_id}/release") => Some("stream.release"),
+        ("post", "/streams/{stream_id}/speed") => Some("stream.speed.set"),
+        ("post", "/playbacks/{playback_id}/seek") => Some("playback.seek"),
+        ("post", "/playbacks/{playback_id}/speed") => Some("playback.speed.set"),
+        ("post", "/playbacks/{playback_id}/state") => Some("playback.state.set"),
+        ("post", "/playbacks/presence/heartbeat") => Some("playback.presence.heartbeat"),
+        ("post", "/playback-tickets/{token}/renew") => Some("playback.ticket.renew"),
+        ("get", "/streams/{stream_id}/outputs") => Some("stream.output.list"),
+        ("post", "/streams/{stream_id}/outputs") => Some("stream.output.create"),
+        ("post", "/streams/{stream_id}/outputs/{output_id}/close") => Some("stream.output.close"),
+        ("get", "/ai/tasks") => Some("ai.list"),
+        ("post", "/ai/tasks") => Some("ai.start"),
+        ("post", "/ai/tasks/{task_id}/cancel") => Some("ai.cancel"),
+        ("get", "/runtime/status") => Some("runtime.status.get"),
+        _ => None,
+    }
+}
+
+pub fn mqtt_special_for_http(method: &str, path: &str) -> Option<&'static str> {
+    match (method, path) {
+        ("get", "/events") => {
+            Some("MQTT 使用 gmv/events/{integration_id}/{event_type} 推送替代 HTTP 历史轮询")
+        }
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]

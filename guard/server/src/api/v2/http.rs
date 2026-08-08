@@ -65,6 +65,7 @@ use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
+use crate::store::InMemoryGuardStore;
 use crate::store::command::{HttpCommandClaim, http_command_id, validate_request_id};
 use crate::store::model::{
     EventRecord, INTEGRATION_PLAYBACK_MAX_LIFETIME_MS, INTEGRATION_PLAYBACK_MAX_RENEWALS,
@@ -542,11 +543,27 @@ pub fn openapi_contract() -> base::serde_json::Value {
                 "security": [{"GmvAccessKey": [], "GmvTimestamp": [], "GmvNonce": [], "GmvContentSha256": [], "GmvSignature": []}],
                 "responses": openapi_responses(method, path, summary)
             });
+            let operation_object = operation
+                .as_object_mut()
+                .expect("OpenAPI operation must be an object");
+            operation_object.insert(
+                "x-gmv-request-example".to_string(),
+                openapi_request_example(method, path),
+            );
+            if let Some(action) = crate::integration::model::mqtt_action_for_http(method, path) {
+                operation_object.insert(
+                    "x-gmv-mqtt-action".to_string(),
+                    base::serde_json::json!(action),
+                );
+            }
+            if let Some(special) = crate::integration::model::mqtt_special_for_http(method, path) {
+                operation_object.insert(
+                    "x-gmv-mqtt-special".to_string(),
+                    base::serde_json::json!(special),
+                );
+            }
             if let Some(request_body) = openapi_request_body(method, path) {
-                operation
-                    .as_object_mut()
-                    .expect("OpenAPI operation must be an object")
-                    .insert("requestBody".to_string(), request_body);
+                operation_object.insert("requestBody".to_string(), request_body);
             }
             operations.insert((*method).to_string(), operation);
         }
@@ -604,8 +621,149 @@ pub fn openapi_contract() -> base::serde_json::Value {
             "request_id_header": REQUEST_ID_HEADER,
             "request_id_required_for": ["POST"],
             "idempotency_window_ms": HTTP_IDEMPOTENCY_TTL_MS
-        }
+        },
+        "x-gmv-http-mqtt-capabilities": integration_capabilities_contract()
     })
+}
+
+fn integration_capabilities_contract() -> base::serde_json::Value {
+    let items =
+        OPEN_BUSINESS_OPERATIONS
+            .iter()
+            .flat_map(|(path, methods)| {
+                methods.iter().map(move |method| {
+                let http_method = if *method == "get" { &Method::GET } else { &Method::POST };
+                base::serde_json::json!({
+                    "http_method": method.to_uppercase(),
+                    "http_path": format!("/openapi/v1{path}"),
+                    "mqtt_action": crate::integration::model::mqtt_action_for_http(method, path),
+                    "mqtt_special": crate::integration::model::mqtt_special_for_http(method, path),
+                    "required_scope": open_business_scope(http_method, path)
+                })
+            })
+            })
+            .collect::<Vec<_>>();
+    base::serde_json::json!(items)
+}
+
+fn openapi_request_example(method: &str, path: &str) -> base::serde_json::Value {
+    let rendered_path = path
+        .replace("{device_id}", "device-001")
+        .replace("{channel_id}", "channel-001")
+        .replace("{resource_id}", "resource-001")
+        .replace("{image_id}", "image-001")
+        .replace("{task_id}", "task-001")
+        .replace("{broadcast_id}", "broadcast-001")
+        .replace("{leg_id}", "leg-001")
+        .replace("{stream_id}", "stream-001")
+        .replace("{playback_id}", "playback-001")
+        .replace("{operation_id}", "operation-001")
+        .replace("{output_id}", "output-001")
+        .replace("{node_id}", "session-001")
+        .replace("{token}", "PLAYBACK_TOKEN");
+    let query = if method == "get" {
+        openapi_query_fields(path)
+            .iter()
+            .map(|(name, _)| {
+                (
+                    (*name).to_string(),
+                    schema_example(&openapi_request_field_schema(path, name)),
+                )
+            })
+            .collect::<base::serde_json::Map<_, _>>()
+    } else {
+        base::serde_json::Map::new()
+    };
+    let mut body = openapi_request_body(method, path)
+        .map(|request| schema_example(&request["content"]["application/json"]["schema"]));
+    if let Some(object) = body
+        .as_mut()
+        .and_then(base::serde_json::Value::as_object_mut)
+    {
+        for (field, value) in [
+            ("request_id", "req-001"),
+            ("device_id", "device-001"),
+            ("channel_id", "channel-001"),
+            ("resource_id", "resource-001"),
+            ("image_id", "image-001"),
+            ("task_id", "task-001"),
+            ("broadcast_id", "broadcast-001"),
+            ("leg_id", "leg-001"),
+            ("stream_id", "stream-001"),
+            ("playback_id", "playback-001"),
+            ("operation_id", "operation-001"),
+            ("output_id", "output-001"),
+            ("node_id", "session-001"),
+            ("session_node_id", "session-001"),
+        ] {
+            if object.contains_key(field) {
+                object.insert(field.to_string(), base::serde_json::json!(value));
+            }
+        }
+    }
+    base::serde_json::json!({
+        "method": method.to_uppercase(),
+        "path": format!("/openapi/v1{rendered_path}"),
+        "headers": if method == "post" {
+            base::serde_json::json!({
+                "x-gmv-access-key": "ACCESS_KEY",
+                "x-gmv-timestamp": 1700000000000_i64,
+                "x-gmv-nonce": "UNIQUE_NONCE",
+                "x-gmv-request-id": "req-001",
+                "x-gmv-content-sha256": "BODY_SHA256_HEX",
+                "x-gmv-signature": "HMAC_SHA256_HEX"
+            })
+        } else {
+            base::serde_json::json!({
+                "x-gmv-access-key": "ACCESS_KEY",
+                "x-gmv-timestamp": 1700000000000_i64,
+                "x-gmv-nonce": "UNIQUE_NONCE",
+                "x-gmv-content-sha256": "EMPTY_BODY_SHA256_HEX",
+                "x-gmv-signature": "HMAC_SHA256_HEX"
+            })
+        },
+        "query": query,
+        "body": body
+    })
+}
+
+fn schema_example(schema: &base::serde_json::Value) -> base::serde_json::Value {
+    if let Some(value) = schema.get("example") {
+        return value.clone();
+    }
+    if let Some(value) = schema.get("default") {
+        return value.clone();
+    }
+    if let Some(value) = schema.get("const") {
+        return value.clone();
+    }
+    if let Some(value) = schema
+        .get("enum")
+        .and_then(base::serde_json::Value::as_array)
+        .and_then(|values| values.first())
+    {
+        return value.clone();
+    }
+    if let Some(properties) = schema
+        .get("properties")
+        .and_then(base::serde_json::Value::as_object)
+    {
+        return properties
+            .iter()
+            .map(|(name, property)| (name.clone(), schema_example(property)))
+            .collect::<base::serde_json::Map<_, _>>()
+            .into();
+    }
+    if schema.get("type") == Some(&base::serde_json::json!("array")) {
+        return base::serde_json::json!([schema_example(&schema["items"])]);
+    }
+    match schema.get("type").and_then(base::serde_json::Value::as_str) {
+        Some("boolean") => base::serde_json::json!(true),
+        Some("integer") => base::serde_json::json!(1),
+        Some("number") => base::serde_json::json!(1.0),
+        Some("object") => base::serde_json::json!({}),
+        _ => base::serde_json::json!("example"),
+    }
 }
 
 fn openapi_operation_parameters(method: &str, path: &str) -> Vec<base::serde_json::Value> {
@@ -630,7 +788,7 @@ fn openapi_operation_parameters(method: &str, path: &str) -> Vec<base::serde_jso
                 "in": "query",
                 "required": required,
                 "description": openapi_field_description(name),
-                "schema": {"type": openapi_field_type(name)}
+                "schema": openapi_request_field_schema(path, name)
             })
         }));
     } else if method == "post" {
@@ -1011,7 +1169,12 @@ fn openapi_request_body(method: &str, path: &str) -> Option<base::serde_json::Va
     }
     let properties = fields
         .iter()
-        .map(|(name, _)| ((*name).to_string(), openapi_field_schema(name)))
+        .map(|(name, _)| {
+            (
+                (*name).to_string(),
+                openapi_request_field_schema(path, name),
+            )
+        })
         .collect::<base::serde_json::Map<_, _>>();
     let required = fields
         .iter()
@@ -1068,10 +1231,201 @@ fn openapi_field_schema(name: &str) -> base::serde_json::Value {
             }
         });
     }
+    match name {
+        "trans_mode" | "default_trans_mode" => {
+            return base::serde_json::json!({
+                "type": "string",
+                "enum": ["udp", "tcp_active", "tcp_passive"],
+                "default": "udp",
+                "example": "udp",
+                "description": openapi_field_description(name)
+            });
+        }
+        "leftRight" | "upDown" | "inOut" => {
+            return base::serde_json::json!({
+                "type": "integer",
+                "enum": [0, 1, 2],
+                "description": openapi_field_description(name)
+            });
+        }
+        "horizonSpeed" | "verticalSpeed" => {
+            return base::serde_json::json!({
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 255,
+                "example": 64,
+                "description": openapi_field_description(name)
+            });
+        }
+        "zoomSpeed" => {
+            return base::serde_json::json!({
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 15,
+                "example": 8,
+                "description": openapi_field_description(name)
+            });
+        }
+        "speed_rate" => {
+            return base::serde_json::json!({
+                "type": "number",
+                "enum": [0.5, 1.0, 2.0, 4.0],
+                "example": 1.0,
+                "description": openapi_field_description(name)
+            });
+        }
+        "snapshot_to_mode" => {
+            return base::serde_json::json!({
+                "type": "integer",
+                "enum": [0, 1],
+                "default": 0,
+                "description": openapi_field_description(name)
+            });
+        }
+        "mode" => {
+            return base::serde_json::json!({
+                "type": "string",
+                "enum": ["inline", "attachment"],
+                "default": "inline",
+                "description": openapi_field_description(name)
+            });
+        }
+        "page" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 1, "default": 1,
+                "description": openapi_field_description(name)
+            });
+        }
+        "page_size" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 1, "maximum": 500,
+                "description": openapi_field_description(name)
+            });
+        }
+        "limit" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 1, "maximum": 500, "default": 100,
+                "description": openapi_field_description(name)
+            });
+        }
+        "min_priority" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 0, "maximum": 255,
+                "description": openapi_field_description(name)
+            });
+        }
+        "count" | "interval" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 1, "maximum": 255,
+                "description": openapi_field_description(name)
+            });
+        }
+        "expected_generation" | "position_sec" => {
+            return base::serde_json::json!({
+                "type": "integer", "minimum": 0,
+                "description": openapi_field_description(name)
+            });
+        }
+        "start_time_sec" | "end_time_sec" => {
+            return base::serde_json::json!({
+                "type": "integer", "format": "int64", "minimum": 0,
+                "example": 1700000000,
+                "description": openapi_field_description(name)
+            });
+        }
+        "start_time_ms" | "end_time_ms" => {
+            return base::serde_json::json!({
+                "type": "integer", "format": "int64", "minimum": 0,
+                "example": 1700000000000_i64,
+                "description": openapi_field_description(name)
+            });
+        }
+        "request_id" => {
+            return base::serde_json::json!({
+                "type": "string", "minLength": 1, "maxLength": 128,
+                "pattern": "^[^\\s]+$", "example": "req-20260808-0001",
+                "description": openapi_field_description(name)
+            });
+        }
+        _ => {}
+    }
     base::serde_json::json!({
         "type": openapi_field_type(name),
         "description": openapi_field_description(name)
     })
+}
+
+fn openapi_request_field_schema(path: &str, name: &str) -> base::serde_json::Value {
+    let mut schema = openapi_field_schema(name);
+    let object = schema
+        .as_object_mut()
+        .expect("OpenAPI field schema must be an object");
+    match name {
+        "stream_profile" => {
+            let live = path.ends_with("/preview");
+            object.insert(
+                "enum".to_string(),
+                if live {
+                    base::serde_json::json!(["main", "sub"])
+                } else {
+                    base::serde_json::json!(["main"])
+                },
+            );
+            object.insert("default".to_string(), base::serde_json::json!("main"));
+        }
+        "output_type" => {
+            let values = if path.ends_with("/preview") {
+                base::serde_json::json!(["flv", "fmp4", "hls", "ll_hls"])
+            } else if path.ends_with("/download") {
+                base::serde_json::json!(["flv", "fmp4", "hls", "mp4"])
+            } else if path.ends_with("/outputs") {
+                base::serde_json::json!(["flv", "fmp4", "hls", "ll_hls"])
+            } else {
+                base::serde_json::json!(["flv", "fmp4", "hls"])
+            };
+            object.insert("enum".to_string(), values);
+        }
+        "audio_codec" => {
+            object.insert("enum".to_string(), base::serde_json::json!(["aac"]));
+        }
+        "startup_timeout_ms" => {
+            let minimum = if path.ends_with("/outputs") {
+                10_000
+            } else {
+                FIRST_PREVIEW_HARD_TIMEOUT_MS
+            };
+            object.insert("minimum".to_string(), base::serde_json::json!(minimum));
+            object.insert("maximum".to_string(), base::serde_json::json!(30_000));
+            if !path.ends_with("/outputs") {
+                object.insert(
+                    "default".to_string(),
+                    base::serde_json::json!(FIRST_PREVIEW_HARD_TIMEOUT_MS),
+                );
+            }
+        }
+        "page_size" if path.contains("/records") || path.contains("/images") => {
+            object.insert("maximum".to_string(), base::serde_json::json!(100));
+        }
+        "broadcast_codec" | "codec" => {
+            object.insert("enum".to_string(), base::serde_json::json!(["PCMA"]));
+            object.insert("default".to_string(), base::serde_json::json!("PCMA"));
+        }
+        "broadcast_sample_rate" | "sample_rate" => {
+            object.insert("const".to_string(), base::serde_json::json!(8_000));
+            object.insert("default".to_string(), base::serde_json::json!(8_000));
+        }
+        "broadcast_channel_count" | "channel_count" => {
+            object.insert("const".to_string(), base::serde_json::json!(1));
+            object.insert("default".to_string(), base::serde_json::json!(1));
+        }
+        "broadcast_frame_duration_ms" | "frame_duration_ms" => {
+            object.insert("minimum".to_string(), base::serde_json::json!(10));
+            object.insert("maximum".to_string(), base::serde_json::json!(60));
+            object.insert("default".to_string(), base::serde_json::json!(20));
+        }
+        _ => {}
+    }
+    schema
 }
 
 fn openapi_field_type(name: &str) -> &'static str {
@@ -1146,7 +1500,9 @@ fn openapi_field_description(name: &str) -> &'static str {
         "over_pic_id" => "通道覆盖图资源标识。",
         "status" => "启停状态。",
         "heartbeat_sec" => "设备心跳间隔，单位为秒。",
-        "snapshot_to_mode" => "设备截图投递模式。",
+        "snapshot_to_mode" => {
+            "设备截图投递目标：0=signaling_peer，截图回传到发起信令的对端；1=business_target，截图投递到业务配置目标。默认 0。"
+        }
         "tenant_id" => "业务租户标识。",
         "sys_org_code" => "业务组织机构编码。",
         "create_by" => "创建人标识。",
@@ -1164,26 +1520,46 @@ fn openapi_field_description(name: &str) -> &'static str {
         "alarm_enable" => "是否启用告警。",
         "biz_enable" => "是否启用业务处理。",
         "sort_no" => "通道显示排序号。",
-        "start_time_sec" => "开始时间，Unix 秒时间戳。",
-        "end_time_sec" => "结束时间，Unix 秒时间戳。",
-        "trans_mode" => "媒体传输模式。",
-        "output_type" => "输出封装类型，例如 flv 或 hls。",
-        "audio_codec" => "输出音频编码，例如 aac。",
-        "stream_profile" => "请求的视频码流档位，可选 main 或 sub。",
-        "startup_timeout_ms" => "等待媒体启动的超时时间，单位为毫秒。",
-        "broadcast_codec" => "语音广播编码。",
-        "broadcast_sample_rate" => "语音广播采样率。",
-        "broadcast_channel_count" => "语音广播声道数。",
-        "broadcast_frame_duration_ms" => "语音广播帧时长，单位为毫秒。",
+        "start_time_sec" => {
+            "Unix 秒时间戳。回放、下载和录像查询中必须小于 end_time_sec；实时预览不使用时传 0 或省略。"
+        }
+        "end_time_sec" => {
+            "Unix 秒时间戳。回放、下载和录像查询中必须大于 start_time_sec；实时预览不使用时传 0 或省略。"
+        }
+        "trans_mode" => {
+            "GB28181 媒体传输模式：udp=UDP；tcp_active=Session 主动连接设备；tcp_passive=Session 监听并等待设备连接。空值按 udp。"
+        }
+        "output_type" => {
+            "播放输出封装：flv、fmp4、hls；ll_hls 仅实时预览；mp4 仅有限时长下载。省略时使用 Session 默认输出。"
+        }
+        "audio_codec" => "输出音频目标编码；当前仅支持 aac。省略表示保持源音频或使用默认策略。",
+        "stream_profile" => {
+            "视频码流档位：main=主码流，sub=辅码流。实时预览支持二者，默认 main；回放和下载仅支持 main。"
+        }
+        "startup_timeout_ms" => {
+            "等待媒体准备完成的超时，最大 30000 毫秒；预览/回放/下载最小及默认值为 15000，单独创建输出时 flv/fmp4 默认 10000、hls/ll_hls 默认 12000。"
+        }
+        "broadcast_codec" => "语音广播编码；当前仅支持 PCMA（G.711 A-law）。",
+        "broadcast_sample_rate" => "语音广播采样率；当前固定 8000 Hz。",
+        "broadcast_channel_count" => "语音广播声道数；当前固定 1（单声道）。",
+        "broadcast_frame_duration_ms" => {
+            "语音广播帧时长，范围 10～60 毫秒，默认 20；8000×帧时长必须能被 1000 整除。"
+        }
         "leftRight" => "水平控制值：0 停止、1 向左、2 向右。",
         "upDown" => "垂直控制值：0 停止、1 向上、2 向下。",
         "inOut" => "变倍控制值：0 停止、1 缩小、2 放大。",
-        "horizonSpeed" => "水平转动速度。",
-        "verticalSpeed" => "垂直转动速度。",
-        "zoomSpeed" => "变倍速度。",
-        "count" => "本次截图数量。",
-        "interval" => "连续截图间隔。",
-        "mode" => "资源访问模式，例如 inline 或 download。",
+        "horizonSpeed" => {
+            "水平转动速度。leftRight 非 0 时取 1～255；0 表示该轴不参与，超过 255 的值不会被调用方契约接受。"
+        }
+        "verticalSpeed" => {
+            "垂直转动速度。upDown 非 0 时取 1～255；0 表示该轴不参与。斜向转动采用水平、垂直速度中的较大值。"
+        }
+        "zoomSpeed" => "变倍速度。inOut 非 0 时取 1～15；0 表示不变倍。设备侧有效速度上限为 15。",
+        "count" => "本次截图数量，范围 1～255；省略时使用 Session 截图配置默认值。",
+        "interval" => "连续截图间隔，范围 1～255，单位为秒；省略时使用 Session 截图配置默认值。",
+        "mode" => {
+            "资源响应方式：inline=浏览器内联预览，attachment=作为附件下载；其他值按 inline，调用方应只发送枚举值。"
+        }
         "start_time_ms" => "查询开始时间，Unix 毫秒时间戳。",
         "end_time_ms" => "查询结束时间，Unix 毫秒时间戳。",
         "stream_node_id" => "负责媒体流的流节点标识。",
@@ -1192,8 +1568,10 @@ fn openapi_field_description(name: &str) -> &'static str {
         "state" => "业务状态筛选值。",
         "stop_reason" => "停止媒体流的原因。",
         "subscription_id" => "媒体订阅唯一标识。",
-        "speed_rate" => "回放倍速。",
-        "position_sec" => "目标回放位置，Unix 秒时间戳。",
+        "speed_rate" => "回放倍速，仅支持 0.5、1.0、2.0、4.0。",
+        "position_sec" => {
+            "目标回放位置，Unix 秒时间戳，必须位于创建回放时的 start_time_sec～end_time_sec 区间内。"
+        }
         "expected_generation" => "调用方期望的回放控制版本，用于防止并发覆盖。",
         "paused" => "是否暂停回放。",
         "items" => {
@@ -1207,7 +1585,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "topic_prefix" => "事件 Topic 前缀筛选值。",
         "min_priority" => "最低事件优先级。",
         "page" => "页码，从 1 开始。",
-        "page_size" => "每页记录数。",
+        "page_size" => "每页记录数；设备列表最多 500，录像和截图列表最多 100。",
         "device_name" => "设备名称模糊筛选值。",
         "registered_only" => "是否只返回已注册设备。",
         _ => "业务字段。",
@@ -1216,28 +1594,86 @@ fn openapi_field_description(name: &str) -> &'static str {
 
 fn openapi_responses(method: &str, path: &str, summary: &str) -> base::serde_json::Value {
     let success_schema = openapi_success_schema(method, path, summary);
-    let error_content = base::serde_json::json!({
-        "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}}
+    let success_example = schema_example(&success_schema);
+    let error_example = base::serde_json::json!({
+        "code": "invalid_request",
+        "message": "request validation failed",
+        "user_message": "请求参数不正确，请检查字段后重试",
+        "operation_id": null,
+        "trace_id": "trace-001",
+        "retryable": false,
+        "details": {}
     });
-    base::serde_json::json!({
-        "200": {"description": "请求成功，返回 JSON 业务数据。", "content": {"application/json": {"schema": success_schema}}},
-        "201": {"description": "资源创建成功，返回新建资源的 JSON 数据。", "content": {"application/json": {"schema": success_schema}}},
-        "202": {"description": "异步操作已受理，返回操作状态或任务摘要 JSON。", "content": {"application/json": {"schema": success_schema}}},
-        "400": {"description": "请求参数、字段格式或业务前置条件不正确。", "content": error_content},
-        "401": {"description": "Access Key、时间戳、nonce、正文摘要或 HMAC 签名无效。", "content": error_content},
-        "403": {"description": "第三方应用未获得该接口所需权限，或无权访问目标资源。", "content": error_content},
-        "404": {"description": "目标设备、通道、流、任务或操作不存在。", "content": error_content},
-        "409": {"description": "当前资源状态与请求冲突。", "content": error_content},
-        "429": {"description": "超过调用频率或系统容量限制，可按返回信息决定是否重试。", "content": error_content},
-        "500": {"description": "Guard 内部处理失败。", "content": error_content}
-    })
+    let error_content = base::serde_json::json!({
+        "application/json": {"schema": {"$ref": "#/components/schemas/ErrorResponse"}, "example": error_example}
+    });
+    let (success_status, success_description, has_body) =
+        openapi_success_response_kind(method, path);
+    let mut responses = base::serde_json::Map::new();
+    responses.insert(
+        success_status.to_string(),
+        if has_body {
+            base::serde_json::json!({
+                "description": success_description,
+                "content": {"application/json": {"schema": success_schema, "example": success_example}}
+            })
+        } else {
+            base::serde_json::json!({"description": success_description})
+        },
+    );
+    for (status, description) in [
+        ("400", "请求参数、字段格式或业务前置条件不正确。"),
+        (
+            "401",
+            "Access Key、时间戳、nonce、正文摘要或 HMAC 签名无效。",
+        ),
+        (
+            "403",
+            "第三方应用未获得该接口所需权限，或无权访问目标资源。",
+        ),
+        ("404", "目标设备、通道、流、任务或操作不存在。"),
+        ("409", "当前资源状态与请求冲突。"),
+        (
+            "429",
+            "超过调用频率或系统容量限制，可按返回信息决定是否重试。",
+        ),
+        ("500", "Guard 内部处理失败。"),
+    ] {
+        responses.insert(
+            status.to_string(),
+            base::serde_json::json!({"description": description, "content": error_content.clone()}),
+        );
+    }
+    responses.into()
+}
+
+fn openapi_success_response_kind(method: &str, path: &str) -> (&'static str, &'static str, bool) {
+    if method == "post" && path == "/gb28181/devices/{device_id}/delete" {
+        return ("204", "设备删除成功，无响应正文。", false);
+    }
+    if method == "post" && matches!(path, "/gb28181/devices" | "/gb28181/broadcasts/start") {
+        return ("201", "资源创建成功，返回新建资源 JSON。", true);
+    }
+    if method == "post"
+        && (path.ends_with("/preview")
+            || path.ends_with("/playback")
+            || path.ends_with("/download")
+            || path.ends_with("/records/query")
+            || path.ends_with("/images")
+            || path.ends_with("/cloud-recordings")
+            || path == "/ai/tasks"
+            || path == "/streams/{stream_id}/outputs")
+    {
+        return ("202", "异步操作已受理，返回操作状态或任务摘要 JSON。", true);
+    }
+    ("200", "请求成功，返回 JSON 业务数据。", true)
 }
 
 fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serde_json::Value {
     let fields: &[&str] = match path {
         "/dashboard" => &["node_count", "event_count", "next_after_id"],
         "/media/transport" => &["scheme", "http_version", "multi_view_limit"],
-        "/media/operations" | "/media/operations/{operation_id}" => &[
+        path if path.starts_with("/media/operations") => &[
             "operation_id",
             "state",
             "stage",
@@ -1262,23 +1698,107 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "health_label",
             "scheduling",
             "scheduling_label",
-            "endpoints",
             "capabilities",
+            "pending_leases",
+            "host_metrics",
+            "business_metrics",
+            "config",
             "zone",
             "last_seen_at_ms",
+            "generation",
+            "sequence",
         ],
         "/leases" => &[
             "lease_id",
             "route_id",
             "resource_id",
-            "stream_type",
             "node_id",
             "instance_id",
             "state",
             "expires_at_ms",
-            "endpoints",
         ],
         "/events" => &["items", "next_after_id"],
+        "/gb28181/session-nodes/{node_id}/config" => &["domain", "domain_id", "wan_ip", "wan_port"],
+        "/gb28181/devices" if method == "get" => &["items", "total", "page", "page_size"],
+        "/gb28181/devices"
+        | "/gb28181/devices/{device_id}"
+        | "/gb28181/devices/{device_id}/delete" => gb_device_response_fields(),
+        "/gb28181/devices/{device_id}/channels"
+        | "/gb28181/devices/{device_id}/channels/{channel_id}" => gb_channel_response_fields(),
+        "/gb28181/devices/{device_id}/resources"
+        | "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation"
+        | "/gb28181/devices/{device_id}/resources/{resource_id}/confirmation/reset" => {
+            gb_resource_response_fields()
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/ptz" | "/devices/{device_id}/ptz" => {
+            &["accepted", "count"]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images" if method == "get" => {
+            &["items", "total", "page", "page_size"]
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images" => &["session_id"],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/access" => &[
+            "url",
+            "expires_at_ms",
+            "content_type",
+            "file_name",
+            "file_size",
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/images/{image_id}/cover" => {
+            gb_channel_response_fields()
+        }
+        "/gb28181/devices/{device_id}/channels/{channel_id}/records"
+        | "/gb28181/devices/{device_id}/channels/{channel_id}/records/query" => &[
+            "current_batch",
+            "attempt_batch",
+            "segments",
+            "next_query_at_ms",
+            "server_time_ms",
+            "total",
+            "page",
+            "page_size",
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/cloud-recordings"
+            if method == "get" =>
+        {
+            &["items", "total", "page", "page_size"]
+        }
+        path if path.contains("cloud-recordings") && path.ends_with("/access") => &[
+            "url",
+            "expires_at_ms",
+            "content_type",
+            "file_name",
+            "file_size",
+        ],
+        path if path.contains("cloud-recordings") => cloud_recording_response_fields(),
+        "/gb28181/broadcasts/start" | "/gb28181/broadcasts/{broadcast_id}" => &[
+            "broadcast_id",
+            "stream_node_id",
+            "input_url",
+            "state",
+            "target_summaries",
+        ],
+        "/gb28181/broadcasts/{broadcast_id}/targets/{leg_id}/stop"
+        | "/gb28181/broadcasts/{broadcast_id}/stop-all" => &[
+            "broadcast_id",
+            "stream_node_id",
+            "input_url",
+            "state",
+            "target_summaries",
+        ],
+        "/gb28181/devices/{device_id}/channels/{channel_id}/preview"
+        | "/gb28181/devices/{device_id}/channels/{channel_id}/playback" => &[
+            "operation_id",
+            "state",
+            "stage",
+            "elapsed_ms",
+            "last_progress_at_ms",
+            "checkpoint_ms",
+            "hard_timeout_ms",
+            "can_continue",
+            "result",
+            "error",
+        ],
         "/devices" => &["device_id", "name", "session_node_id", "channels", "online"],
         "/streams"
         | "/devices/{device_id}/preview"
@@ -1296,18 +1816,41 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "endpoint",
             "video_codec",
             "audio_codec",
+            "broadcast_profile",
             "requested_stream_profile",
             "effective_stream_profile",
             "stream_profile_verification",
             "subscription_id",
             "session_node_id",
+            "session_instance_id",
             "playback_id",
             "playback_generation",
+            "playback_start_time_sec",
+            "playback_end_time_sec",
             "state",
         ],
-        "/streams/{stream_id}/outputs" => {
+        "/streams/{stream_id}/outputs" if method == "get" => {
             &["output_id", "stream_id", "output_type", "endpoint", "state"]
         }
+        "/streams/{stream_id}/outputs" => &[
+            "operation_id",
+            "state",
+            "stage",
+            "elapsed_ms",
+            "last_progress_at_ms",
+            "checkpoint_ms",
+            "hard_timeout_ms",
+            "can_continue",
+            "result",
+            "error",
+        ],
+        "/streams/{stream_id}/outputs/{output_id}/close" => &["closed", "output_id"],
+        "/streams/{stream_id}/speed" => &["accepted", "speed_rate"],
+        "/playbacks/{playback_id}/seek"
+        | "/playbacks/{playback_id}/speed"
+        | "/playbacks/{playback_id}/state" => &["accepted", "generation"],
+        "/playbacks/presence/heartbeat" => &["server_time_ms", "items"],
+        "/playback-tickets/{token}/renew" => &["renewed", "revoked", "expires_at_ms"],
         "/ai/tasks" | "/ai/tasks/{task_id}/cancel" => &[
             "task_id",
             "model",
@@ -1325,6 +1868,15 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "ai_tasks",
             "running_ai_tasks",
             "ptz_commands",
+        ],
+        "/gb28181/streams" => &["items", "total", "page", "page_size", "server_time_ms"],
+        "/gb28181/streams/{stream_id}/management" => &["state", "active", "ended"],
+        "/gb28181/stream-history" => &["items", "total", "page", "page_size", "server_time_ms"],
+        "/gb28181/streams/{stream_id}/stop" => &[
+            "stream_id",
+            "state",
+            "session_node_id",
+            "session_instance_id",
         ],
         path if path.contains("/broadcasts/") || path == "/gb28181/broadcasts/start" => &[
             "broadcast_id",
@@ -1414,6 +1966,8 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "/media/operations"
                 | "/nodes"
                 | "/leases"
+                | "/gb28181/devices/{device_id}/channels"
+                | "/gb28181/devices/{device_id}/resources"
                 | "/devices"
                 | "/streams"
                 | "/streams/{stream_id}/outputs"
@@ -1423,43 +1977,158 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
         return base::serde_json::json!({
             "type": "array",
             "description": format!("{summary}成功时返回的数组。"),
-            "items": openapi_response_object_schema(summary, &item_fields)
+            "items": openapi_response_object_schema(path, summary, &item_fields)
         });
     }
-    openapi_response_object_schema(summary, fields)
+    openapi_response_object_schema(path, summary, fields)
 }
 
-fn openapi_response_object_schema(summary: &str, fields: &[&str]) -> base::serde_json::Value {
+fn openapi_response_object_schema(
+    path: &str,
+    summary: &str,
+    fields: &[&str],
+) -> base::serde_json::Value {
     let properties = fields
         .iter()
-        .map(|field| ((*field).to_string(), openapi_response_field_schema(field)))
+        .map(|field| {
+            (
+                (*field).to_string(),
+                openapi_response_field_schema(path, field),
+            )
+        })
         .collect::<base::serde_json::Map<_, _>>();
     base::serde_json::json!({
         "type": "object",
         "description": format!("{summary}成功时返回的 JSON 对象。"),
         "properties": properties,
-        "additionalProperties": true
+        "required": fields,
+        "additionalProperties": false
     })
 }
 
-fn openapi_response_field_schema(field: &str) -> base::serde_json::Value {
+fn openapi_response_field_schema(path: &str, field: &str) -> base::serde_json::Value {
+    let description = openapi_response_field_description(field);
     if matches!(
         field,
-        "items" | "channels" | "endpoints" | "capabilities" | "target_summaries"
+        "channels" | "endpoints" | "capabilities" | "supported_formats"
     ) {
         return base::serde_json::json!({
             "type": "array",
-            "description": "业务条目数组。",
-            "items": {"type": ["object", "string"], "description": "数组条目。"}
+            "description": description,
+            "items": {"type": "string", "description": "数组字符串条目。"}
+        });
+    }
+    if matches!(field, "items" | "segments" | "target_summaries") {
+        let item_fields = openapi_nested_item_fields(path, field);
+        return base::serde_json::json!({
+            "type": "array",
+            "description": "业务条目数组，数组元素字段如下展开。",
+            "items": openapi_response_object_schema(path, "数组元素", item_fields)
+        });
+    }
+    if field == "viewer_formats" {
+        return base::serde_json::json!({
+            "type": "array",
+            "description": "按输出格式统计的观看者数组。",
+            "items": openapi_response_object_schema(path, "观看格式", &["media_format", "viewer_count"])
+        });
+    }
+    if field == "host_metrics" {
+        return base::serde_json::json!({
+            "type": "object",
+            "description": "节点最近一次上报的主机资源指标。",
+            "properties": openapi_response_properties(path, &[
+                "cpu_usage_percent", "load_average_1m", "load_average_5m", "load_average_15m",
+                "memory_total_bytes", "memory_used_bytes", "swap_total_bytes", "swap_used_bytes",
+                "disk_read_bytes_per_sec", "disk_write_bytes_per_sec",
+                "network_receive_bytes_per_sec", "network_transmit_bytes_per_sec",
+                "process_resident_memory_bytes", "process_threads"
+            ]),
+            "additionalProperties": false
+        });
+    }
+    if matches!(field, "business_metrics" | "config") {
+        return base::serde_json::json!({
+            "type": "object",
+            "description": description,
+            "additionalProperties": {"type": "string", "description": "指标或配置值。"}
+        });
+    }
+    if field == "confirmation" {
+        return base::serde_json::json!({
+            "type": ["object", "null"],
+            "description": description,
+            "properties": openapi_response_properties(path, &[
+                "status", "resource_kind", "owner_scope", "owner_id", "suggested_enum_id",
+                "source_parent_id", "confirmed_by", "confirmed_at_ms", "remark"
+            ]),
+            "additionalProperties": false
+        });
+    }
+    if field == "error" {
+        return base::serde_json::json!({
+            "type": ["object", "null"],
+            "description": description,
+            "properties": openapi_response_properties(path, &["code", "message", "user_message", "retryable"]),
+            "additionalProperties": false
+        });
+    }
+    if matches!(field, "active" | "ended") {
+        let item_fields = if field == "active" {
+            active_stream_response_fields()
+        } else {
+            stream_history_response_fields()
+        };
+        return base::serde_json::json!({
+            "type": ["object", "null"],
+            "description": if field == "active" { "活动流详情；流已结束时为 null。" } else { "已结束流详情；流仍活动时为 null。" },
+            "properties": openapi_response_properties(path, item_fields),
+            "additionalProperties": false
+        });
+    }
+    if matches!(field, "current_batch" | "attempt_batch") {
+        let fields = [
+            "batch_id",
+            "status",
+            "start_time_sec",
+            "end_time_sec",
+            "created_at_ms",
+        ];
+        return base::serde_json::json!({
+            "type": ["object", "null"],
+            "description": "录像检索批次；没有对应批次时为 null。",
+            "properties": openapi_response_properties(path, &fields),
+            "additionalProperties": false
         });
     }
     if matches!(
         field,
-        "online" | "registered" | "accepted" | "guard_available" | "can_continue"
+        "online"
+            | "registered"
+            | "accepted"
+            | "guard_available"
+            | "can_continue"
+            | "closed"
+            | "renewed"
+            | "revoked"
+            | "supported"
+            | "available"
+            | "can_stop"
+            | "can_play"
+            | "can_download"
+            | "can_delete"
+            | "progress_stale"
+            | "can_preview"
+            | "media_ready"
+            | "legacy_terminal_time"
     ) {
-        return base::serde_json::json!({"type": "boolean", "description": "业务布尔状态。"});
+        return base::serde_json::json!({"type": "boolean", "description": description});
     }
     if field.ends_with("_ms")
+        || field.ends_with("_sec")
+        || field.ends_with("_bytes")
+        || field.ends_with("_bytes_per_sec")
+        || field.ends_with("_count")
         || matches!(
             field,
             "node_count"
@@ -1474,101 +2143,912 @@ fn openapi_response_field_schema(field: &str) -> base::serde_json::Value {
                 | "ptz_commands"
                 | "playback_generation"
                 | "multi_view_limit"
+                | "generation"
+                | "count"
+                | "wan_port"
+                | "progress_percent"
+                | "pending_leases"
+                | "sequence"
+                | "priority"
+                | "process_threads"
+                | "file_size"
+                | "segment_id"
+                | "secrecy"
+                | "port"
+                | "pwd_check"
+                | "snapshot"
+                | "snapshot_to_mode"
+                | "del"
+                | "monitor_status"
+                | "max_camera"
+                | "ptz_enable"
+                | "broadcast_enable"
+                | "audio_enable"
+                | "record_enable"
+                | "playback_enable"
+                | "alarm_enable"
+                | "biz_enable"
+                | "owner_biz_enable"
+                | "sort_no"
         )
+        || (field == "status"
+            && matches!(
+                path,
+                "/gb28181/devices"
+                    | "/gb28181/devices/{device_id}"
+                    | "/gb28181/devices/{device_id}/delete"
+            ))
     {
-        return base::serde_json::json!({"type": "integer", "description": "业务数值。"});
+        return base::serde_json::json!({"type": "integer", "description": description});
     }
-    if matches!(field, "result" | "error") {
-        return base::serde_json::json!({"type": ["object", "null"], "description": "操作结果或错误详情。"});
+    if field == "result" {
+        return base::serde_json::json!({"type": ["object", "null"], "description": description});
     }
-    base::serde_json::json!({"type": ["string", "null"], "description": "业务字段。"})
+    if field == "speed_rate" {
+        return base::serde_json::json!({"type": "number", "description": "实际生效的播放速度倍率。"});
+    }
+    if field.ends_with("_percent") || field.starts_with("load_average_") {
+        return base::serde_json::json!({"type": "number", "description": description});
+    }
+    base::serde_json::json!({"type": ["string", "null"], "description": description})
+}
+
+fn openapi_response_field_description(field: &str) -> &'static str {
+    let request_description = openapi_field_description(field);
+    if request_description != "业务字段。" {
+        return request_description;
+    }
+    match field {
+        "node_count" => "当前已登记节点数量。",
+        "event_count" => "本页返回的事件数量。",
+        "next_after_id" => "下一次增量查询应传入的事件或流游标。",
+        "scheme" => "媒体访问 URL 使用的协议方案，例如 http 或 https。",
+        "http_version" => "媒体访问链路已验证的 HTTP 协议版本。",
+        "multi_view_limit" => "当前传输能力建议的单客户端多画面上限。",
+        "instance_id" | "session_instance_id" => "节点当前进程实例标识，用于隔离重启前后的状态。",
+        "kind" => "节点类型。",
+        "service" => "节点提供的服务名称。",
+        "protocol" => "节点使用的业务协议。",
+        "display_name" | "name" => "面向调用方展示的名称。",
+        "connection" => "节点连接状态机器值。",
+        "connection_label" => "节点连接状态中文名称。",
+        "health" => "节点健康状态机器值。",
+        "health_label" => "节点健康状态中文名称。",
+        "scheduling" => "节点是否可参与新任务调度的机器值。",
+        "scheduling_label" => "节点调度状态中文名称。",
+        "endpoints" => "节点或租约公开的访问端点数组。",
+        "capabilities" => "节点声明的能力标识数组。",
+        "pending_leases" => "节点当前等待完成的租约数量。",
+        "host_metrics" => "节点最近一次上报的主机资源指标对象。",
+        "business_metrics" => "节点上报的业务指标键值对象。",
+        "config" => "节点公开的非敏感运行配置键值对象。",
+        "channels" => "设备包含的通道标识数组。",
+        "supported_formats" => "当前媒体流支持创建的输出格式数组。",
+        "zone" => "节点所属部署区域。",
+        "last_seen_at_ms" => "Guard 最后收到节点心跳的 Unix 毫秒时间戳。",
+        "lease_id" => "资源租约唯一标识。",
+        "route_id" => "资源路由唯一标识。",
+        "stream_type" | "session_type" => "媒体会话类型。",
+        "expires_at_ms" => "资源、票据或签名地址的 Unix 毫秒过期时间；null 表示无该值。",
+        "operation_id" => "异步媒体或业务操作唯一标识，可用于继续查询。",
+        "stage" => "操作当前执行阶段。",
+        "elapsed_ms" => "操作从创建到当前的累计耗时，单位毫秒。",
+        "last_progress_at_ms" => "操作最后产生进展的 Unix 毫秒时间戳。",
+        "checkpoint_ms" => "操作进入可由调用方继续决策阶段的毫秒阈值。",
+        "hard_timeout_ms" => "操作强制结束前的最大毫秒时限。",
+        "can_continue" => "当前操作是否允许调用继续接口。",
+        "result" => "操作成功后的业务结果对象；未完成或失败时为 null。",
+        "error" => "操作失败详情对象；未失败时为 null。",
+        "online" => "设备当前是否在线。",
+        "endpoint" | "input_url" | "url" | "image_url" => {
+            "受控访问地址；可能包含短期令牌，调用方不得记录或越权转发。"
+        }
+        "video_codec" => "媒体视频编码名称。",
+        "audio_codec" => "媒体音频编码名称。",
+        "requested_stream_profile" => "调用方请求的码流档位。",
+        "effective_stream_profile" => "设备或会话实际生效的码流档位。",
+        "stream_profile_verification" => "实际码流档位的验证状态。",
+        "playback_generation" | "generation" => "回放控制版本号，用于并发控制。",
+        "sequence" => "节点状态上报序号。",
+        "priority" => "事件优先级数值。",
+        "payload" => "事件业务 JSON 的 UTF-8 字符串；调用方按 topic 再解析。",
+        "topic" => "事件主题名称。",
+        "event_id" => "事件唯一标识，也是 MQTT 事件消费幂等键。",
+        "guard_available" => "Guard 控制面当前是否可提供服务。",
+        "streams" | "ai_tasks" | "ptz_commands" => "当前登记的对应业务对象总数。",
+        "running_streams" | "running_ai_tasks" => "当前处于运行状态的对应业务对象数量。",
+        "target_summaries" => "广播各目标的独立执行结果数组。",
+        "target_key" => "广播目标的稳定关联键。",
+        "transport" => "目标实际使用的媒体传输模式。",
+        "profile" => "目标实际使用的音频传输规格。",
+        "reason" | "diagnostic_reason" => "当前状态的原因或诊断说明。",
+        "file_name" => "建议调用方展示或保存的文件名。",
+        "content_type" => "资源的 MIME Content-Type。",
+        "file_size" | "current_size_bytes" | "final_size_bytes" => "文件大小，单位字节。",
+        "total" => "满足当前筛选条件的总记录数。",
+        "deleted" => "目标资源是否已删除。",
+        "closed" => "媒体输出是否已关闭。",
+        "renewed" => "播放票据本次是否成功续期。",
+        "revoked" => "播放票据是否已被撤销。",
+        "accepted" => "业务命令是否已被目标状态机接受。",
+        "server_time_ms" => "服务端生成响应时的 Unix 毫秒时间戳。",
+        "presence_deadline_ms" => "下一次观看心跳最迟到达时间；终态时可能为 null。",
+        "created_at_ms" => "资源创建的 Unix 毫秒时间戳。",
+        "updated_at_ms" => "资源最后更新的 Unix 毫秒时间戳。",
+        "started_at_ms" => "任务或媒体开始执行的 Unix 毫秒时间戳。",
+        "finished_at_ms" | "terminated_at_ms" => "任务或媒体结束的 Unix 毫秒时间戳。",
+        "duration_ms" | "recorded_duration_ms" => "持续时长，单位毫秒。",
+        "progress_percent" => "任务完成进度百分比，范围 0～100。",
+        "progress_stale" => "任务进度是否长时间未更新。",
+        "file_state" => "录像文件当前可用状态。",
+        "file_format" => "录像文件封装格式。",
+        "requested_by" => "创建该任务的身份标识。",
+        "error_code" => "稳定的业务错误代码；无错误时为空字符串或 null。",
+        "error_message" => "面向开发者的错误说明；无错误时为空字符串。",
+        "can_stop" | "can_play" | "can_download" | "can_delete" => {
+            "当前任务状态是否允许执行对应后续操作。"
+        }
+        "supported" => "资源类型是否被 Guard 当前版本支持。",
+        "available" => "资源当前是否可用于业务操作。",
+        "unavailable_reason" | "warning" => "资源不可用原因或兼容性提示。",
+        "confirmation" => "人工资源分类确认信息；尚未确认时为 null。",
+        _ => "响应中的业务数据字段；具体值与当前资源状态一致。",
+    }
+}
+
+fn openapi_response_properties(
+    path: &str,
+    fields: &[&str],
+) -> base::serde_json::Map<String, base::serde_json::Value> {
+    fields
+        .iter()
+        .map(|field| {
+            (
+                (*field).to_string(),
+                openapi_response_field_schema(path, field),
+            )
+        })
+        .collect()
+}
+
+fn openapi_nested_item_fields(path: &str, field: &str) -> &'static [&'static str] {
+    if field == "target_summaries" {
+        return &[
+            "target_key",
+            "device_id",
+            "channel_id",
+            "session_node_id",
+            "leg_id",
+            "transport",
+            "profile",
+            "state",
+            "reason",
+        ];
+    }
+    if field == "segments" {
+        return &[
+            "segment_id",
+            "batch_id",
+            "device_id",
+            "channel_id",
+            "remote_device_id",
+            "name",
+            "file_path",
+            "address",
+            "start_time_sec",
+            "end_time_sec",
+            "secrecy",
+            "record_type",
+            "recorder_id",
+            "file_size",
+        ];
+    }
+    match path {
+        "/events" => &["event_id", "topic", "priority", "payload"],
+        "/gb28181/devices" => gb_device_response_fields(),
+        path if path.contains("/images") => gb_image_response_fields(),
+        path if path.contains("cloud-recordings") => cloud_recording_response_fields(),
+        "/playbacks/presence/heartbeat" => &[
+            "playback_id",
+            "stream_id",
+            "accepted",
+            "terminal",
+            "generation",
+            "presence_deadline_ms",
+        ],
+        "/gb28181/stream-history" => stream_history_response_fields(),
+        "/gb28181/streams" => active_stream_dialog_response_fields(),
+        _ => &["id", "state"],
+    }
+}
+
+fn gb_device_response_fields() -> &'static [&'static str] {
+    &[
+        "device_id",
+        "session_node_id",
+        "domain_id",
+        "domain",
+        "longitude",
+        "latitude",
+        "address",
+        "pwd",
+        "pwd_check",
+        "alias",
+        "status",
+        "heartbeat_sec",
+        "snapshot_to_mode",
+        "del",
+        "create_time",
+        "tenant_id",
+        "sys_org_code",
+        "create_by",
+        "update_by",
+        "update_time",
+        "monitor_status",
+        "device_type",
+        "manufacturer",
+        "model",
+        "firmware",
+        "gb_version",
+        "max_camera",
+        "camera_in_count",
+        "camera_off_count",
+        "register_time",
+    ]
+}
+
+fn gb_channel_response_fields() -> &'static [&'static str] {
+    &[
+        "device_id",
+        "channel_id",
+        "name",
+        "manufacturer",
+        "model",
+        "owner",
+        "status",
+        "civil_code",
+        "address",
+        "parent_id",
+        "ip_address",
+        "port",
+        "longitude",
+        "latitude",
+        "ptz_type",
+        "alias_name",
+        "pic_url",
+        "snapshot",
+        "over_pic_id",
+        "ptz_enable",
+        "broadcast_enable",
+        "audio_enable",
+        "record_enable",
+        "playback_enable",
+        "alarm_enable",
+        "biz_enable",
+        "sort_no",
+        "created_at_ms",
+        "updated_at_ms",
+        "cover_image_id",
+    ]
+}
+
+fn gb_image_response_fields() -> &'static [&'static str] {
+    &[
+        "image_id",
+        "device_id",
+        "channel_id",
+        "image_url",
+        "created_at_ms",
+        "file_name",
+        "content_type",
+        "file_size",
+        "can_preview",
+        "session_node_id",
+    ]
+}
+
+fn gb_resource_response_fields() -> &'static [&'static str] {
+    &[
+        "device_id",
+        "resource_id",
+        "name",
+        "status",
+        "parent_id",
+        "type_code",
+        "enum_id",
+        "enum_name",
+        "suggested_kind",
+        "classification_mode",
+        "effective_kind",
+        "effective_owner_scope",
+        "effective_owner_id",
+        "warning",
+        "biz_enable",
+        "owner_biz_enable",
+        "supported",
+        "available",
+        "unavailable_reason",
+        "confirmation",
+    ]
+}
+
+fn cloud_recording_response_fields() -> &'static [&'static str] {
+    &[
+        "task_id",
+        "request_id",
+        "session_node_id",
+        "device_id",
+        "channel_id",
+        "start_time_sec",
+        "end_time_sec",
+        "requested_duration_sec",
+        "status",
+        "file_state",
+        "progress_percent",
+        "recorded_duration_ms",
+        "progress_stale",
+        "current_size_bytes",
+        "final_size_bytes",
+        "file_format",
+        "requested_by",
+        "created_at_ms",
+        "started_at_ms",
+        "finished_at_ms",
+        "updated_at_ms",
+        "error_code",
+        "error_message",
+        "can_stop",
+        "can_play",
+        "can_download",
+        "can_delete",
+    ]
+}
+
+fn active_stream_response_fields() -> &'static [&'static str] {
+    &[
+        "stream_id",
+        "session_node_id",
+        "session_instance_id",
+        "stream_node_id",
+        "device_id",
+        "channel_id",
+        "ssrc",
+        "state",
+        "dialog_state",
+        "media_state",
+        "media_ready",
+        "created_at_ms",
+        "established_at_ms",
+        "started_at_ms",
+        "diagnostic_reason",
+        "session_type",
+        "viewer_count",
+        "viewer_formats",
+        "supported_formats",
+        "output_format",
+        "requested_stream_profile",
+        "effective_stream_profile",
+        "stream_profile_verification",
+    ]
+}
+
+fn active_stream_dialog_response_fields() -> &'static [&'static str] {
+    &[
+        "stream_id",
+        "session_node_id",
+        "session_instance_id",
+        "stream_node_id",
+        "device_id",
+        "channel_id",
+        "ssrc",
+        "dialog_state",
+        "created_at_ms",
+        "established_at_ms",
+        "started_at_ms",
+        "session_type",
+    ]
+}
+
+fn stream_history_response_fields() -> &'static [&'static str] {
+    &[
+        "stream_id",
+        "session_node_id",
+        "stream_node_id",
+        "device_id",
+        "channel_id",
+        "ssrc",
+        "session_type",
+        "state",
+        "created_at_ms",
+        "established_at_ms",
+        "terminated_at_ms",
+        "duration_ms",
+        "terminal_reason",
+        "terminal_reason_label",
+        "error_code",
+        "legacy_terminal_time",
+        "stop_reason",
+    ]
 }
 
 fn mqtt_action_payload_schemas() -> base::serde_json::Value {
-    base::serde_json::json!({
+    let mut schemas = base::serde_json::json!({
         "StreamStartPayload": {
             "type": "object",
+            "description": "实时点播参数。command.target 填设备 ID，payload.channel_id 填通道 ID；成功结果的 result.endpoint 是播放地址。",
             "required": ["channel_id"],
             "properties": {
-                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
-                "channel_id": {"type": "string", "description": "设备通道标识。"},
-                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
-                "trans_mode": {"type": "string", "description": "媒体传输模式。"},
-                "output_type": {"type": "string", "description": "输出封装类型。"},
-                "audio_codec": {"type": "string", "description": "输出音频编码。"},
-                "stream_profile": {"type": "string", "enum": ["main", "sub"], "description": "请求码流档位。"}
+                "device_id": {"type": "string", "description": "可选设备 ID；省略时使用 command.target，若同时提供应与 target 表示同一设备。"},
+                "channel_id": {"type": "string", "minLength": 1, "description": "要点播的设备通道 ID。"},
+                "session_node_id": {"type": "string", "description": "可选 GB28181 Session 节点；省略时由 Guard 调度。"},
+                "token": {"type": "string", "description": "可选媒体订阅 token；省略时 Guard 根据 command_id 生成。不要复用到其他点播。"},
+                "trans_mode": {"type": "string", "enum": ["udp", "tcp_active", "tcp_passive"], "default": "udp", "description": "媒体传输：udp；tcp_active=Session 主动连接设备；tcp_passive=Session 等待设备连接。"},
+                "output_type": {"type": "string", "enum": ["flv", "fmp4", "hls", "ll_hls"], "description": "播放输出封装；省略时使用 Session 默认输出。ll_hls 仅实时点播。"},
+                "audio_codec": {"type": "string", "enum": ["aac"], "description": "可选音频转码目标；当前仅支持 aac。"},
+                "stream_profile": {"type": "string", "enum": ["main", "sub"], "default": "main", "description": "main=主码流，sub=辅码流；默认 main。"}
             }
         },
         "StreamStopPayload": {
             "type": "object",
-            "properties": {"reason": {"type": "string", "description": "停止原因。"}}
+            "description": "停止流。command.target 必须填启动成功结果中的 result.stream_id；payload 当前为空对象。",
+            "properties": {}
         },
         "StreamPlaybackPayload": {
             "type": "object",
+            "description": "按设备录像时间范围创建回放；command.target 填设备 ID，成功结果的 result.endpoint 是播放地址。",
             "required": ["channel_id", "start_time_sec", "end_time_sec"],
             "properties": {
-                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
-                "channel_id": {"type": "string", "description": "设备通道标识。"},
-                "start_time_sec": {"type": "integer", "description": "回放开始 Unix 秒时间戳。"},
-                "end_time_sec": {"type": "integer", "description": "回放结束 Unix 秒时间戳。"},
-                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
-                "output_type": {"type": "string", "description": "输出封装类型。"},
-                "stream_profile": {"type": "string", "enum": ["main", "sub"], "description": "请求码流档位。"}
+                "device_id": {"type": "string", "description": "可选设备 ID；省略时使用 command.target。"},
+                "channel_id": {"type": "string", "minLength": 1, "description": "录像所属通道 ID。"},
+                "start_time_sec": {"type": "integer", "format": "int64", "minimum": 1, "description": "回放开始 Unix 秒时间戳，必须小于 end_time_sec。"},
+                "end_time_sec": {"type": "integer", "format": "int64", "minimum": 1, "description": "回放结束 Unix 秒时间戳，必须大于 start_time_sec。"},
+                "session_node_id": {"type": "string", "description": "可选 GB28181 Session 节点；省略时由 Guard 调度。"},
+                "token": {"type": "string", "description": "可选媒体订阅 token；省略时 Guard 生成。"},
+                "trans_mode": {"type": "string", "enum": ["udp", "tcp_active", "tcp_passive"], "default": "udp", "description": "GB28181 媒体传输模式。"},
+                "output_type": {"type": "string", "enum": ["flv", "fmp4", "hls"], "description": "回放输出封装；ll_hls 不支持回放。"},
+                "audio_codec": {"type": "string", "enum": ["aac"], "description": "可选音频转码目标。"},
+                "playback_id": {"type": "string", "description": "可选调用方回放会话 ID；省略时由服务生成。"},
+                "stream_profile": {"type": "string", "enum": ["main"], "default": "main", "description": "回放仅支持主码流 main。"}
             }
         },
         "StreamDownloadPayload": {
             "type": "object",
+            "description": "按设备录像时间范围创建有限时长下载流；command.target 填设备 ID。",
             "required": ["channel_id", "start_time_sec", "end_time_sec"],
             "properties": {
-                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
-                "channel_id": {"type": "string", "description": "设备通道标识。"},
-                "start_time_sec": {"type": "integer", "description": "下载开始 Unix 秒时间戳。"},
-                "end_time_sec": {"type": "integer", "description": "下载结束 Unix 秒时间戳。"},
-                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
-                "output_type": {"type": "string", "description": "下载输出封装类型。"}
+                "device_id": {"type": "string", "description": "可选设备 ID；省略时使用 command.target。"},
+                "channel_id": {"type": "string", "minLength": 1, "description": "录像所属通道 ID。"},
+                "start_time_sec": {"type": "integer", "format": "int64", "minimum": 1, "description": "下载开始 Unix 秒时间戳，必须小于 end_time_sec。"},
+                "end_time_sec": {"type": "integer", "format": "int64", "minimum": 1, "description": "下载结束 Unix 秒时间戳，必须大于 start_time_sec。"},
+                "session_node_id": {"type": "string", "description": "可选 GB28181 Session 节点；省略时由 Guard 调度。"},
+                "token": {"type": "string", "description": "可选媒体订阅 token；省略时 Guard 生成。"},
+                "trans_mode": {"type": "string", "enum": ["udp", "tcp_active", "tcp_passive"], "default": "udp", "description": "GB28181 媒体传输模式。"},
+                "output_type": {"type": "string", "enum": ["flv", "fmp4", "hls", "mp4"], "description": "下载输出封装；mp4 仅适用于有限时长下载。省略时使用 Session 默认输出；需要生成 MP4 文件时应显式传 mp4。"},
+                "audio_codec": {"type": "string", "enum": ["aac"], "description": "可选音频转码目标。"},
+                "stream_profile": {"type": "string", "enum": ["main"], "default": "main", "description": "下载仅支持主码流 main。"}
             }
         },
         "DeviceBroadcastPayload": {
             "type": "object",
+            "description": "启动单设备语音广播。成功结果的 result.endpoint 为音频输入地址，调用方按 PCMA/8000Hz/单声道上传 RTP 音频。",
             "required": ["channel_id"],
             "properties": {
-                "device_id": {"type": "string", "description": "设备标识；未提供时使用 command.target。"},
-                "channel_id": {"type": "string", "description": "设备通道标识。"},
-                "session_node_id": {"type": "string", "description": "指定的 GB28181 Session 节点。"},
-                "broadcast_codec": {"type": "string", "description": "广播音频编码。"},
-                "broadcast_sample_rate": {"type": "integer", "description": "广播采样率。"},
-                "broadcast_channel_count": {"type": "integer", "description": "广播声道数。"},
-                "broadcast_frame_duration_ms": {"type": "integer", "description": "广播帧时长。"}
+                "device_id": {"type": "string", "description": "可选设备 ID；省略时使用 command.target。"},
+                "channel_id": {"type": "string", "minLength": 1, "description": "接收广播的通道 ID。"},
+                "session_node_id": {"type": "string", "description": "可选 GB28181 Session 节点；省略时由 Guard 调度。"},
+                "trans_mode": {"type": "string", "enum": ["udp", "tcp_active", "tcp_passive"], "default": "udp", "description": "广播 RTP 传输模式。"},
+                "broadcast_codec": {"type": "string", "enum": ["PCMA"], "default": "PCMA", "description": "当前固定 PCMA（G.711 A-law）。"},
+                "broadcast_sample_rate": {"type": "integer", "const": 8000, "default": 8000, "description": "当前固定 8000 Hz。"},
+                "broadcast_channel_count": {"type": "integer", "const": 1, "default": 1, "description": "当前固定单声道。"},
+                "broadcast_frame_duration_ms": {"type": "integer", "minimum": 10, "maximum": 60, "default": 20, "description": "音频帧时长，10～60 ms；8000×该值必须能被 1000 整除。"}
             }
         },
         "DevicePtzPayload": {
             "type": "object",
+            "description": "云台方向三元组只允许：停止(0,0,0)、八方向组合、变倍(0,0,1|2)。转动与变倍不能同时发送。停止时速度字段忽略。",
             "required": ["channel_id", "leftRight", "upDown", "inOut", "horizonSpeed", "verticalSpeed", "zoomSpeed"],
             "properties": {
-                "channel_id": {"type": "string", "description": "设备通道标识。"},
-                "leftRight": {"type": "integer", "description": "水平控制值。"},
-                "upDown": {"type": "integer", "description": "垂直控制值。"},
-                "inOut": {"type": "integer", "description": "变倍控制值。"},
-                "horizonSpeed": {"type": "integer", "description": "水平速度。"},
-                "verticalSpeed": {"type": "integer", "description": "垂直速度。"},
-                "zoomSpeed": {"type": "integer", "description": "变倍速度。"}
+                "channel_id": {"type": "string", "minLength": 1, "description": "设备通道 ID。"},
+                "leftRight": {"type": "integer", "enum": [0, 1, 2], "description": "0=不水平转动，1=左，2=右。"},
+                "upDown": {"type": "integer", "enum": [0, 1, 2], "description": "0=不垂直转动，1=上，2=下。"},
+                "inOut": {"type": "integer", "enum": [0, 1, 2], "description": "0=不变倍，1=缩小(zoom out)，2=放大(zoom in)。"},
+                "horizonSpeed": {"type": "integer", "minimum": 0, "maximum": 255, "description": "leftRight 非 0 时为 1～255；该轴不参与时传 0。"},
+                "verticalSpeed": {"type": "integer", "minimum": 0, "maximum": 255, "description": "upDown 非 0 时为 1～255；该轴不参与时传 0。斜向取两轴较大速度。"},
+                "zoomSpeed": {"type": "integer", "minimum": 0, "maximum": 15, "description": "inOut 非 0 时为 1～15；不变倍时传 0。"}
             }
         },
         "AiStartPayload": {
             "type": "object",
             "required": ["model"],
             "properties": {
-                "stream_id": {"type": "string", "description": "媒体流标识；未提供时使用 command.target。"},
-                "model": {"type": "string", "description": "AI 模型标识。"}
+                "stream_id": {"type": "string", "description": "可选媒体流 ID；省略时使用 command.target。流必须处于可分析状态。"},
+                "model": {"type": "string", "minLength": 1, "description": "部署环境已注册且目标 AI 节点声明支持的模型标识。"}
             }
         },
-        "AiCancelPayload": {"type": "object", "properties": {}},
+        "AiCancelPayload": {"type": "object", "description": "取消 AI 任务；command.target 填 ai.start 成功结果中的 result.task_id。", "properties": {}},
         "PlaybackTicketRenewPayload": {
             "type": "object",
             "required": ["renew"],
-            "properties": {"renew": {"type": "boolean", "description": "true 续期，false 撤销。"}}
+            "description": "响应 Guard 定向发送的播放票据续期事件；command.target 填事件中的 token。",
+            "properties": {"renew": {"type": "boolean", "description": "true=续期 5 分钟，false=立即撤销；省略无效。"}}
+        },
+        "StreamCommandResult": {
+            "type": "object",
+            "description": "媒体命令结果。start/playback/download/broadcast 成功后使用 endpoint；stop 成功后 state 为 stopping 或 stopped。",
+            "required": ["stream_id", "state"],
+            "properties": {
+                "stream_id": {"type": "string", "description": "后续 stream.stop 的 command.target。"},
+                "device_id": {"type": "string"},
+                "channel_id": {"type": "string"},
+                "endpoint": {"type": "string", "description": "可直接交给播放器或广播上传端的地址；调用方不得记录其中的访问 token。"},
+                "subscription_id": {"type": "string", "description": "媒体订阅标识，用于关联播放生命周期。"},
+                "playback_id": {"type": "string", "description": "回放会话标识；实时点播和下载可为空。"},
+                "requested_stream_profile": {"type": "string", "enum": ["", "main", "sub"]},
+                "effective_stream_profile": {"type": "string", "enum": ["", "main", "sub"]},
+                "stream_profile_verification": {"type": "string", "description": "码流选择确认状态。"},
+                "video_codec": {"type": "string"},
+                "audio_codec": {"type": "string"},
+                "state": {"type": "string", "enum": ["running", "stopping", "stopped", "failed"]}
+            }
+        },
+        "PtzCommandResult": {
+            "type": "object",
+            "required": ["accepted", "command", "speed", "sequence", "count"],
+            "properties": {
+                "accepted": {"type": "boolean", "const": true},
+                "command": {"type": "string", "enum": ["stop", "left_up", "right_up", "left_down", "right_down", "left", "right", "up", "down", "zoom_out", "zoom_in"]},
+                "speed": {"type": "integer", "minimum": 1, "maximum": 255, "description": "Guard 实际提交给 Session 的速度；变倍在设备侧最大按 15 生效。"},
+                "sequence": {"type": "integer", "minimum": 0, "description": "Guard 接受的 PTZ 命令序号。"},
+                "count": {"type": "integer", "minimum": 0, "description": "与 HTTP 响应 count 一致的命令序号兼容字段。"}
+            }
+        },
+        "AiCommandResult": {
+            "type": "object",
+            "required": ["task_id", "model", "stream_id", "state"],
+            "properties": {
+                "task_id": {"type": "string", "description": "后续 ai.cancel 的 command.target。"},
+                "model": {"type": "string"},
+                "stream_id": {"type": "string"},
+                "state": {"type": "string", "enum": ["running", "cancelled", "failed"]}
+            }
+        },
+        "PlaybackTicketRenewResult": {
+            "type": "object",
+            "required": ["renewed", "revoked", "expires_at_ms"],
+            "properties": {
+                "renewed": {"type": "boolean"},
+                "revoked": {"type": "boolean"},
+                "expires_at_ms": {"type": ["integer", "null"], "format": "int64", "description": "续期后的 Unix 毫秒过期时间；撤销时为 null。"}
+            }
         }
+    });
+    let object = schemas
+        .as_object_mut()
+        .expect("MQTT component schemas must be an object");
+    for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
+        let payload_name = mqtt_payload_schema_name(action);
+        let result_name = mqtt_result_schema_name(action);
+        if !object.contains_key(&payload_name) {
+            object.insert(payload_name, mqtt_payload_schema_from_http(action));
+        }
+        if !object.contains_key(&result_name) {
+            object.insert(result_name, mqtt_result_schema_from_http(action));
+        }
+    }
+    schemas
+}
+
+fn mqtt_payload_schema_name(action: &str) -> String {
+    match action {
+        "stream.start" => "StreamStartPayload".to_string(),
+        "stream.stop" => "StreamStopPayload".to_string(),
+        "stream.playback" => "StreamPlaybackPayload".to_string(),
+        "stream.download" => "StreamDownloadPayload".to_string(),
+        "device.broadcast" => "DeviceBroadcastPayload".to_string(),
+        "device.ptz" => "DevicePtzPayload".to_string(),
+        "ai.start" => "AiStartPayload".to_string(),
+        "ai.cancel" => "AiCancelPayload".to_string(),
+        "playback.ticket.renew" => "PlaybackTicketRenewPayload".to_string(),
+        _ => format!("MqttPayload_{}", action.replace('.', "_")),
+    }
+}
+
+fn mqtt_result_schema_name(action: &str) -> String {
+    match action {
+        "stream.start" | "stream.stop" | "stream.playback" | "stream.download"
+        | "device.broadcast" => "StreamCommandResult".to_string(),
+        "device.ptz" => "PtzCommandResult".to_string(),
+        "ai.start" | "ai.cancel" => "AiCommandResult".to_string(),
+        "playback.ticket.renew" => "PlaybackTicketRenewResult".to_string(),
+        _ => format!("MqttResult_{}", action.replace('.', "_")),
+    }
+}
+
+fn http_contract_for_mqtt_action(action: &str) -> Option<(&'static str, &'static str)> {
+    OPEN_BUSINESS_OPERATIONS.iter().find_map(|(path, methods)| {
+        methods.iter().find_map(|method| {
+            (crate::integration::model::mqtt_action_for_http(method, path) == Some(action))
+                .then_some((*method, *path))
+        })
     })
+}
+
+fn mqtt_payload_schema_from_http(action: &str) -> base::serde_json::Value {
+    let Some((method, path)) = http_contract_for_mqtt_action(action) else {
+        return base::serde_json::json!({
+            "type": "object",
+            "description": format!("{action} 请求参数。"),
+            "properties": {}
+        });
+    };
+    let mut properties = base::serde_json::Map::new();
+    let mut required = Vec::<String>::new();
+    for name in path
+        .split('{')
+        .skip(1)
+        .filter_map(|part| part.split_once('}').map(|(name, _)| name))
+    {
+        properties.insert(name.to_string(), openapi_request_field_schema(path, name));
+        if name != mqtt_target_field(action) {
+            required.push(name.to_string());
+        }
+    }
+    if method == "get" {
+        for (name, is_required) in openapi_query_fields(path) {
+            properties.insert(
+                (*name).to_string(),
+                openapi_request_field_schema(path, name),
+            );
+            if *is_required {
+                required.push((*name).to_string());
+            }
+        }
+    } else if let Some(body) = openapi_request_body(method, path) {
+        let schema = &body["content"]["application/json"]["schema"];
+        if let Some(body_properties) = schema
+            .get("properties")
+            .and_then(base::serde_json::Value::as_object)
+        {
+            properties.extend(
+                body_properties
+                    .iter()
+                    .map(|(name, property)| (name.clone(), property.clone())),
+            );
+        }
+        if let Some(body_required) = schema
+            .get("required")
+            .and_then(base::serde_json::Value::as_array)
+        {
+            required.extend(
+                body_required
+                    .iter()
+                    .filter_map(base::serde_json::Value::as_str)
+                    .map(str::to_string),
+            );
+        }
+    }
+    required.sort();
+    required.dedup();
+    base::serde_json::json!({
+        "type": "object",
+        "description": format!("{action} 参数；等价 HTTP：{} /openapi/v1{path}。路径字段在 MQTT 中放入 payload，主资源也可使用 command.target。", method.to_uppercase()),
+        "required": required,
+        "properties": properties,
+        "additionalProperties": false
+    })
+}
+
+fn mqtt_result_schema_from_http(action: &str) -> base::serde_json::Value {
+    if action == "gb.device.delete" {
+        return openapi_response_object_schema(
+            "/gb28181/devices/{device_id}/delete",
+            "删除 GB28181 设备",
+            &["deleted", "device_id"],
+        );
+    }
+    if action == "stream.output.create" {
+        return openapi_response_object_schema(
+            "/streams/{stream_id}/outputs",
+            "创建媒体输出的 MQTT 业务终态",
+            &["output_id", "stream_id", "output_type", "endpoint", "state"],
+        );
+    }
+    let Some((method, path)) = http_contract_for_mqtt_action(action) else {
+        return base::serde_json::json!({"type": "object", "properties": {}});
+    };
+    openapi_success_schema(method, path, openapi_operation_summary(method, path))
+}
+
+fn mqtt_payload_refs() -> Vec<base::serde_json::Value> {
+    crate::integration::model::MQTT_COMMAND_ACTIONS
+        .iter()
+        .map(|action| {
+            base::serde_json::json!({
+                "$ref": format!("#/components/schemas/{}", mqtt_payload_schema_name(action))
+            })
+        })
+        .collect()
+}
+
+fn mqtt_result_refs() -> Vec<base::serde_json::Value> {
+    let mut names = crate::integration::model::MQTT_COMMAND_ACTIONS
+        .iter()
+        .map(|action| mqtt_result_schema_name(action))
+        .collect::<Vec<_>>();
+    names.sort();
+    names.dedup();
+    let mut refs = names
+        .into_iter()
+        .map(|name| base::serde_json::json!({"$ref": format!("#/components/schemas/{name}")}))
+        .collect::<Vec<_>>();
+    refs.push(base::serde_json::json!({"type": "null"}));
+    refs
+}
+
+fn mqtt_command_examples() -> base::serde_json::Value {
+    let mut examples = base::serde_json::json!([
+        {"name": "stream.start", "payload": {"integration_id": "partner-a", "command_id": "cmd-live-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.start", "target": "device-001", "payload": {"channel_id": "channel-001", "trans_mode": "udp", "output_type": "flv", "audio_codec": "aac", "stream_profile": "main"}}},
+        {"name": "stream.stop", "payload": {"integration_id": "partner-a", "command_id": "cmd-stop-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.stop", "target": "stream-001", "payload": {}}},
+        {"name": "stream.playback", "payload": {"integration_id": "partner-a", "command_id": "cmd-playback-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.playback", "target": "device-001", "payload": {"channel_id": "channel-001", "start_time_sec": 1699996400, "end_time_sec": 1700000000, "trans_mode": "tcp_active", "output_type": "hls", "stream_profile": "main"}}},
+        {"name": "stream.download", "payload": {"integration_id": "partner-a", "command_id": "cmd-download-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.download", "target": "device-001", "payload": {"channel_id": "channel-001", "start_time_sec": 1699996400, "end_time_sec": 1700000000, "output_type": "mp4", "stream_profile": "main"}}},
+        {"name": "device.broadcast", "payload": {"integration_id": "partner-a", "command_id": "cmd-broadcast-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "device.broadcast", "target": "device-001", "payload": {"channel_id": "channel-001", "broadcast_codec": "PCMA", "broadcast_sample_rate": 8000, "broadcast_channel_count": 1, "broadcast_frame_duration_ms": 20}}},
+        {"name": "device.ptz", "payload": {"integration_id": "partner-a", "command_id": "cmd-ptz-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "device.ptz", "target": "device-001", "payload": {"channel_id": "channel-001", "leftRight": 1, "upDown": 0, "inOut": 0, "horizonSpeed": 128, "verticalSpeed": 0, "zoomSpeed": 0}}},
+        {"name": "ai.start", "payload": {"integration_id": "partner-a", "command_id": "cmd-ai-start-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "ai.start", "target": "stream-001", "payload": {"model": "vehicle"}}},
+        {"name": "ai.cancel", "payload": {"integration_id": "partner-a", "command_id": "cmd-ai-cancel-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "ai.cancel", "target": "ai-task-001", "payload": {}}},
+        {"name": "playback.ticket.renew", "payload": {"integration_id": "partner-a", "command_id": "cmd-renew-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "playback.ticket.renew", "target": "ticket-token", "payload": {"renew": true}}}
+    ]);
+    let schemas = mqtt_action_payload_schemas();
+    let items = examples
+        .as_array_mut()
+        .expect("MQTT command examples must be an array");
+    for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
+        if items.iter().any(|item| item["name"] == **action) {
+            continue;
+        }
+        let payload_schema = &schemas[&mqtt_payload_schema_name(action)];
+        items.push(base::serde_json::json!({
+            "name": action,
+            "payload": mqtt_command_example(action, schema_example(payload_schema))
+        }));
+    }
+    examples
+}
+
+fn mqtt_command_example(action: &str, payload: base::serde_json::Value) -> base::serde_json::Value {
+    base::serde_json::json!({
+        "integration_id": "partner-a",
+        "command_id": format!("cmd-{}-001", action.replace('.', "-")),
+        "issued_at_ms": 1700000000000_i64,
+        "expires_at_ms": 1700000060000_i64,
+        "action": action,
+        "target": mqtt_target_example(action),
+        "payload": payload
+    })
+}
+
+fn mqtt_target_example(action: &str) -> &'static str {
+    match mqtt_target_field(action) {
+        "operation_id" => "operation-001",
+        "output_id" => "output-001",
+        "stream_id" => "stream-001",
+        "playback_id" => "playback-001",
+        "token" => "ticket-token",
+        "task_id" => "task-001",
+        "broadcast_id" => "broadcast-001",
+        "leg_id" => "broadcast-leg-001",
+        "image_id" => "image-001",
+        "channel_id" => "channel-001",
+        "resource_id" => "resource-001",
+        "node_id" => "session-001",
+        "device_id" => "device-001",
+        _ => "query",
+    }
+}
+
+fn mqtt_target_field(action: &str) -> &'static str {
+    match action {
+        "media.operation.get" | "media.operation.continue" | "media.operation.cancel" => {
+            "operation_id"
+        }
+        "stream.output.close" => "output_id",
+        "stream.stop"
+        | "stream.release"
+        | "stream.speed.set"
+        | "stream.output.list"
+        | "stream.output.create"
+        | "gb.stream.management"
+        | "gb.stream.stop"
+        | "ai.start" => "stream_id",
+        "playback.seek" | "playback.speed.set" | "playback.state.set" => "playback_id",
+        "playback.ticket.renew" => "token",
+        "cloud_recording.get"
+        | "cloud_recording.stop"
+        | "cloud_recording.delete"
+        | "cloud_recording.access"
+        | "ai.cancel" => "task_id",
+        "broadcast.get" | "broadcast.stop_all" => "broadcast_id",
+        "broadcast.stop_target" => "leg_id",
+        "gb.image.access" | "gb.image.cover" => "image_id",
+        "gb.channel.get"
+        | "gb.channel.update"
+        | "gb.image.list"
+        | "gb.image.snapshot"
+        | "gb.record.list"
+        | "gb.record.query"
+        | "cloud_recording.list"
+        | "cloud_recording.create" => "channel_id",
+        "gb.resource.confirm" | "gb.resource.reset" => "resource_id",
+        "gb.session_config.get" => "node_id",
+        "gb.device.create" | "gb.device.get" | "gb.device.update" | "gb.device.delete"
+        | "gb.channel.list" | "gb.resource.list" | "stream.start" | "stream.playback"
+        | "stream.download" | "device.broadcast" | "device.ptz" => "device_id",
+        _ => "query（固定占位值）",
+    }
+}
+
+fn mqtt_action_usage_contract() -> base::serde_json::Value {
+    let mut usage = base::serde_json::Map::new();
+    for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
+        let http = OPEN_BUSINESS_OPERATIONS
+            .iter()
+            .flat_map(|(path, methods)| methods.iter().map(move |method| (*method, *path)))
+            .filter(|(method, path)| {
+                crate::integration::model::mqtt_action_for_http(method, path) == Some(*action)
+            })
+            .map(|(method, path)| format!("{} /openapi/v1{path}", method.to_uppercase()))
+            .collect::<Vec<_>>();
+        usage.insert(
+            (*action).to_string(),
+            base::serde_json::json!({
+                "target": mqtt_target_field(action),
+                "required_scope": crate::integration::model::mqtt_action_scope(action),
+                "payload_schema": mqtt_payload_schema_name(action),
+                "result_schema": mqtt_result_schema_name(action),
+                "http_equivalents": http
+            }),
+        );
+    }
+    usage.into()
+}
+
+fn mqtt_action_examples_contract() -> base::serde_json::Value {
+    let schemas = mqtt_action_payload_schemas();
+    let mut examples = base::serde_json::Map::new();
+    for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
+        let payload = schema_example(&schemas[&mqtt_payload_schema_name(action)]);
+        let result = schema_example(&schemas[&mqtt_result_schema_name(action)]);
+        let command = mqtt_command_example(action, payload);
+        let command_id = command["command_id"].clone();
+        examples.insert(
+            (*action).to_string(),
+            base::serde_json::json!({
+                "request": command,
+                "success": {
+                    "schema_version": "v1",
+                    "integration_id": "partner-a",
+                    "command_id": command_id,
+                    "operation_id": command_id,
+                    "action": action,
+                    "state": "succeeded",
+                    "error_code": null,
+                    "result": result,
+                    "occurred_at_ms": 1700000001000_i64
+                },
+                "failure": {
+                    "schema_version": "v1",
+                    "integration_id": "partner-a",
+                    "command_id": command_id,
+                    "operation_id": command_id,
+                    "action": action,
+                    "state": "failed",
+                    "error_code": "invalid_command",
+                    "result": null,
+                    "occurred_at_ms": 1700000001000_i64
+                }
+            }),
+        );
+    }
+    examples.into()
 }
 
 async fn asyncapi_document(
@@ -1591,16 +3071,36 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
             "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "应用配置 protocol_version=v3 时使用 MQTT V3.1.1。"},
             "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "应用配置 protocol_version=v5 时使用 MQTT V5.0。"}
         },
+        "operations": {
+            "receiveIntegrationCommand": {
+                "action": "receive",
+                "channel": {"$ref": "#/channels/commands"},
+                "summary": "Guard 接收第三方命令",
+                "description": "第三方以 QoS 1、retain=false 发布。先订阅结果 Topic，再发布命令；PUBACK 仅表示 Broker 收到，不表示业务成功。"
+            },
+            "sendCommandResult": {
+                "action": "send",
+                "channel": {"$ref": "#/channels/commandResults"},
+                "summary": "Guard 发布命令终态",
+                "description": "调用方按 command_id 关联结果。state=succeeded 时读取 result；state=failed 时读取 error_code。"
+            },
+            "sendIntegrationEvent": {
+                "action": "send",
+                "channel": {"$ref": "#/channels/events"},
+                "summary": "Guard 发布业务事件",
+                "description": "仅发布应用已配置 mapping 的事件；消费方按 event_id 幂等。"
+            }
+        },
         "channels": {
             "commands": {
                 "address": "gmv/commands/{integration_id}",
-                "description": "第三方发布命令，Guard 订阅并执行。",
+                "description": "第三方发布命令，Guard 订阅并执行。必须使用应用配置中的精确 command_topic；推荐 QoS 1、retain=false。",
                 "parameters": {"integration_id": {"$ref": "#/components/parameters/integrationId"}},
                 "messages": {"command": {"$ref": "#/components/messages/IntegrationCommand"}}
             },
             "commandResults": {
                 "address": "gmv/command-results/{integration_id}",
-                "description": "Guard 发布命令受理结果，第三方订阅。",
+                "description": "Guard 发布命令执行终态，第三方必须在发命令前订阅应用配置中的精确 result_topic。媒体成功结果含播放/上传 endpoint。",
                 "parameters": {"integration_id": {"$ref": "#/components/parameters/integrationId"}},
                 "messages": {"result": {"$ref": "#/components/messages/CommandResult"}}
             },
@@ -1634,31 +3134,17 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
                         "required": ["integration_id", "command_id", "issued_at_ms", "expires_at_ms", "action", "target", "payload"],
                         "properties": {
                             "integration_id": {"type": "string", "description": "第三方应用唯一标识，必须与 Topic 一致。"},
-                            "command_id": {"type": "string", "description": "第三方生成的全局唯一幂等命令标识。"},
-                            "issued_at_ms": {"type": "integer", "description": "命令签发时间，Unix 毫秒时间戳。"},
-                            "expires_at_ms": {"type": "integer", "description": "命令过期时间，Unix 毫秒时间戳。"},
+                            "command_id": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\\s]+$", "description": "第三方生成的全局唯一幂等命令标识。同一业务重试必须复用；Guard 在持久化窗口内不会重复执行。"},
+                            "issued_at_ms": {"type": "integer", "format": "int64", "description": "命令签发时间，Unix 毫秒时间戳。应使用调用方当前时间。"},
+                            "expires_at_ms": {"type": "integer", "format": "int64", "description": "命令过期时间，必须不早于 issued_at_ms，且二者差值不超过 300000 ms；Guard 收到时已过期则拒绝。"},
                             "action": {"type": "string", "enum": crate::integration::model::MQTT_COMMAND_ACTIONS, "description": "应用已获授权的命令动作。"},
-                            "target": {"type": "string", "description": "命令目标设备、通道、流或任务标识。"},
+                            "target": {"type": "string", "minLength": 1, "description": "action 的主目标：媒体启动/PTZ 通常为 device_id；stream.stop 为 stream_id；ai.cancel 为 task_id；票据续期为 token。"},
                             "payload": {
-                                "description": "与 action 对应的 JSON 业务参数。",
-                                "oneOf": [
-                                    {"$ref": "#/components/schemas/StreamStartPayload"},
-                                    {"$ref": "#/components/schemas/StreamStopPayload"},
-                                    {"$ref": "#/components/schemas/StreamPlaybackPayload"},
-                                    {"$ref": "#/components/schemas/StreamDownloadPayload"},
-                                    {"$ref": "#/components/schemas/DeviceBroadcastPayload"},
-                                    {"$ref": "#/components/schemas/DevicePtzPayload"},
-                                    {"$ref": "#/components/schemas/AiStartPayload"},
-                                    {"$ref": "#/components/schemas/AiCancelPayload"},
-                                    {"$ref": "#/components/schemas/PlaybackTicketRenewPayload"}
-                                ]
+                                "description": "必须与 action 对应；字段名、枚举、范围、默认值和联动规则见对应 Payload schema。",
+                                "oneOf": mqtt_payload_refs()
                             }
                         },
-                        "examples": [
-                            {"name": "stream.start", "payload": {"integration_id": "partner-a", "command_id": "cmd-001", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "stream.start", "target": "device-001", "payload": {"channel_id": "channel-001", "stream_profile": "main"}}},
-                            {"name": "device.ptz", "payload": {"integration_id": "partner-a", "command_id": "cmd-002", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "device.ptz", "target": "device-001", "payload": {"channel_id": "channel-001", "leftRight": 1, "upDown": 0, "inOut": 0, "horizonSpeed": 128, "verticalSpeed": 128, "zoomSpeed": 0}}},
-                            {"name": "playback.ticket.renew", "payload": {"integration_id": "partner-a", "command_id": "cmd-003", "issued_at_ms": 1700000000000_i64, "expires_at_ms": 1700000060000_i64, "action": "playback.ticket.renew", "target": "ticket-token", "payload": {"renew": true}}}
-                        ]
+                        "examples": mqtt_command_examples()
                     }
                 },
                 "CommandResult": {
@@ -1668,17 +3154,25 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
                     "contentType": "application/json",
                     "payload": {
                         "type": "object",
-                        "required": ["schema_version", "integration_id", "command_id", "operation_id", "state", "occurred_at_ms"],
+                        "required": ["schema_version", "integration_id", "command_id", "operation_id", "action", "state", "result", "occurred_at_ms"],
                         "properties": {
                             "schema_version": {"type": "string", "const": "v1", "description": "命令结果 schema 版本。"},
                             "integration_id": {"type": "string", "description": "第三方应用标识。"},
                             "command_id": {"type": "string", "description": "对应第三方命令的幂等标识。"},
                             "operation_id": {"type": "string", "description": "Guard 内部业务操作标识。"},
+                            "action": {"type": "string", "enum": crate::integration::model::MQTT_COMMAND_ACTIONS, "description": "该结果对应的命令动作；调用方仍应以 command_id 为主键关联。"},
                             "state": {"type": "string", "enum": ["succeeded", "failed"], "description": "命令执行终态。"},
                             "error_code": {"type": ["string", "null"], "description": "失败时的稳定错误代码；成功时为 null。"},
+                            "result": {
+                                "description": "成功时为 action 对应的业务结果；失败时为 null。媒体启动结果至少包含后续停止所需的 stream_id，并在可播放/上传时包含 endpoint。",
+                                "oneOf": mqtt_result_refs()
+                            },
                             "occurred_at_ms": {"type": "integer", "description": "结果产生的 Unix 毫秒时间戳。"}
                         },
-                        "examples": [{"schema_version": "v1", "integration_id": "partner-a", "command_id": "cmd-001", "operation_id": "cmd-001", "state": "succeeded", "error_code": null, "occurred_at_ms": 1700000001000_i64}]
+                        "examples": [
+                            {"name": "stream.start succeeded", "payload": {"schema_version": "v1", "integration_id": "partner-a", "command_id": "cmd-001", "operation_id": "cmd-001", "action": "stream.start", "state": "succeeded", "error_code": null, "result": {"stream_id": "stream-001", "device_id": "device-001", "channel_id": "channel-001", "endpoint": "https://media.example/live/stream-001.flv?token=REDACTED", "subscription_id": "subscription-001", "state": "running"}, "occurred_at_ms": 1700000001000_i64}},
+                            {"name": "command failed", "payload": {"schema_version": "v1", "integration_id": "partner-a", "command_id": "cmd-002", "operation_id": "cmd-002", "action": "stream.playback", "state": "failed", "error_code": "invalid_command", "result": null, "occurred_at_ms": 1700000001000_i64}}
+                        ]
                     }
                 },
                 "EventEnvelope": {
@@ -1725,7 +3219,24 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
             "retain": false,
             "payload_compatible": true,
             "description": "应用选择的协议版本必须与 Guard 部署级 MQTT runtime 一致；两个版本使用相同 JSON Payload。"
-        }
+        },
+        "x-gmv-mqtt-workflow": {
+            "qos": 1,
+            "retain": false,
+            "steps": [
+                "使用交付的 Broker TLS/账号连接，并确认协议版本与 Guard runtime 一致",
+                "先订阅应用配置中的精确 result_topic；如需事件，再订阅获授权的 event topic",
+                "生成全局唯一 command_id，issued_at_ms 使用当前 Unix 毫秒，expires_at_ms 与其差值不得超过 300000",
+                "向精确 command_topic 发布 UTF-8 JSON；PUBACK 只表示 Broker 收到",
+                "按 command_id 等待 result_topic 终态；succeeded 读取 result，failed 读取 error_code",
+                "媒体命令使用 result.endpoint，保存 result.stream_id；业务结束后用 stream.stop 主动释放"
+            ],
+            "retry": "网络超时或结果暂未到达时，重发同一业务命令必须复用原 command_id；不得用新 command_id 盲目重试。",
+            "security": "endpoint 可能包含访问 token，应作为凭据处理，不写日志、不拼入错误信息、不转发给未授权终端。"
+        },
+        "x-gmv-action-usage": mqtt_action_usage_contract(),
+        "x-gmv-action-examples": mqtt_action_examples_contract(),
+        "x-gmv-http-mqtt-capabilities": integration_capabilities_contract()
     })
 }
 
@@ -1742,7 +3253,8 @@ pub fn api_manifest_contract() -> base::serde_json::Value {
         "version": env!("CARGO_PKG_VERSION"),
         "http": {"base_path": "/openapi/v1", "methods": ["GET", "POST"], "auth": "GMV-HMAC-SHA256-V1", "request_id_header": REQUEST_ID_HEADER, "idempotency_window_ms": HTTP_IDEMPOTENCY_TTL_MS},
         "mqtt": {"protocol_versions": ["v3", "v5"], "default": "v3", "qos": 1, "command_actions": crate::integration::model::MQTT_COMMAND_ACTIONS},
-        "scopes": ["*", "devices:read", "devices:write", "devices:control", "images:read", "audio:control", "streams:read", "streams:write", "streams:preview", "streams:playback", "recordings:read", "recordings:write", "events:read", "ai:read", "ai:write", "nodes:read", "leases:read", "runtime:read"]
+        "scopes": ["*", "devices:read", "devices:write", "devices:control", "images:read", "audio:control", "streams:read", "streams:write", "streams:preview", "streams:playback", "recordings:read", "recordings:write", "events:read", "ai:read", "ai:write", "nodes:read", "leases:read", "runtime:read"],
+        "capabilities": integration_capabilities_contract()
     })
 }
 
@@ -2467,7 +3979,7 @@ async fn dashboard(
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct NodeResponse {
+pub(crate) struct NodeResponse {
     node_id: String,
     instance_id: String,
     kind: String,
@@ -2629,7 +4141,7 @@ async fn nodes(
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct LeaseResponse {
+pub(crate) struct LeaseResponse {
     lease_id: String,
     route_id: String,
     resource_id: String,
@@ -4286,7 +5798,7 @@ struct StartAiRequest {
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
-struct GbDeviceRequest {
+pub(crate) struct GbDeviceRequest {
     #[serde(default)]
     device_id: String,
     #[serde(default)]
@@ -4430,7 +5942,7 @@ struct GbDeviceDeleteRequest {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbDeviceResponse {
+pub(crate) struct GbDeviceResponse {
     device_id: String,
     session_node_id: String,
     domain_id: String,
@@ -4465,7 +5977,7 @@ struct GbDeviceResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbDevicePageResponse {
+pub(crate) struct GbDevicePageResponse {
     items: Vec<GbDeviceResponse>,
     total: u64,
     page: u32,
@@ -4474,7 +5986,7 @@ struct GbDevicePageResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelResponse {
+pub(crate) struct GbChannelResponse {
     device_id: String,
     channel_id: String,
     name: String,
@@ -4509,7 +6021,7 @@ struct GbChannelResponse {
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelRequest {
+pub(crate) struct GbChannelRequest {
     #[serde(default)]
     alias_name: String,
     #[serde(default)]
@@ -4536,7 +6048,7 @@ struct GbChannelRequest {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelImageResponse {
+pub(crate) struct GbChannelImageResponse {
     image_id: String,
     device_id: String,
     channel_id: String,
@@ -4551,7 +6063,7 @@ struct GbChannelImageResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelImagePageResponse {
+pub(crate) struct GbChannelImagePageResponse {
     items: Vec<GbChannelImageResponse>,
     total: u64,
     page: u32,
@@ -4593,7 +6105,7 @@ struct GbChannelCoverRequest {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelImageAccessResponse {
+pub(crate) struct GbChannelImageAccessResponse {
     url: String,
     expires_at_ms: i64,
     content_type: String,
@@ -4617,7 +6129,7 @@ struct GbResourceConfirmationResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbResourceResponse {
+pub(crate) struct GbResourceResponse {
     device_id: String,
     resource_id: String,
     name: String,
@@ -4659,7 +6171,7 @@ struct ResetGbResourceConfirmationBody {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbSessionConfigResponse {
+pub(crate) struct GbSessionConfigResponse {
     domain: String,
     domain_id: String,
     wan_ip: String,
@@ -4733,7 +6245,7 @@ struct CloudRecordingAccessRequest {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct CloudRecordingSummary {
+pub(crate) struct CloudRecordingSummary {
     task_id: String,
     request_id: String,
     session_node_id: String,
@@ -4765,7 +6277,7 @@ struct CloudRecordingSummary {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct CloudRecordingListResponse {
+pub(crate) struct CloudRecordingListResponse {
     items: Vec<CloudRecordingSummary>,
     total: u64,
     page: u32,
@@ -4774,7 +6286,7 @@ struct CloudRecordingListResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct CloudRecordingAccessResponse {
+pub(crate) struct CloudRecordingAccessResponse {
     url: String,
     expires_at_ms: i64,
     content_type: String,
@@ -4920,7 +6432,7 @@ struct GbSnapshotRequest {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbSnapshotResponse {
+pub(crate) struct GbSnapshotResponse {
     session_id: String,
 }
 
@@ -4964,7 +6476,7 @@ struct GbRecordSegmentResponse {
 
 #[derive(Debug, base::serde::Serialize)]
 #[serde(crate = "base::serde")]
-struct GbChannelRecordsResponse {
+pub(crate) struct GbChannelRecordsResponse {
     current_batch: Option<GbRecordQueryBatchResponse>,
     attempt_batch: Option<GbRecordQueryBatchResponse>,
     segments: Vec<GbRecordSegmentResponse>,
@@ -4983,7 +6495,7 @@ fn empty_to_none(value: String) -> Option<String> {
     if value.is_empty() { None } else { Some(value) }
 }
 
-fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
+pub(crate) fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
     RpcGbDevice {
         device_id: request.device_id,
         session_node_id: request.session_node_id,
@@ -5018,7 +6530,7 @@ fn gb_device_request(request: GbDeviceRequest) -> RpcGbDevice {
     }
 }
 
-fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
+pub(crate) fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
     GbDeviceResponse {
         device_id: record.device_id,
         session_node_id: record.session_node_id,
@@ -5053,7 +6565,7 @@ fn gb_device_response(record: RpcGbDevice) -> GbDeviceResponse {
     }
 }
 
-fn gb_device_page_response(page: GbDevicePage) -> GbDevicePageResponse {
+pub(crate) fn gb_device_page_response(page: GbDevicePage) -> GbDevicePageResponse {
     GbDevicePageResponse {
         items: page.devices.into_iter().map(gb_device_response).collect(),
         total: page.total,
@@ -5062,7 +6574,7 @@ fn gb_device_page_response(page: GbDevicePage) -> GbDevicePageResponse {
     }
 }
 
-fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
+pub(crate) fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
     GbChannelResponse {
         device_id: record.device_id,
         channel_id: record.channel_id,
@@ -5097,7 +6609,9 @@ fn gb_channel_response(record: RpcGbChannel) -> GbChannelResponse {
     }
 }
 
-fn gb_channel_records_response(record: RpcGbChannelRecordsResponse) -> GbChannelRecordsResponse {
+pub(crate) fn gb_channel_records_response(
+    record: RpcGbChannelRecordsResponse,
+) -> GbChannelRecordsResponse {
     GbChannelRecordsResponse {
         current_batch: record.current_batch.map(gb_record_batch_response),
         attempt_batch: record.attempt_batch.map(gb_record_batch_response),
@@ -5143,7 +6657,7 @@ fn gb_record_segment_response(record: RpcGbRecordSegment) -> GbRecordSegmentResp
     }
 }
 
-fn gb_resource_response(record: RpcGbResource) -> GbResourceResponse {
+pub(crate) fn gb_resource_response(record: RpcGbResource) -> GbResourceResponse {
     GbResourceResponse {
         device_id: record.device_id,
         resource_id: record.resource_id,
@@ -5180,7 +6694,7 @@ fn gb_resource_response(record: RpcGbResource) -> GbResourceResponse {
     }
 }
 
-fn gb_channel_request(
+pub(crate) fn gb_channel_request(
     device_id: String,
     channel_id: String,
     request: GbChannelRequest,
@@ -5244,7 +6758,9 @@ fn log_preview_request(path: &str, device_id: &str, request: &PreviewRequest) {
     );
 }
 
-fn gb_session_config_response(record: GbSessionConfigSummary) -> GbSessionConfigResponse {
+pub(crate) fn gb_session_config_response(
+    record: GbSessionConfigSummary,
+) -> GbSessionConfigResponse {
     GbSessionConfigResponse {
         domain: record.domain,
         domain_id: record.domain_id,
@@ -5252,7 +6768,7 @@ fn gb_session_config_response(record: GbSessionConfigSummary) -> GbSessionConfig
         wan_port: record.wan_port,
     }
 }
-fn gb_channel_image_response(record: RpcGbChannelImage) -> GbChannelImageResponse {
+pub(crate) fn gb_channel_image_response(record: RpcGbChannelImage) -> GbChannelImageResponse {
     GbChannelImageResponse {
         image_id: record.image_id,
         device_id: record.device_id,
@@ -5958,7 +7474,9 @@ async fn issue_cloud_recording_access(
     }))
 }
 
-fn cloud_recording_summary(recording: RpcCloudRecordingSummary) -> CloudRecordingSummary {
+pub(crate) fn cloud_recording_summary(
+    recording: RpcCloudRecordingSummary,
+) -> CloudRecordingSummary {
     let status = CloudRecordingStatus::try_from(recording.status)
         .map(|status| match status {
             CloudRecordingStatus::Starting => "STARTING",
@@ -7775,7 +9293,10 @@ async fn runtime_status(
 }
 
 fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
-    let store = state.api.store();
+    stream_summaries(&state.api.store())
+}
+
+pub(crate) fn stream_summaries(store: &InMemoryGuardStore) -> Vec<StreamSummary> {
     let leases = store.leases();
     store
         .routes()
@@ -7834,7 +9355,10 @@ fn real_streams(state: &HttpState) -> Vec<StreamSummary> {
 }
 
 fn real_ai_tasks(state: &HttpState) -> Vec<AiTaskSummary> {
-    let store = state.api.store();
+    ai_task_summaries(&state.api.store())
+}
+
+pub(crate) fn ai_task_summaries(store: &InMemoryGuardStore) -> Vec<AiTaskSummary> {
     let leases = store.leases();
     store
         .routes()
@@ -8217,11 +9741,12 @@ fn retryable_for_guard_error(error: &GuardError) -> bool {
 mod tests {
     use super::{
         GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS, api_docs_contract_page,
-        endpoint_with_playback_token, gb_preview_request, media_startup_timeout_ms,
-        mqtt_action_payload_schemas, node_connection_label, node_health_label,
-        node_scheduling_label, open_business_scope, openapi_operation_parameters,
-        openapi_operation_summary, openapi_request_body, openapi_responses, openapi_success_schema,
-        playback_control_owner_matches, playback_token_from_endpoint,
+        asyncapi_contract, endpoint_with_playback_token, gb_preview_request,
+        media_startup_timeout_ms, mqtt_action_payload_schemas, node_connection_label,
+        node_health_label, node_scheduling_label, open_business_scope, openapi_contract,
+        openapi_operation_parameters, openapi_operation_summary, openapi_request_body,
+        openapi_responses, openapi_success_schema, playback_control_owner_matches,
+        playback_token_from_endpoint,
     };
     use crate::auth::Role;
     use crate::core::{ConnectionState, HealthState, SchedulingState};
@@ -8477,12 +10002,154 @@ mod tests {
             heartbeat["content"]["application/json"]["schema"]["properties"]["items"]["items"]["type"],
             "object"
         );
+        let mqtt_schemas = mqtt_action_payload_schemas();
+        for schema_name in [
+            "StreamStartPayload",
+            "StreamStopPayload",
+            "StreamPlaybackPayload",
+            "StreamDownloadPayload",
+            "DeviceBroadcastPayload",
+            "DevicePtzPayload",
+            "AiStartPayload",
+            "AiCancelPayload",
+            "PlaybackTicketRenewPayload",
+        ] {
+            assert!(
+                mqtt_schemas.get(schema_name).is_some(),
+                "missing {schema_name}"
+            );
+        }
         assert_eq!(
-            mqtt_action_payload_schemas()
+            preview["content"]["application/json"]["schema"]["properties"]["trans_mode"]["enum"],
+            base::serde_json::json!(["udp", "tcp_active", "tcp_passive"])
+        );
+        assert_eq!(
+            preview["content"]["application/json"]["schema"]["properties"]["stream_profile"]["enum"],
+            base::serde_json::json!(["main", "sub"])
+        );
+        assert_eq!(
+            mqtt_schemas["DevicePtzPayload"]["properties"]["zoomSpeed"]["maximum"],
+            15
+        );
+        let asyncapi = asyncapi_contract();
+        assert_eq!(
+            asyncapi["components"]["messages"]["CommandResult"]["payload"]["properties"]["action"]
+                ["enum"],
+            base::serde_json::json!(crate::integration::model::MQTT_COMMAND_ACTIONS)
+        );
+        assert!(
+            asyncapi["components"]["messages"]["CommandResult"]["payload"]["properties"]
+                .get("result")
+                .is_some()
+        );
+        assert_eq!(
+            asyncapi["x-gmv-action-usage"]
                 .as_object()
                 .map(base::serde_json::Map::len),
             Some(crate::integration::model::MQTT_COMMAND_ACTIONS.len())
         );
+    }
+
+    #[test]
+    fn phase9_contract_keeps_http_mqtt_capabilities_and_examples_complete() {
+        let openapi = openapi_contract();
+        let asyncapi = asyncapi_contract();
+        let action_usage = asyncapi["x-gmv-action-usage"].as_object().unwrap();
+        let action_examples = asyncapi["x-gmv-action-examples"].as_object().unwrap();
+        let mut operation_count = 0;
+        let mut special_count = 0;
+
+        for (path, methods) in OPEN_BUSINESS_OPERATIONS {
+            for method in *methods {
+                operation_count += 1;
+                let http_method = if *method == "get" {
+                    Method::GET
+                } else {
+                    Method::POST
+                };
+                let scope = open_business_scope(&http_method, path).unwrap();
+                let action = crate::integration::model::mqtt_action_for_http(method, path);
+                let special = crate::integration::model::mqtt_special_for_http(method, path);
+                assert_ne!(
+                    action.is_some(),
+                    special.is_some(),
+                    "HTTP operation needs exactly one MQTT mapping: {method} {path}"
+                );
+                if let Some(action) = action {
+                    assert!(crate::integration::model::MQTT_COMMAND_ACTIONS.contains(&action));
+                    assert_eq!(
+                        crate::integration::model::mqtt_action_scope(action),
+                        Some(scope)
+                    );
+                    let usage = &action_usage[action];
+                    assert_eq!(usage["required_scope"], scope);
+                    assert!(usage["http_equivalents"].as_array().is_some_and(|items| {
+                        items.contains(&base::serde_json::json!(format!(
+                            "{} /openapi/v1{path}",
+                            method.to_uppercase()
+                        )))
+                    }));
+                } else {
+                    special_count += 1;
+                    assert_eq!((*method, *path), ("get", "/events"));
+                }
+
+                let operation = &openapi["paths"][format!("/openapi/v1{path}")][*method];
+                assert!(operation.get("x-gmv-request-example").is_some());
+                let responses = operation["responses"].as_object().unwrap();
+                let successes = responses
+                    .iter()
+                    .filter(|(status, _)| status.starts_with('2'))
+                    .collect::<Vec<_>>();
+                assert_eq!(successes.len(), 1, "one success response: {method} {path}");
+                if successes[0].0.as_str() != "204" {
+                    let media = &successes[0].1["content"]["application/json"];
+                    assert!(media.get("schema").is_some());
+                    assert!(media.get("example").is_some());
+                }
+                assert!(
+                    responses["400"]["content"]["application/json"]
+                        .get("example")
+                        .is_some()
+                );
+            }
+        }
+
+        assert_eq!(operation_count, 65);
+        assert_eq!(special_count, 1);
+        assert_eq!(
+            action_usage.len(),
+            crate::integration::model::MQTT_COMMAND_ACTIONS.len()
+        );
+        assert_eq!(
+            action_examples.len(),
+            crate::integration::model::MQTT_COMMAND_ACTIONS.len()
+        );
+        for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
+            let usage = &action_usage[*action];
+            assert!(
+                usage["required_scope"].is_string(),
+                "missing scope: {action}"
+            );
+            let payload_schema = usage["payload_schema"].as_str().unwrap();
+            let result_schema = usage["result_schema"].as_str().unwrap();
+            assert!(
+                asyncapi["components"]["schemas"]
+                    .get(payload_schema)
+                    .is_some()
+            );
+            assert!(
+                asyncapi["components"]["schemas"]
+                    .get(result_schema)
+                    .is_some()
+            );
+            let examples = &action_examples[*action];
+            assert_eq!(examples["request"]["action"], *action);
+            assert_eq!(examples["success"]["action"], *action);
+            assert_eq!(examples["failure"]["action"], *action);
+            assert_eq!(examples["success"]["state"], "succeeded");
+            assert_eq!(examples["failure"]["state"], "failed");
+        }
     }
 
     #[test]
@@ -8505,5 +10172,10 @@ mod tests {
         assert!(mqtt.contains("data-mode=\"mqtt\""));
         assert!(mqtt.contains("/api-docs/asyncapi.json"));
         assert!(include_str!("api_docs.js").contains("查看原始 JSON 定义"));
+        assert!(include_str!("api_docs.js").contains("MQTT 调用闭环"));
+        assert!(include_str!("api_docs.js").contains("MQTT Action 请求与结果"));
+        assert!(include_str!("api_docs.js").contains("取值约束"));
+        assert!(include_str!("api_docs.js").contains("成功响应字段"));
+        assert!(include_str!("api_docs.js").contains("失败响应示例"));
     }
 }

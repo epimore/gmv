@@ -364,7 +364,10 @@ async fn spawn_mqtt_runtime(
     topics.sort();
     topics.dedup();
     let policy = MqttCommandPolicy::new(
-        crate::integration::model::MQTT_COMMAND_ACTIONS.map(str::to_string),
+        crate::integration::model::MQTT_COMMAND_ACTIONS
+            .iter()
+            .copied()
+            .map(str::to_string),
         300_000,
     )?;
     let repository = match persistent {
@@ -375,6 +378,7 @@ async fn spawn_mqtt_runtime(
     };
     let executor = MqttCommandExecutor::new(operations, store)
         .with_auth(auth)
+        .with_media_https_http2_verified(config.http.media_https_http2_verified)
         .with_dynamic_result_outbox(persistent.outbox_repository(), integrations.clone());
     let integrations = integrations.clone();
     let cancel = managed_runtime.cancel.clone();

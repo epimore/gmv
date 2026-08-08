@@ -43,15 +43,61 @@
     return wrap;
   };
 
-  const schemaRows = (schema = {}) => {
-    const properties = schema.properties || {};
-    const required = new Set(schema.required || []);
-    return Object.entries(properties).map(([name, property]) => [
-      name,
-      property.type || (property.$ref ? "对象" : "任意 JSON"),
-      required.has(name) ? "是" : "否",
-      property.description || "—",
-    ]);
+  const resolveRef = (spec, value) => {
+    const ref = value?.$ref;
+    if (!ref?.startsWith("#/")) return value || {};
+    return ref.slice(2).split("/").reduce((current, key) => current?.[key], spec) || {};
+  };
+
+  const schemaType = (property = {}) => {
+    const type = Array.isArray(property.type) ? property.type.join(" | ") : property.type;
+    if (type === "array") {
+      const itemType = Array.isArray(property.items?.type) ? property.items.type.join(" | ") : property.items?.type;
+      return `array<${itemType || (property.items?.$ref ? "object" : "JSON")}>`;
+    }
+    return type || (property.$ref ? "object" : property.oneOf ? "oneOf" : "JSON");
+  };
+
+  const schemaConstraints = (property = {}) => [
+    property.enum ? `可选：${property.enum.join("、")}` : "",
+    property.const !== undefined ? `固定：${property.const}` : "",
+    property.minimum !== undefined || property.maximum !== undefined ? `范围：${property.minimum ?? "-∞"}～${property.maximum ?? "+∞"}` : "",
+    property.minLength !== undefined || property.maxLength !== undefined ? `长度：${property.minLength ?? 0}～${property.maxLength ?? "不限"}` : "",
+    property.default !== undefined ? `默认：${property.default}` : "",
+    property.pattern ? `格式：${property.pattern}` : "",
+  ].filter(Boolean).join("；") || "—";
+
+  const schemaRows = (schema = {}, spec = {}) => {
+    const rows = [];
+    const visit = (currentSchema, prefix = "", parentRequired = true, depth = 0) => {
+      if (depth > 8) return;
+      const resolvedSchema = resolveRef(spec, currentSchema);
+      if (resolvedSchema.type === "array" || resolvedSchema.items) {
+        visit(resolveRef(spec, resolvedSchema.items || {}), prefix ? `${prefix}[]` : "[]", parentRequired, depth + 1);
+        return;
+      }
+      const properties = resolvedSchema.properties || {};
+      const required = new Set(resolvedSchema.required || []);
+      Object.entries(properties).forEach(([name, rawProperty]) => {
+        const property = resolveRef(spec, rawProperty);
+        const fieldName = prefix ? `${prefix}.${name}` : name;
+        const isRequired = parentRequired && required.has(name);
+        rows.push([
+          fieldName,
+          schemaType(property),
+          isRequired ? "是" : "否",
+          schemaConstraints(property),
+          property.description || "—",
+        ]);
+        if (property.type === "array" || property.items) {
+          visit(resolveRef(spec, property.items || {}), `${fieldName}[]`, isRequired, depth + 1);
+        } else if (property.properties || property.$ref) {
+          visit(property, fieldName, isRequired, depth + 1);
+        }
+      });
+    };
+    visit(schema);
+    return rows;
   };
 
   const rawJson = (value) => {
@@ -61,7 +107,13 @@
     return details;
   };
 
-  const operationCard = ({ method, path, summary, description, scope, parameters, requestSchema, responses, raw }) => {
+  const appendExample = (body, title, value) => {
+    if (value === undefined) return;
+    body.append(element("h3", "", title));
+    body.append(element("pre", "", JSON.stringify(value, null, 2)));
+  };
+
+  const operationCard = ({ spec, method, path, summary, description, scope, parameters, requestSchema, requestExample, responses, raw }) => {
     const details = element("details", "operation");
     details.dataset.search = `${method} ${path} ${summary} ${description}`.toLowerCase();
     const head = element("summary", "operation-head");
@@ -80,20 +132,22 @@
 
     if (parameters.length) {
       body.append(element("h3", "", "请求参数"));
-      body.append(table(["字段", "位置", "类型", "必填", "中文说明"], parameters.map((parameter) => [
+      body.append(table(["字段", "位置", "类型", "必填", "取值约束", "中文说明"], parameters.map((parameter) => [
         parameter.name,
         parameter.in === "path" ? "路径" : parameter.in === "query" ? "查询" : "请求头",
         parameter.schema?.type || "string",
         parameter.required ? "是" : "否",
+        schemaConstraints(parameter.schema || {}),
         parameter.description || "—",
       ])));
     }
 
     if (requestSchema) {
       body.append(element("h3", "", "JSON 请求字段"));
-      const rows = schemaRows(requestSchema);
-      body.append(rows.length ? table(["字段", "类型", "必填", "中文说明"], rows) : element("div", "empty", requestSchema.description || "JSON 请求正文"));
+      const rows = schemaRows(requestSchema, spec);
+      body.append(rows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], rows) : element("div", "empty", requestSchema.description || "JSON 请求正文"));
     }
+    appendExample(body, "完整请求示例", requestExample);
 
     body.append(element("h3", "", "返回值"));
     const responseRows = Object.entries(responses || {}).map(([status, response]) => [
@@ -102,6 +156,19 @@
       response.content?.["application/json"] ? "application/json" : "无响应正文",
     ]);
     body.append(table(["状态码", "中文说明", "返回格式"], responseRows));
+    const responseEntries = Object.entries(responses || {});
+    const successEntry = responseEntries.find(([status]) => /^2\d\d$/.test(status));
+    const errorEntry = responseEntries.find(([status]) => /^4\d\d$/.test(status));
+    [["成功响应字段", successEntry], ["错误响应字段（各错误状态码同一结构）", errorEntry]].forEach(([title, entry]) => {
+      if (!entry) return;
+      const [status, response] = entry;
+      const media = response.content?.["application/json"];
+      if (!media?.schema) return;
+      body.append(element("h3", "", `${title} · HTTP ${status}`));
+      const rows = schemaRows(media.schema, spec);
+      body.append(rows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], rows) : element("div", "empty", media.schema.description || "无响应字段"));
+      appendExample(body, `${status} 响应示例`, media.example);
+    });
     body.append(rawJson(raw));
     details.append(body);
     return details;
@@ -115,6 +182,7 @@
         if (!groups.has(tag)) groups.set(tag, []);
         const requestSchema = operation.requestBody?.content?.["application/json"]?.schema;
         groups.get(tag).push(operationCard({
+          spec,
           method,
           path,
           summary: operation.summary || "未命名接口",
@@ -122,6 +190,7 @@
           scope: operation["x-gmv-required-scope"],
           parameters: operation.parameters || [],
           requestSchema,
+          requestExample: operation["x-gmv-request-example"],
           responses: operation.responses || {},
           raw: operation,
         }));
@@ -137,12 +206,6 @@
       cards.forEach((card) => section.append(card));
       content.append(section);
     });
-  };
-
-  const resolveRef = (spec, value) => {
-    const ref = value?.$ref;
-    if (!ref?.startsWith("#/")) return value || {};
-    return ref.slice(2).split("/").reduce((current, key) => current?.[key], spec) || {};
   };
 
   const renderMqtt = (spec) => {
@@ -183,14 +246,83 @@
         const payload = resolveRef(spec, message.payload || {});
         body.append(element("h3", "", message.title || messageName));
         body.append(element("p", "description", message.summary || "JSON 消息体"));
-        const rows = schemaRows(payload);
-        body.append(rows.length ? table(["字段", "类型", "必填", "中文说明"], rows) : element("div", "empty", "该消息未声明字段"));
+        const rows = schemaRows(payload, spec);
+        body.append(rows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], rows) : element("div", "empty", "该消息未声明字段"));
       });
       body.append(rawJson(channel));
       details.append(body);
       section.append(details);
     });
     content.append(section);
+
+    const workflow = spec["x-gmv-mqtt-workflow"] || {};
+    if (Array.isArray(workflow.steps)) {
+      const workflowSection = element("section", "group");
+      const workflowHead = element("div", "group-head");
+      workflowHead.append(element("h2", "", "MQTT 调用闭环"));
+      workflowHead.append(element("span", "", "发布前订阅结果，业务终态以 result 为准"));
+      workflowSection.append(workflowHead);
+      const workflowBody = element("div", "operation-body");
+      const steps = document.createElement("ol");
+      workflow.steps.forEach((step) => steps.append(element("li", "", step)));
+      workflowBody.append(steps);
+      workflowBody.append(element("p", "description", workflow.retry || ""));
+      workflowBody.append(element("p", "description", workflow.security || ""));
+      workflowSection.append(workflowBody);
+      content.append(workflowSection);
+    }
+
+    const usageEntries = Object.entries(spec["x-gmv-action-usage"] || {});
+    if (usageEntries.length) {
+      const actionSection = element("section", "group");
+      const actionHead = element("div", "group-head");
+      actionHead.append(element("h2", "", "MQTT Action 请求与结果"));
+      actionHead.append(element("span", "", `${usageEntries.length} 个 Action`));
+      actionSection.append(actionHead);
+      const commandMessage = spec.components?.messages?.IntegrationCommand;
+      const commandPayload = resolveRef(spec, commandMessage?.payload || {});
+      const examples = commandPayload.examples || [];
+      const actionExamples = spec["x-gmv-action-examples"] || {};
+
+      usageEntries.forEach(([action, usage]) => {
+        const payloadSchema = spec.components?.schemas?.[usage.payload_schema] || {};
+        const resultSchema = spec.components?.schemas?.[usage.result_schema] || {};
+        const details = element("details", "operation");
+        details.dataset.search = `${action} ${usage.target || ""} ${(usage.http_equivalents || []).join(" ")} ${payloadSchema.description || ""}`.toLowerCase();
+        const summary = element("summary", "operation-head");
+        summary.append(element("span", "method publish", "ACTION"));
+        summary.append(element("code", "path", action));
+        summary.append(element("span", "summary-text", payloadSchema.description || "MQTT 命令"));
+        summary.append(element("span", "chevron", "›"));
+        details.append(summary);
+
+        const body = element("div", "operation-body");
+        const info = element("div", "info-row");
+        info.append(element("span", "chip", `target：${usage.target || "见契约"}`));
+        info.append(element("span", "chip", `所需权限：${usage.required_scope || "—"}`));
+        info.append(element("span", "chip ok", "QoS：1 / retain=false"));
+        body.append(info);
+        if (Array.isArray(usage.http_equivalents) && usage.http_equivalents.length) {
+          body.append(element("p", "description", `HTTP 等价接口：${usage.http_equivalents.join("；")}`));
+        }
+        body.append(element("h3", "", "payload 请求字段"));
+        const payloadRows = schemaRows(payloadSchema, spec);
+        body.append(payloadRows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], payloadRows) : element("div", "empty", "payload 发送空对象 {}"));
+        body.append(element("h3", "", "成功 result 字段"));
+        const resultRows = schemaRows(resultSchema, spec);
+        body.append(resultRows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], resultRows) : element("div", "empty", "无额外结果字段"));
+        if (usage.next) body.append(element("p", "description", `后续处理：${usage.next}`));
+        const example = actionExamples[action] || {};
+        const legacyExample = examples.find((item) => item.name === action);
+        appendExample(body, "完整 MQTT 请求示例", example.request || legacyExample?.payload);
+        appendExample(body, "成功响应示例", example.success);
+        appendExample(body, "失败响应示例", example.failure);
+        body.append(rawJson({ action, usage, payload: payloadSchema, result: resultSchema }));
+        details.append(body);
+        actionSection.append(details);
+      });
+      content.append(actionSection);
+    }
   };
 
   const applyFilter = () => {

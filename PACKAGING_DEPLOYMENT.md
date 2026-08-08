@@ -1390,6 +1390,10 @@ HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准
 
 输出 `openapi.json`、`asyncapi.json`、`manifest.json` 和 `README.md`。导出物不得包含 Access Key、Secret、broker 凭据、master key 或现场 endpoint。
 
+当前契约的 62 个 MQTT action 覆盖 58 个开放 HTTP path、65 个 method/path 业务操作；同一 action 可以对应多个 HTTP 操作。能力映射不是人工维护的表：OpenAPI operation 通过 `x-gmv-mqtt-action`/`x-gmv-mqtt-special` 标出 MQTT 对应项，AsyncAPI 通过 `x-gmv-http-mqtt-capabilities` 和 `x-gmv-action-usage` 给出 action、scope、payload/result schema 与 HTTP 等价接口，manifest 同步导出该矩阵。
+
+明确的协议特例包括：HTTP `GET /events` 以轮询读取事件，MQTT 通过 event Topic 推送；图片、云录像文件和播放媒体等数据面内容不塞入 MQTT payload，MQTT 只执行控制和 access URL/播放 endpoint 签发。除此之外，开放业务能力缺少 MQTT 映射视为契约漂移并应阻断发布。
+
 ### 21.2 HTTP HMAC 与幂等
 
 所有请求必须携带 `X-GMV-Access-Key`、`X-GMV-Timestamp`、`X-GMV-Nonce`、`X-GMV-Content-SHA256` 和 `X-GMV-Signature`。canonical request 字段顺序以导出 OpenAPI 的 `x-gmv-hmac.canonical_fields` 为准。
@@ -1408,7 +1412,7 @@ HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准
 
 MQTT 使用部署级单 Broker 连接。`guard.integrations.mqtt.protocol_version` 选择 `v3`（MQTT 3.1.1）或 `v5`（MQTT 5.0），应用配置必须与当前 runtime 一致；broker 地址、TLS、账号和协议版本变更后重启 Guard。
 
-应用启停、有效期、command topic 和 `allowed_actions` 由数据库维护，每条 command 执行前实时校验，因此这些变更不依赖重启。Guard 固定接收 `gmv/commands/#` 命名空间，但 wildcard subscription 只负责接收，不授予业务权限；未知 integration/topic/action 必须 fail-closed。
+应用启停、有效期、command topic、`allowed_actions` 和 integration scopes 由数据库维护，每条 command 执行前实时校验，因此这些变更不依赖重启。action 白名单与业务 scope 必须同时满足；例如设备写操作即使在 `allowed_actions` 中存在，缺少对应 `devices:write` 仍会拒绝。Guard 固定接收 `gmv/commands/#` 命名空间，但 wildcard subscription 只负责接收，不授予业务权限；未知 integration/topic/action 必须 fail-closed。
 
 Broker 最小 ACL 示例语义：
 
@@ -1421,9 +1425,40 @@ Partner A subscribe: gmv/command-results/partner-a
 Partner A subscribe: gmv/events/partner-a/#
 ```
 
-生产环境启用 TLS，服务端证书需要完整校验；QoS 固定为 1，retain 关闭。第三方按 `command_id` 幂等消费 result，按 `event_id` 幂等消费 event。当前允许的九种 action 及各自 payload schema 以 `asyncapi.json` 为准。
+生产环境启用 TLS，服务端证书需要完整校验；QoS 固定为 1，retain 关闭。第三方按 `command_id` 幂等消费 result，按 `event_id` 幂等消费 event。当前注册的 62 个 action、对应 scope、payload/result schema、HTTP 等价接口和逐 action 示例均以当前二进制导出的 `asyncapi.json` 为准；原有九种高频 action 名称与 payload 保持兼容。
 
-### 21.4 网络与持久化
+### 21.4 MQTT 点播交付与最小调用流程
+
+交付 MQTT 应用时，不能只交付 Broker 地址和 Topic。部署方必须同时交付 `integration_id`、MQTT 版本、TLS/账号、精确 `command_topic`、精确 `result_topic`、event topics、`allowed_actions` 以及由当前二进制导出的 `asyncapi.json` 和 `README.md`。在线入口为 `/api-docs/asyncapi.json`，离线契约通过以下命令生成：
+
+```bash
+gmv-guard-server export-integration-contracts ./integration-contracts
+```
+
+实时点播的最小流程为：先以 QoS 1 订阅 `result_topic`，再以 QoS 1、`retain=false` 向 `command_topic` 发布命令；收到 `state=succeeded` 后使用 `result.endpoint` 播放并保存 `result.stream_id`；业务结束后以该 `stream_id` 发送 `stream.stop`。PUBACK 不是业务成功。
+
+```json
+{
+  "integration_id": "partner-a",
+  "command_id": "01JMQTTLIVE000000000000001",
+  "issued_at_ms": 1700000000000,
+  "expires_at_ms": 1700000060000,
+  "action": "stream.start",
+  "target": "device-001",
+  "payload": {
+    "channel_id": "channel-001",
+    "trans_mode": "udp",
+    "output_type": "flv",
+    "stream_profile": "main"
+  }
+}
+```
+
+`trans_mode` 可选 `udp`、`tcp_active`、`tcp_passive`；实时预览 `output_type` 可选 `flv`、`fmp4`、`hls`、`ll_hls`；`stream_profile` 可选 `main`、`sub`。`command_id` 为 1～128 个非空白字符，同一业务重试必须复用；`expires_at_ms - issued_at_ms` 不得超过 300000 ms。
+
+成功 result 至少包含 `stream_id` 和状态，可播放时包含 `endpoint`；失败 result 的 `state=failed`、`result=null`，调用方读取稳定 `error_code`。endpoint 可能包含媒体访问 token，禁止写日志或分发给未授权终端。在线 HTTP 页面会逐 API 展开请求字段、成功/错误响应字段及完整示例；在线 MQTT 页面会逐 action 展开 target、scope、HTTP 等价接口、payload/result 字段和 request/success/failure 示例。离线内容来自同一 OpenAPI/AsyncAPI，不允许部署方另写一份可能漂移的字段表。
+
+### 21.5 网络与持久化
 
 在原端口清单基础上增加：
 
@@ -1436,7 +1471,7 @@ Partner A subscribe: gmv/events/partner-a/#
 
 Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_credential`、`guard_integration_http`、`guard_integration_mqtt`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前同时备份数据库和 Guard 配置；不得单独恢复数据库而遗漏对应 master key。
 
-### 21.5 第三方专项验收矩阵
+### 21.6 第三方专项验收矩阵
 
 ```text
 [ ] OpenAPI 含 58 个开放 path，且不含用户、角色、integration 管理和内部 RPC
@@ -1445,14 +1480,17 @@ Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_out
 [ ] 同一请求 ID/相同内容跨 Guard 重启返回原响应
 [ ] 同一请求 ID/不同内容返回 409
 [ ] MQTT V3 或 V5 与现场 runtime 版本一致
-[ ] 九种 MQTT action 的 command/result schema 与实际 payload 一致
+[ ] 58 个开放 HTTP path、65 个 method/path operation 均映射到 MQTT action 或登记的事件 Topic 特例
+[ ] 62 个 MQTT action 均有 scope、payload/result schema、request/success/failure 示例和实际 executor 映射
+[ ] 原有九种 MQTT action 名称与 payload 兼容，旧客户端回归通过
 [ ] 未知 topic、错误 integration_id、停用/过期应用和未授权 action 被拒绝
-[ ] 应用停用和 allowed_actions 收缩无需重启立即生效
+[ ] 应用停用、allowed_actions 或 scopes 收缩无需重启立即生效
 [ ] command result 包含 schema_version、integration_id、command_id、operation_id、state、error_code、occurred_at_ms
 [ ] HTTP callback 签名、超时、重试、失败终态和重启恢复通过
 [ ] MQTT event mapping、outbox retry、event_id 幂等和重启恢复通过
 [ ] HTTP/MQTT 播放票据续期只允许票据 owner，达到绝对期限或次数上限后拒绝
 [ ] 在线文档仅管理员可见，导出契约可在无 UI session 环境解析
+[ ] 在线 HTTP/MQTT 每个 API/Action 均展示请求字段、响应字段和完整请求/成功/失败示例
 [ ] 交付包不含数据库、日志、secret、私钥、broker 凭据和前端 sourcemap
 ```
 
