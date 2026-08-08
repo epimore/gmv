@@ -159,7 +159,15 @@ impl MqttCommandExecutor {
                 Ok(())
             }
             Err(error) => {
-                let _ = self.operations.fail(&operation.operation_id, error.clone());
+                if let Err(state_error) =
+                    self.operations.fail(&operation.operation_id, error.clone())
+                {
+                    base::log::warn!(
+                        "MQTT command operation finalization failed: action=mqtt_command, stage=terminal, outcome=state_update_failed, command_id={}, reason={}",
+                        command.command_id,
+                        state_error
+                    );
+                }
                 self.enqueue_result(&command, "failed", Some(error_code(&error)))
                     .await?;
                 Err(error)
@@ -243,9 +251,11 @@ impl MqttCommandExecutor {
             GuardError::InvalidConfig(format!("MQTT result encode failed: {error}"))
         })?;
         let digest = hex::encode(Sha256::digest(command.command_id.as_bytes()));
+        let outbox_id = format!("cmd-result-{}", &digest[..32]);
+        let payload_bytes = payload.len();
         repository
             .insert_mapped_outbox_records(vec![OutboxRecord {
-                outbox_id: format!("cmd-result-{}", &digest[..32]),
+                outbox_id: outbox_id.clone(),
                 event_id: command.command_id.clone(),
                 integration_id: command.integration_id.clone(),
                 mapping_id: format!("mqtt-command-result:{}", command.integration_id),
@@ -260,7 +270,17 @@ impl MqttCommandExecutor {
                 updated_at_ms: now_ms,
                 expires_at_ms: Some(command.expires_at_ms),
             }])
-            .await
+            .await?;
+        base::log::info!(
+            "MQTT command result queued: action=mqtt_command_result, stage=outbox, outcome=queued, command_id={}, integration_id={}, outbox_id={}, state={}, topic={}, payload_bytes={}",
+            command.command_id,
+            command.integration_id,
+            outbox_id,
+            state,
+            topic,
+            payload_bytes
+        );
+        Ok(())
     }
 }
 

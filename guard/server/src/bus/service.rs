@@ -88,7 +88,7 @@ impl BusService {
     }
 
     pub fn publish(&self, event: BusEvent) -> GuardResult<PublishOutcome> {
-        base::log::info!(
+        base::log::debug!(
             "guard bus event inbound: event_id={}, topic={}, priority={:?}, payload_bytes={}",
             event.event_id,
             event.topic,
@@ -97,7 +97,7 @@ impl BusService {
         );
         let mut inner = self.inner.lock();
         if !inner.seen_events.insert(event.event_id.clone()) {
-            base::log::info!(
+            base::log::debug!(
                 "guard bus event duplicate: event_id={}, topic={}",
                 event.event_id,
                 event.topic
@@ -134,7 +134,7 @@ impl BusService {
                 delivered += 1;
             }
         }
-        base::log::info!(
+        base::log::debug!(
             "guard bus event delivered: event_id={}, topic={}, delivered={}",
             event.event_id,
             event.topic,

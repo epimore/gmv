@@ -270,6 +270,15 @@ impl CommandRuntime {
             .decode_topic_with_repository(topic, payload, now_ms, &self.repository)
             .await?
         {
+            base::log::info!(
+                "MQTT command accepted: action=mqtt_command, stage=claim, outcome=accepted, command_id={}, integration_id={}, command_action={}, target={}, topic={}, payload_bytes={}",
+                command.command_id,
+                command.integration_id,
+                command.action.as_str(),
+                command.target,
+                topic,
+                payload.len()
+            );
             self.executor.execute(command).await?;
         }
         Ok(())

@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, header::CONTENT_TYPE};
 use axum::{Json, Router, routing::post};
 use base::err::{BaseErrorCode, CodeOutErr};
 use base::exception::{GlobalError, GlobalResult};
-use base::log::{error, info};
+use base::log::{debug, error};
 use gmv_domain::info::res::Resp;
 
 pub const UPLOAD_PICTURE: &str = "/upload/picture/{token}";
@@ -25,13 +25,9 @@ async fn upload_picture(
     Query(params): Query<HashMap<String, String>>,
     request: Request,
 ) -> Json<Resp<String>> {
-    info!(
-        "upload_picture: token={}, outcome=request_received",
-        if token.is_empty() {
-            "<empty>"
-        } else {
-            "<redacted>"
-        }
+    debug!(
+        "picture upload request received: action=snapshot_upload, stage=request, outcome=received, token_present={}",
+        if token.is_empty() { "false" } else { "true" }
     );
     match upload_picture_inner(token, headers, params, request).await {
         Ok(data) => Json(Resp::build_success_data(data)),

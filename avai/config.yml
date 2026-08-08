@@ -1,3 +1,12 @@
+log:
+  level: warn
+  stdout: true
+  prefix: avai
+  store_path: ./logs
+  specify:
+    - crate_name: avai
+      level: info
+
 guard:
   endpoint: http://127.0.0.1:18080
 

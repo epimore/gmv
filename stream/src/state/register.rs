@@ -231,6 +231,15 @@ impl RtpChannel {
                     error!("System busy;InnerEvent: {ssrc} Stream registration send failed: {msg}")
                 })
                 .inspect_err(|_| self.wait_sign_in.store(true, Ordering::Release))?;
+            let lifecycle_generation = Register::get()
+                .inner
+                .stream_metadata_map
+                .get(&self.stream_id)
+                .map_or(0, |meta| meta.lifecycle_generation);
+            info!(
+                "RTP first packet accepted: action=rtp_input, stage=first_packet, outcome=accepted, stream_id={}, ssrc={}, generation={}, rtp_type={}",
+                self.stream_id, ssrc, lifecycle_generation, rtp_type
+            );
         }
         self.in_has_timeout.store(0, Ordering::Relaxed);
         self.last_packet_at_ms
@@ -643,6 +652,27 @@ impl Register {
         crate::io::media_endpoint::MediaEndpointManager::release_stream_detached(stream_id);
     }
 
+    fn log_stream_terminal(
+        inner: &Inner,
+        stream_id: &Arc<str>,
+        meta: &StreamMetadata,
+        reason: &str,
+    ) {
+        let packet_count = inner
+            .rtp_gateway_map
+            .get(&meta.ssrc)
+            .map_or(0, |channel| channel.packet_count.load(Ordering::Acquire));
+        let duration_ms = if meta.register_ts == 0 {
+            0
+        } else {
+            unix_time_ms().saturating_sub(meta.register_ts.saturating_mul(1_000))
+        };
+        info!(
+            "stream media completed: action=media_lifecycle, stage=terminal, outcome=closed, reason={}, stream_id={}, ssrc={}, generation={}, packet_count={}, duration_ms={}",
+            reason, stream_id, meta.ssrc, meta.lifecycle_generation, packet_count, duration_ms
+        );
+    }
+
     pub fn is_live_output_open(stream_id: &str, output_type: &str) -> bool {
         let Ok((_, _, output_enum, _)) = live_output_contract(output_type) else {
             return false;
@@ -825,6 +855,7 @@ impl Register {
             ));
         };
         drop(channel);
+        Self::log_stream_terminal(&arc, &stream_id, &meta, "guard_finalize");
         Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
         let _ = arc
             .time_schedule
@@ -976,10 +1007,13 @@ impl Register {
             }
             InTimeoutEventRes::CloseAll => {
                 let stream_id = Arc::from(state.base_stream_info.stream_id);
-                arc.stream_metadata_map.remove_if(&stream_id, |_, meta| {
+                let removed = arc.stream_metadata_map.remove_if(&stream_id, |_, meta| {
                     Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
                     true
                 });
+                if let Some((_, meta)) = removed {
+                    Self::log_stream_terminal(&arc, &stream_id, &meta, "input_idle_timeout");
+                }
                 arc.rtp_gateway_map
                     .remove(&state.base_stream_info.rtp_info.ssrc);
             }
@@ -1008,8 +1042,11 @@ impl Register {
                     let size = meta.output_count.get_muxer_size(info.play_type);
                     if size == 0 {
                         info!(
-                            "ssrc = {},stream id = {} close muxer: {:?}",
-                            meta.ssrc, stream_id, muxer_enum
+                            "stream output completed: action=media_output, stage=terminal, outcome=closed, reason=output_idle_timeout, stream_id={}, ssrc={}, generation={}, output={:?}",
+                            stream_id,
+                            meta.ssrc,
+                            meta.lifecycle_generation,
+                            muxer_enum
                         );
                         close_output_layers(
                             &mut meta.output,
@@ -1036,11 +1073,8 @@ impl Register {
                     Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
                     true
                 });
-                if removed.is_some() {
-                    info!(
-                        "ssrc = {},stream id = {} close",
-                        info.base_stream_info.rtp_info.ssrc, stream_id
-                    );
+                if let Some((_, meta)) = removed {
+                    Self::log_stream_terminal(&arc, &stream_id, &meta, "output_idle_timeout");
                     arc.rtp_gateway_map
                         .remove(&info.base_stream_info.rtp_info.ssrc);
                 } else {
@@ -1350,6 +1384,7 @@ impl Register {
         let Some((_, meta)) = arc.stream_metadata_map.remove(&stream_id) else {
             return false;
         };
+        Self::log_stream_terminal(&arc, &stream_id, &meta, "local_stop");
         Self::cleanup_stream_runtime(&arc, &stream_id, meta.lifecycle_generation);
         let _ = arc
             .time_schedule
@@ -1606,6 +1641,10 @@ impl Register {
                         arc.event_tx
                             .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
                             .hand_log(|msg| error!("{msg}"))?;
+                        info!(
+                            "stream media playable: action=media_lifecycle, stage=playable, outcome=ready, stream_id={}, ssrc={}, generation={}, rtp_type={}",
+                            stream_id, meta.ssrc, meta.lifecycle_generation, rtp_type
+                        );
                     }
                 } else {
                     let stream_info = Self::build_base_stream_info(
@@ -1629,7 +1668,9 @@ impl Register {
                     //释放媒体资源
                     let ssrc = meta.ssrc;
                     drop(meta);
-                    arc.stream_metadata_map.remove(&stream_id);
+                    if let Some((_, meta)) = arc.stream_metadata_map.remove(&stream_id) {
+                        Self::log_stream_terminal(&arc, &stream_id, &meta, "media_type_mismatch");
+                    }
                     arc.rtp_gateway_map.remove(&ssrc);
                 }
             } else {
@@ -1883,6 +1924,7 @@ impl Register {
         let mut metadata =
             StreamMetadata::new(ssrc, in_wait_timeout, out_idle_timeout, converter, output);
         metadata.session_hook_endpoint = media_config.session_hook_endpoint;
+        let lifecycle_generation = metadata.lifecycle_generation;
         let event = metadata.build_from_output_kind(
             media_config.output,
             ssrc,
@@ -1911,6 +1953,14 @@ impl Register {
                 .try_send((Event::Active(active_event), None))
                 .hand_log(|msg| error!("{msg}"));
         }
+        info!(
+            "stream media initialized: action=media_lifecycle, stage=initialized, outcome=ready, stream_id={}, ssrc={}, generation={}, input_idle_timeout_ms={}, output_idle_timeout_ms={}",
+            stream_id,
+            ssrc,
+            lifecycle_generation,
+            u64::from(in_wait_timeout).saturating_mul(1_000),
+            u64::from(out_idle_timeout).saturating_mul(1_000)
+        );
         Ok(ssrc)
     }
     pub fn init(runtime: &GlobalRuntime, server_conf: ServerConf) -> GlobalResult<()> {

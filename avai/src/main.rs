@@ -55,6 +55,7 @@ fn default_capabilities() -> Vec<String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    base::logger::Logger::init()?;
     let runtime = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
     let service_runtime = runtime.clone();
     runtime.spawn("avai-service", async move {

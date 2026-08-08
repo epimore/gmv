@@ -185,9 +185,28 @@ impl AvaiControl for AvaiControlRpc {
             .inner
             .lock()
             .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(
-            control.create_task(request, now_epoch_ms()),
-        ))
+        let task_id = request.task_id.clone();
+        let task_type = request.task_type.clone();
+        let route_id = request.route_id.clone();
+        let response = control.create_task(request, now_epoch_ms());
+        if let Some(error) = &response.error {
+            base::log::warn!(
+                "Avai task rejected: action=ai_task, stage=create, outcome=rejected, task_id={}, task_type={}, route_id={}, error_code={}",
+                task_id,
+                task_type,
+                route_id,
+                error.code
+            );
+        } else {
+            base::log::debug!(
+                "Avai task create returned: action=ai_task, stage=create, outcome=existing, task_id={}, task_type={}, route_id={}, state={}",
+                task_id,
+                task_type,
+                route_id,
+                response.state
+            );
+        }
+        Ok(tonic::Response::new(response))
     }
 
     async fn cancel_task(
@@ -306,12 +325,32 @@ impl AvaiControlAdapter {
     }
 
     pub fn cancel_task(&mut self, request: CancelTaskRequest) -> CancelTaskResponse {
-        let state = match self.tasks.get_mut(&request.task_id) {
+        let task_id = request.task_id;
+        let state = match self.tasks.get_mut(&task_id) {
             Some(task) => {
+                if task.state == AiTaskState::Cancelled {
+                    base::log::debug!(
+                        "Avai task cancel reused: action=ai_task, stage=terminal, outcome=duplicate, task_id={}",
+                        task_id
+                    );
+                } else {
+                    base::log::info!(
+                        "Avai task completed: action=ai_task, stage=terminal, outcome=cancelled, task_id={}, task_type={}, route_id={}",
+                        task_id,
+                        task.task_type,
+                        task.route_id
+                    );
+                }
                 task.state = AiTaskState::Cancelled;
                 AiTaskState::Cancelled
             }
-            None => AiTaskState::Cancelled,
+            None => {
+                base::log::debug!(
+                    "Avai task cancel returned idempotently: action=ai_task, stage=terminal, outcome=not_found, task_id={}",
+                    task_id
+                );
+                AiTaskState::Cancelled
+            }
         };
         CancelTaskResponse {
             state: state as i32,
@@ -357,6 +396,20 @@ impl AvaiControlAdapter {
 
     pub fn complete_task(&mut self, task_id: &str, result: Vec<u8>) -> Option<NodeToGuardMessage> {
         let task = self.tasks.get_mut(task_id)?;
+        if task.state == AiTaskState::Succeeded {
+            base::log::debug!(
+                "Avai task completion reused: action=ai_task, stage=terminal, outcome=duplicate, task_id={}",
+                task_id
+            );
+        } else {
+            base::log::info!(
+                "Avai task completed: action=ai_task, stage=terminal, outcome=succeeded, task_id={}, task_type={}, route_id={}, result_bytes={}",
+                task_id,
+                task.task_type,
+                task.route_id,
+                result.len()
+            );
+        }
         task.state = AiTaskState::Succeeded;
         task.result = result.clone();
         Some(self.task_event(task_id, EventPriority::P1, result))

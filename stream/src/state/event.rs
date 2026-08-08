@@ -177,7 +177,7 @@ impl Event {
                     Self::call_session_hook_by_stream_id(&stream_id, "stream.registered", &rsi)
                         .await;
                 if Self::accepted(response.as_ref()) {
-                    info!(
+                    base::log::debug!(
                         "stream_register event sent to session: outcome=accepted, stream_id={stream_id}"
                     );
                 } else {

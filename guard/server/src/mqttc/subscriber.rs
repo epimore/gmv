@@ -133,6 +133,13 @@ impl MqttCommandPolicy {
             .claim(&command.command_id, command.expires_at_ms, now_ms)
             .await?
         {
+            base::log::debug!(
+                "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}",
+                command.command_id,
+                command.integration_id,
+                command.action,
+                command.target
+            );
             return Ok(None);
         }
         Ok(Some(routed))
@@ -150,6 +157,14 @@ impl MqttCommandPolicy {
             .claim(&command.command_id, command.expires_at_ms, now_ms)
             .await?
         {
+            base::log::debug!(
+                "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}, topic={}",
+                command.command_id,
+                command.integration_id,
+                command.action,
+                command.target,
+                topic
+            );
             return Ok(None);
         }
         Ok(Some(routed))

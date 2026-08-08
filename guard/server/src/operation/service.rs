@@ -69,6 +69,12 @@ impl OperationService {
         prune_records(&mut records, now_ms);
         if let Some(existing) = records.get(&record.operation_id) {
             if existing.kind == record.kind && existing.requested_by == record.requested_by {
+                base::log::debug!(
+                    "operation request reused: action=operation, stage=accepted, outcome=duplicate, operation_id={}, kind={}, requested_by={}",
+                    existing.operation_id,
+                    existing.kind,
+                    existing.requested_by
+                );
                 return Ok((existing.clone(), false));
             }
             return Err(GuardError::Conflict(format!(
@@ -77,6 +83,12 @@ impl OperationService {
             )));
         }
         records.insert(record.operation_id.clone(), record.clone());
+        base::log::info!(
+            "operation accepted: action=operation, stage=accepted, outcome=accepted, operation_id={}, kind={}, requested_by={}",
+            record.operation_id,
+            record.kind,
+            record.requested_by
+        );
         Ok((record, true))
     }
 
@@ -164,7 +176,7 @@ impl OperationService {
         operation_id: &str,
         message: impl Into<String>,
     ) -> GuardResult<OperationRecord> {
-        self.update(operation_id, |record| {
+        let record = self.update(operation_id, |record| {
             if record.status.is_terminal() {
                 return Err(GuardError::Conflict(format!(
                     "operation {operation_id} is terminal"
@@ -176,7 +188,14 @@ impl OperationService {
             record.message = message.into();
             record.updated_at_ms = now_ms();
             Ok(())
-        })
+        })?;
+        base::log::info!(
+            "operation completed: action=operation, stage=terminal, outcome=succeeded, operation_id={}, kind={}, elapsed_ms={}",
+            record.operation_id,
+            record.kind,
+            record.updated_at_ms.saturating_sub(record.started_at_ms)
+        );
+        Ok(record)
     }
 
     pub fn succeed_with_result(
@@ -185,7 +204,7 @@ impl OperationService {
         message: impl Into<String>,
         result: base::serde_json::Value,
     ) -> GuardResult<OperationRecord> {
-        self.update(operation_id, |record| {
+        let record = self.update(operation_id, |record| {
             if record.status.is_terminal() {
                 return Err(GuardError::Conflict(format!(
                     "operation {operation_id} is terminal"
@@ -198,11 +217,18 @@ impl OperationService {
             record.result = Some(result);
             record.updated_at_ms = now_ms();
             Ok(())
-        })
+        })?;
+        base::log::info!(
+            "operation completed: action=operation, stage=terminal, outcome=succeeded, operation_id={}, kind={}, elapsed_ms={}",
+            record.operation_id,
+            record.kind,
+            record.updated_at_ms.saturating_sub(record.started_at_ms)
+        );
+        Ok(record)
     }
 
     pub fn fail(&self, operation_id: &str, error: GuardError) -> GuardResult<OperationRecord> {
-        self.update(operation_id, |record| {
+        let record = self.update(operation_id, |record| {
             if record.status.is_terminal() {
                 return Err(GuardError::Conflict(format!(
                     "operation {operation_id} is terminal"
@@ -213,25 +239,47 @@ impl OperationService {
             record.error = Some(error);
             record.updated_at_ms = now_ms();
             Ok(())
-        })
+        })?;
+        base::log::warn!(
+            "operation completed: action=operation, stage=terminal, outcome=failed, operation_id={}, kind={}, elapsed_ms={}",
+            record.operation_id,
+            record.kind,
+            record.updated_at_ms.saturating_sub(record.started_at_ms)
+        );
+        Ok(record)
     }
 
     pub fn cancel(&self, operation_id: &str) -> GuardResult<OperationRecord> {
-        self.update(operation_id, |record| {
-            if record.status == OperationStatus::Cancelled {
-                return Ok(());
-            }
-            if record.status.is_terminal() {
-                return Err(GuardError::Conflict(format!(
-                    "operation {operation_id} is terminal"
-                )));
-            }
-            record.status = OperationStatus::Cancelled;
-            record.stage = "cancelled".to_string();
-            record.message = "operation cancelled".to_string();
-            record.updated_at_ms = now_ms();
-            Ok(())
-        })
+        let mut records = self.records.lock();
+        let record = records
+            .get_mut(operation_id)
+            .ok_or_else(|| GuardError::NotFound(format!("operation {operation_id}")))?;
+        if record.status == OperationStatus::Cancelled {
+            base::log::debug!(
+                "operation cancel reused: action=operation, stage=terminal, outcome=duplicate, operation_id={}, kind={}",
+                record.operation_id,
+                record.kind
+            );
+            return Ok(record.clone());
+        }
+        if record.status.is_terminal() {
+            return Err(GuardError::Conflict(format!(
+                "operation {operation_id} is terminal"
+            )));
+        }
+        record.status = OperationStatus::Cancelled;
+        record.stage = "cancelled".to_string();
+        record.message = "operation cancelled".to_string();
+        record.updated_at_ms = now_ms();
+        let record = record.clone();
+        drop(records);
+        base::log::info!(
+            "operation completed: action=operation, stage=terminal, outcome=cancelled, operation_id={}, kind={}, elapsed_ms={}",
+            record.operation_id,
+            record.kind,
+            record.updated_at_ms.saturating_sub(record.started_at_ms)
+        );
+        Ok(record)
     }
 
     pub fn get(&self, operation_id: &str) -> GuardResult<OperationRecord> {

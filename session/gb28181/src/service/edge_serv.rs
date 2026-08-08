@@ -16,7 +16,7 @@ use axum::body::Bytes;
 use base::chrono::Local;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error};
+use base::log::{debug, error, info};
 use base::tokio::fs;
 use base::tokio::sync::mpsc;
 use base::tokio::time::Instant;
@@ -161,14 +161,14 @@ pub async fn upload(
     })?;
 
     GmvFileInfo::insert_gmv_file_info(vec![GmvFileInfo {
-        device_id,
-        channel_id,
+        device_id: device_id.clone(),
+        channel_id: channel_id.clone(),
         biz_time: Some(now),
         biz_id: session_id.to_string(),
         file_type: Some(0),
         file_size: Some(bytes.len() as i64),
         file_name,
-        file_format: Some(file_format),
+        file_format: Some(file_format.clone()),
         dir_path: dir_path.to_string(),
         abs_path: Some(abs_dir.to_string_lossy().to_string()),
         note: None,
@@ -176,6 +176,14 @@ pub async fn upload(
         create_time: Some(now),
     }])
     .await?;
+    info!(
+        "snapshot image stored: action=snapshot_upload, stage=persist, outcome=succeeded, device_id={}, channel_id={}, session_id={}, file_format={}, payload_bytes={}",
+        device_id,
+        channel_id,
+        session_id,
+        file_format,
+        bytes.len()
+    );
     Ok(())
 }
 

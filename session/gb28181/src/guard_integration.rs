@@ -2709,7 +2709,7 @@ impl SessionHook for SessionHookRpc {
     ) -> Result<tonic::Response<SessionHookResponse>, tonic::Status> {
         let request = request.into_inner();
         let event_type = request.event_type.clone();
-        info!(
+        debug!(
             "session hook rpc inbound: event_type={}, payload_bytes={}, operation={:?}",
             event_type,
             request.payload_json.len(),
@@ -2766,7 +2766,7 @@ impl SessionHook for SessionHookRpc {
                 error: Some(error("unknown_hook", "unsupported session hook event_type")),
             },
         };
-        info!(
+        debug!(
             "session hook rpc outbound: event_type={}, accepted={}, error={:?}, payload_bytes={}",
             event_type,
             response.accepted,
