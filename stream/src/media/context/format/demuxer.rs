@@ -19,6 +19,7 @@ use rsmpeg::ffi::{
     avio_alloc_context, avio_context_free,
 };
 use std::ffi::{CString, c_int, c_void};
+use std::ops::Range;
 use std::ptr;
 use std::sync::Arc;
 
@@ -70,6 +71,24 @@ pub struct DemuxerContext {
     pub avio: AvioResource,
     /// we own `*mut AVCodecParameters` pointers and must free them in Drop
     pub params: Vec<ParamRepairState>,
+}
+
+fn extend_param_repair_states(
+    params: &mut Vec<ParamRepairState>,
+    stream_count: usize,
+) -> Range<usize> {
+    let previous_count = params.len();
+    if stream_count > previous_count {
+        params.resize_with(stream_count, ParamRepairState::default);
+    }
+    previous_count..params.len()
+}
+
+impl DemuxerContext {
+    pub(in crate::media::context) fn sync_params(&mut self) -> Range<usize> {
+        let stream_count = unsafe { (*self.avio.fmt_ctx).nb_streams as usize };
+        extend_param_repair_states(&mut self.params, stream_count)
+    }
 }
 // pub struct ParamStream {
 //     // pub codecpar: *mut AVCodecParameters,
@@ -604,9 +623,25 @@ impl DemuxerContext {
 
 #[cfg(test)]
 mod tests {
+    use super::{ParamRepairState, extend_param_repair_states};
     use rsmpeg::ffi::{AVOption, av_demuxer_iterate, av_opt_next};
     use std::ffi::CStr;
     use std::ptr;
+
+    #[test]
+    fn extends_param_repair_state_when_demuxer_discovers_stream() {
+        let mut params = vec![ParamRepairState {
+            ready: true,
+            ..Default::default()
+        }];
+
+        assert_eq!(extend_param_repair_states(&mut params, 2), 1..2);
+        assert_eq!(params.len(), 2);
+        assert!(params[0].ready);
+        assert!(!params[1].ready);
+        assert_eq!(extend_param_repair_states(&mut params, 1), 2..2);
+        assert_eq!(params.len(), 2);
+    }
 
     #[test]
 

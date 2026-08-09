@@ -1,4 +1,5 @@
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::fmp4::clone_packet_for_mp4;
 use crate::media::context::format::{
     FmtMuxer, HlsPart, MuxPacket, MuxPacketSender, can_start_fragmented_output, write_callback,
 };
@@ -13,9 +14,9 @@ use rsmpeg::ffi::{
     AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO,
     AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational,
     AVStream, av_dict_set, av_free, av_guess_format, av_interleaved_write_frame, av_malloc,
-    av_packet_ref, av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_frame,
-    av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream,
-    avformat_write_header, avio_alloc_context, avio_context_free, avio_flush,
+    av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_frame, av_write_trailer,
+    avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header,
+    avio_alloc_context, avio_context_free, avio_flush,
 };
 use rsmpeg::ffi::{
     AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
@@ -224,21 +225,22 @@ impl FmtMuxer for HlsFmp4Context {
                         self.fragment_end_us = packet_end_us;
                         self.segment_start_us = packet_time_us;
                     }
-                    let mut cloned = std::mem::zeroed::<AVPacket>();
-                    // 写入当前帧
-                    av_packet_ref(&mut cloned, pkt);
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
-                    av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
+                    let codecpar = (*out_st).codecpar;
+                    let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
+                        && !(*codecpar).extradata.is_null()
+                        && (*codecpar).extradata_size > 0;
+                    let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
+                    av_packet_rescale_ts(cloned.as_mut_ptr(), in_tb, (*out_st).time_base);
 
-                    cloned.pos = -1;
-                    let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+                    (*cloned.as_mut_ptr()).pos = -1;
+                    let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
                     if ret < 0 {
-                        warn!("FMP4 write failed:{}", show_ffmpeg_error_msg(ret));
-                        av_packet_unref(&mut cloned);
-                        return Ok(());
+                        return Err(GlobalError::new_sys_error(
+                            &format!("HLS fMP4 write failed: {}", show_ffmpeg_error_msg(ret)),
+                            |msg| warn!("{msg}"),
+                        ));
                     }
-                    // self.fragment_frame_count += 1;
-                    av_packet_unref(&mut cloned);
                     self.fragment_end_us = self.fragment_end_us.max(packet_end_us);
                     if self.flush_fragment(
                         self.fragment_started_with_key,

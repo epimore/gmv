@@ -42,6 +42,7 @@ use gmv_domain::info::output::{
 };
 use log::{error, info, warn};
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -113,6 +114,18 @@ fn viewer_output_enum(output: &OutputKind) -> Option<OutputEnum> {
         OutputKind::HttpFlv(_) => Some(OutputEnum::HttpFlv),
         OutputKind::DashFmp4(_) => Some(OutputEnum::DashFmp4),
         OutputKind::HlsFmp4(_) => Some(OutputEnum::HlsFmp4),
+        _ => None,
+    }
+}
+
+fn live_output_type_from_kind(output: &OutputKind) -> Option<&'static str> {
+    match output {
+        OutputKind::HttpFlv(_) => Some("flv"),
+        OutputKind::DashFmp4(_) => Some("fmp4"),
+        OutputKind::HlsFmp4(output) => match output.playlist_profile {
+            HlsPlaylistProfile::Standard => Some("hls"),
+            HlsPlaylistProfile::LowLatency => Some("ll_hls"),
+        },
         _ => None,
     }
 }
@@ -401,6 +414,8 @@ pub struct StreamMetadata {
     pub broadcast_bus: bus::broadcast::TypedMessageBus,
     pub converter: ConverterLayer,
     pub media_ext: Option<MediaExt>,
+    actual_media_profile: Option<ActualMediaProfile>,
+    output_media_metadata: HashMap<String, OutputMediaMetadata>,
     pub output: OutputLayer,
     pub session_hook_endpoint: Option<String>,
 }
@@ -413,6 +428,33 @@ pub struct StreamRuntimeObservation {
     pub packet_count: u64,
     pub input_idle_timeout_ms: u64,
     pub closing: bool,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ActualMediaProfile {
+    pub video_codec: String,
+    pub audio_codec: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutputRuntimeState {
+    #[default]
+    Preparing,
+    Ready,
+    Failed,
+    Closed,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct OutputMediaMetadata {
+    pub state: OutputRuntimeState,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub mime_codec: String,
+}
+
+fn output_media_metadata_is_valid(metadata: &OutputMediaMetadata) -> bool {
+    metadata.state != OutputRuntimeState::Ready || !metadata.mime_codec.trim().is_empty()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -469,6 +511,8 @@ impl StreamMetadata {
             broadcast_bus: bus::broadcast::TypedMessageBus::new(),
             converter,
             media_ext: None,
+            actual_media_profile: None,
+            output_media_metadata: HashMap::new(),
             output,
             session_hook_endpoint: None,
         }
@@ -1694,6 +1738,95 @@ impl Register {
             .and_then(|meta| meta.media_ext.clone())
     }
 
+    pub fn set_actual_media_profile(
+        stream_id: &str,
+        profile: ActualMediaProfile,
+    ) -> GlobalResult<()> {
+        let arc = Self::get().inner.clone();
+        let mut meta = arc.stream_metadata_map.get_mut(stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        meta.actual_media_profile = Some(profile);
+        Ok(())
+    }
+
+    pub fn actual_media_profile(stream_id: &str) -> Option<ActualMediaProfile> {
+        let arc = Self::get().inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .and_then(|meta| meta.actual_media_profile.clone())
+    }
+
+    pub fn set_actual_media_profile_by_ssrc(
+        ssrc: u32,
+        profile: ActualMediaProfile,
+    ) -> GlobalResult<()> {
+        let stream_id = Self::stream_id_by_ssrc(ssrc).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: ssrc={ssrc}"),
+            )
+        })?;
+        Self::set_actual_media_profile(&stream_id, profile)
+    }
+
+    pub fn set_output_media_metadata(
+        stream_id: &str,
+        output_type: &str,
+        metadata: OutputMediaMetadata,
+    ) -> GlobalResult<()> {
+        let (output_type, _, _, _) = live_output_contract(output_type)?;
+        if !output_media_metadata_is_valid(&metadata) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "ready output metadata requires mime_codec",
+                |msg| error!("{msg}: stream_id={stream_id}, output_type={output_type}"),
+            ));
+        }
+        let arc = Self::get().inner.clone();
+        let mut meta = arc.stream_metadata_map.get_mut(stream_id).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            )
+        })?;
+        meta.output_media_metadata
+            .insert(output_type.to_string(), metadata);
+        Ok(())
+    }
+
+    pub fn output_media_metadata(
+        stream_id: &str,
+        output_type: &str,
+    ) -> Option<OutputMediaMetadata> {
+        let output_type = live_output_contract(output_type).ok()?.0;
+        let arc = Self::get().inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .and_then(|meta| meta.output_media_metadata.get(output_type).cloned())
+    }
+
+    pub fn set_output_media_metadata_by_ssrc(
+        ssrc: u32,
+        output_type: &str,
+        metadata: OutputMediaMetadata,
+    ) -> GlobalResult<()> {
+        let stream_id = Self::stream_id_by_ssrc(ssrc).ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::NotFound.code(),
+                "stream media is not initialized",
+                |msg| error!("{msg}: ssrc={ssrc}"),
+            )
+        })?;
+        Self::set_output_media_metadata(&stream_id, output_type, metadata)
+    }
+
     pub fn build_stream_info(stream_id: Arc<str>) -> Option<BaseStreamInfo> {
         let arc = Self::get().inner.clone();
         arc.stream_metadata_map.get(&stream_id).map(|meta| {
@@ -1770,6 +1903,9 @@ impl Register {
                 meta.out_idle_timeout,
             );
         }
+        meta.output_media_metadata
+            .entry(output_type.to_string())
+            .or_default();
         let base = Self::build_base_stream_info(
             &meta,
             arc.server_conf.name.clone(),
@@ -1798,6 +1934,9 @@ impl Register {
         Self::cancel_first_subscriber(&arc, stream_id, output_enum, meta.lifecycle_generation);
         publish_muxer_event(&meta.mpsc_bus, MuxerEvent::Close(muxer))
             .hand_log(|msg| error!("{msg}"))?;
+        if let Some(metadata) = meta.output_media_metadata.get_mut(output_type) {
+            metadata.state = OutputRuntimeState::Closed;
+        }
         Ok(true)
     }
     pub fn insert_origin_trans(stream_id: Arc<str>, origin_trans: (SocketAddr, Protocol)) -> bool {
@@ -1863,6 +2002,7 @@ impl Register {
                 ));
             }
             let output_kind = media_config.output;
+            let live_output_type = live_output_type_from_kind(&output_kind);
             let viewer_output = viewer_output_enum(&output_kind);
             if !meta.output.put_if_absent(output_kind.clone()) {
                 return Ok(ssrc);
@@ -1904,6 +2044,11 @@ impl Register {
                     meta.out_idle_timeout,
                 );
             }
+            if let Some(output_type) = live_output_type {
+                meta.output_media_metadata
+                    .entry(output_type.to_string())
+                    .or_default();
+            }
             drop(meta);
             if let Some(active_event) = active_event {
                 arc.event_tx
@@ -1913,6 +2058,7 @@ impl Register {
             return Ok(ssrc);
         }
         let viewer_output = viewer_output_enum(&media_config.output);
+        let live_output_type = live_output_type_from_kind(&media_config.output);
         let rtp_channel = RtpChannel::new(stream_id.clone());
         let converter = ConverterLayer::new(
             media_config.codec,
@@ -1924,6 +2070,11 @@ impl Register {
         let mut metadata =
             StreamMetadata::new(ssrc, in_wait_timeout, out_idle_timeout, converter, output);
         metadata.session_hook_endpoint = media_config.session_hook_endpoint;
+        if let Some(output_type) = live_output_type {
+            metadata
+                .output_media_metadata
+                .insert(output_type.to_string(), OutputMediaMetadata::default());
+        }
         let lifecycle_generation = metadata.lifecycle_generation;
         let event = metadata.build_from_output_kind(
             media_config.output,
@@ -2221,9 +2372,10 @@ impl OutputCount {
 #[cfg(test)]
 mod unknown_stream_tests {
     use super::{
-        ContextEvent, MuxerEnum, MuxerEvent, RtpChannel, UNKNOWN_STREAM_COOLDOWN_MS,
-        UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, close_output_layers,
-        live_output_contract, publish_muxer_event, stream_config_ready,
+        ContextEvent, MuxerEnum, MuxerEvent, OutputMediaMetadata, OutputRuntimeState, RtpChannel,
+        UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation,
+        close_output_layers, live_output_contract, output_media_metadata_is_valid,
+        publish_muxer_event, stream_config_ready,
     };
     use crate::state::layer::muxer_layer::MuxerLayer;
     use crate::state::layer::output_layer::OutputLayer;
@@ -2281,6 +2433,21 @@ mod unknown_stream_tests {
         assert!(!stream_config_ready(None, origin));
         assert!(!stream_config_ready(Some(&media_ext), None));
         assert!(stream_config_ready(Some(&media_ext), origin));
+    }
+
+    #[test]
+    fn ready_output_metadata_requires_actual_mime_codec() {
+        let mut metadata = OutputMediaMetadata {
+            state: OutputRuntimeState::Ready,
+            ..Default::default()
+        };
+        assert!(!output_media_metadata_is_valid(&metadata));
+
+        metadata.mime_codec = "video/mp4; codecs=\"hvc1.1.6.L123.B0\"".to_string();
+        assert!(output_media_metadata_is_valid(&metadata));
+        assert!(output_media_metadata_is_valid(
+            &OutputMediaMetadata::default()
+        ));
     }
 
     #[test]

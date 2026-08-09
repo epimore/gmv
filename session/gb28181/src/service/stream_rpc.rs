@@ -12,10 +12,10 @@ use gmv_domain::info::obj::{
 use gmv_nodec::error as node_error;
 use gmv_protocol::common::v1::{Endpoint, EndpointMode, ErrorDetail, OperationRef};
 use gmv_protocol::stream::v1::{
-    ConfigureReceiveTransportRequest, CreateOutputRequest, MediaTransport, MediaTransportState,
-    OutputInfo, QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
-    StopReceivePhase, StopReceiveRequest, StopReceiveResponse, StreamBoolResponse,
-    StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
+    ConfigureReceiveTransportRequest, CreateOutputRequest, MediaReadinessStage, MediaTransport,
+    MediaTransportState, OutputInfo, QueryStreamRequest, QueryStreamResponse,
+    ReleaseSubscriptionOutputsRequest, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
+    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
     stream_control_client::StreamControlClient,
 };
 use std::time::{Duration, Instant};
@@ -343,6 +343,47 @@ pub async fn query_stream(node: &StreamNode, stream_id: &str) -> GlobalResult<Qu
         .map_err(|error| rpc_status(error, "query_stream"))?
         .into_inner();
     Ok(response)
+}
+
+pub async fn wait_for_output_metadata(
+    node: &StreamNode,
+    stream_id: &str,
+    timeout: Duration,
+) -> GlobalResult<QueryStreamResponse> {
+    let started = Instant::now();
+    loop {
+        let response = query_stream(node, stream_id).await?;
+        if output_metadata_ready(&response) {
+            return Ok(response);
+        }
+        if output_metadata_failed(&response) {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "stream output failed before media metadata became ready",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
+        if started.elapsed() >= timeout {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Timeout.code(),
+                "stream output metadata is not ready",
+                |msg| error!("{msg}: stream_id={stream_id}"),
+            ));
+        }
+        base::tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+fn output_metadata_ready(response: &QueryStreamResponse) -> bool {
+    response.media_ready
+        && !response.video_codec.trim().is_empty()
+        && !response.mime_codec.trim().is_empty()
+}
+
+fn output_metadata_failed(response: &QueryStreamResponse) -> bool {
+    StreamState::try_from(response.state) == Ok(StreamState::Failed)
+        || MediaReadinessStage::try_from(response.readiness_stage)
+            == Ok(MediaReadinessStage::Failed)
 }
 
 pub async fn query_input_observation(
@@ -726,4 +767,54 @@ pub async fn broadcast_online(
         .map_err(|error| rpc_status(error, "broadcast_online"))?
         .into_inner();
     ensure_bool(response, "broadcast_online")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{output_metadata_failed, output_metadata_ready};
+    use gmv_protocol::stream::v1::{MediaReadinessStage, QueryStreamResponse, StreamState};
+
+    #[test]
+    fn output_metadata_requires_actual_video_mime_and_ready_state() {
+        let mut response = QueryStreamResponse {
+            media_ready: true,
+            video_codec: "hvc1.1.6.L123.B0".to_string(),
+            mime_codec: "video/mp4; codecs=\"hvc1.1.6.L123.B0\"".to_string(),
+            ..Default::default()
+        };
+        assert!(output_metadata_ready(&response));
+
+        response.mime_codec.clear();
+        assert!(!output_metadata_ready(&response));
+        response.mime_codec = "video/mp4; codecs=\"hvc1.1.6.L123.B0\"".to_string();
+        response.media_ready = false;
+        assert!(!output_metadata_ready(&response));
+    }
+
+    #[test]
+    fn output_metadata_allows_actual_video_only_output() {
+        let response = QueryStreamResponse {
+            media_ready: true,
+            video_codec: "avc1.640028".to_string(),
+            audio_codec: String::new(),
+            mime_codec: "video/mp4; codecs=\"avc1.640028\"".to_string(),
+            ..Default::default()
+        };
+        assert!(output_metadata_ready(&response));
+    }
+
+    #[test]
+    fn output_metadata_failure_accepts_stream_or_output_failure() {
+        let output_failed = QueryStreamResponse {
+            readiness_stage: MediaReadinessStage::Failed as i32,
+            ..Default::default()
+        };
+        assert!(output_metadata_failed(&output_failed));
+
+        let stream_failed = QueryStreamResponse {
+            state: StreamState::Failed as i32,
+            ..Default::default()
+        };
+        assert!(output_metadata_failed(&stream_failed));
+    }
 }

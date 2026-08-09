@@ -171,12 +171,19 @@ impl TimelineNormalizer {
         codec_id: AVCodecID,
         reorder_delay: i32,
     ) {
+        if idx >= self.streams.len() {
+            self.streams.resize_with(idx + 1, || None);
+        }
         self.streams[idx] = Some(StreamTimeline::new(
             m_tp,
             time_base,
             codec_id,
             reorder_delay,
         ));
+    }
+
+    pub(in crate::media::context) fn is_stream_initialized(&self, idx: usize) -> bool {
+        self.streams.get(idx).is_some_and(Option::is_some)
     }
 
     pub fn rescale_global_base_us(&mut self, idx: usize, pts: i64) {
@@ -249,7 +256,10 @@ impl TimelineNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_H264, AVMediaType_AVMEDIA_TYPE_VIDEO};
+    use rsmpeg::ffi::{
+        AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVMediaType_AVMEDIA_TYPE_AUDIO,
+        AVMediaType_AVMEDIA_TYPE_VIDEO,
+    };
 
     fn packet(timestamp: i64, payload: &mut u8) -> AVPacket {
         let mut packet = unsafe { std::mem::zeroed::<AVPacket>() };
@@ -289,5 +299,27 @@ mod tests {
         assert!((3_600..=3_601).contains(&next.dts));
         assert!((3_600..=3_601).contains(&next.pts));
         assert!(next.dts < i64::from(i32::MAX));
+    }
+
+    #[test]
+    fn initializes_timeline_for_late_discovered_stream() {
+        let time_base = AVRational { num: 1, den: 8_000 };
+        let mut normalizer = TimelineNormalizer::new(1);
+        normalizer.init_stream(
+            1,
+            AVMediaType_AVMEDIA_TYPE_AUDIO,
+            time_base,
+            AVCodecID_AV_CODEC_ID_AAC,
+            0,
+        );
+        normalizer.rescale_global_base_us(1, 8_000);
+
+        let mut payload = 0_u8;
+        let mut packet = packet(8_000, &mut payload);
+        packet.stream_index = 1;
+
+        assert_eq!(normalizer.process(&mut packet, 1).1, ProcessResult::Ok);
+        assert_eq!(packet.pts, 0);
+        assert_eq!(packet.dts, 0);
     }
 }

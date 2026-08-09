@@ -1,4 +1,5 @@
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::fmp4::clone_packet_for_mp4;
 use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, write_callback};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
@@ -6,12 +7,11 @@ use base::exception::{GlobalError, GlobalResult};
 use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVDictionary, AVFMT_FLAG_FLUSH_PACKETS, AVFormatContext, AVIOContext,
-    AVPacket, AVRational, av_dict_free, av_dict_set, av_free, av_guess_format,
-    av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
-    av_rescale_q, av_write_trailer, avcodec_parameters_copy, avformat_alloc_context,
-    avformat_free_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
-    avio_context_free,
+    AV_PKT_FLAG_KEY, AVCodecID_AV_CODEC_ID_AAC, AVDictionary, AVFMT_FLAG_FLUSH_PACKETS,
+    AVFormatContext, AVIOContext, AVPacket, AVRational, av_dict_free, av_dict_set, av_free,
+    av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_rescale_ts, av_rescale_q,
+    av_write_trailer, avcodec_parameters_copy, avformat_alloc_context, avformat_free_context,
+    avformat_new_stream, avformat_write_header, avio_alloc_context, avio_context_free,
 };
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
@@ -273,26 +273,25 @@ impl FmtMuxer for Mp4Context {
                 return Ok(());
             }
 
-            // clone packet
-            let mut cloned = std::mem::zeroed::<AVPacket>();
-            if av_packet_ref(&mut cloned, pkt) < 0 {
-                warn!("Failed to ref packet");
-                return Ok(());
-            }
-
             let si = pkt.stream_index as usize;
             if si >= self.in_time_bases.len() || si >= self.out_time_bases.len() {
-                av_packet_unref(&mut cloned);
                 warn!("stream_index out of range: {}", si);
                 return Ok(());
             }
+            let out_st = *(*self.fmt_ctx).streams.add(si);
+            let codecpar = (*out_st).codecpar;
+            let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
+                && !(*codecpar).extradata.is_null()
+                && (*codecpar).extradata_size > 0;
+            let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
+            let cloned_ptr = cloned.as_mut_ptr();
 
             debug!(
                 "MP4 write_packet before rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={} in_tb={}/{} out_tb={}/{}",
                 si,
-                cloned.pts,
-                cloned.dts,
-                cloned.duration,
+                (*cloned_ptr).pts,
+                (*cloned_ptr).dts,
+                (*cloned_ptr).duration,
                 self.in_time_bases[si].num,
                 self.in_time_bases[si].den,
                 self.out_time_bases[si].num,
@@ -301,9 +300,9 @@ impl FmtMuxer for Mp4Context {
 
             // rescale timestamps
             let orig_duration = pkt.duration;
-            av_packet_rescale_ts(&mut cloned, self.in_time_bases[si], self.out_time_bases[si]);
+            av_packet_rescale_ts(cloned_ptr, self.in_time_bases[si], self.out_time_bases[si]);
             if orig_duration > 0 {
-                cloned.duration = av_rescale_q(
+                (*cloned_ptr).duration = av_rescale_q(
                     orig_duration,
                     self.in_time_bases[si],
                     self.out_time_bases[si],
@@ -312,16 +311,19 @@ impl FmtMuxer for Mp4Context {
 
             debug!(
                 "MP4 write_packet after rescale: stream={} cloned.pts={} cloned.dts={} cloned.duration={}",
-                si, cloned.pts, cloned.dts, cloned.duration,
+                si,
+                (*cloned_ptr).pts,
+                (*cloned_ptr).dts,
+                (*cloned_ptr).duration,
             );
 
-            let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
-            av_packet_unref(&mut cloned);
+            let ret = av_interleaved_write_frame(self.fmt_ctx, cloned_ptr);
             if ret < 0 {
                 let ffmpeg_error = show_ffmpeg_error_msg(ret);
-                warn!("MP4 write failed: {}, error: {}", ret, ffmpeg_error);
-                av_packet_unref(&mut cloned);
-                return Ok(());
+                return Err(GlobalError::new_sys_error(
+                    &format!("MP4 write failed: {ret}, error: {ffmpeg_error}"),
+                    |msg| warn!("{msg}"),
+                ));
             }
 
             // pull produced data

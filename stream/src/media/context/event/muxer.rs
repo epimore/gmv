@@ -9,6 +9,7 @@ use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
 use crate::state::layer::muxer_layer::{
     CMafLayer, FlvLayer, HlsTsLayer, Mp4Layer, RtpEncLayer, RtpFrameLayer, RtpPsLayer, TsLayer,
 };
+use base::exception::GlobalResult;
 use base::log::warn;
 use rsmpeg::ffi::AVCodecID_AV_CODEC_ID_HEVC;
 
@@ -17,22 +18,21 @@ pub enum MuxerEvent {
     Close(MuxerEnum),
 }
 impl MuxerEvent {
-    pub fn handle_event(self, muxer_context: &mut MuxerContext, demuxer_context: &DemuxerContext) {
+    pub fn handle_event(
+        self,
+        muxer_context: &mut MuxerContext,
+        demuxer_context: &DemuxerContext,
+    ) -> GlobalResult<()> {
         match self {
             MuxerEvent::Open(open) => match open {
                 MuxerKind::Flv(flv) => unsafe {
                     let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
                     if (*in_fmt_ctx).video_codec_id == AVCodecID_AV_CODEC_ID_HEVC {
-                        let _ = H265FlvContext::init_context(demuxer_context, flv.tx).map(
-                            |flv_context| {
-                                muxer_context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
-                            },
-                        );
+                        let flv_context = H265FlvContext::init_context(demuxer_context, flv.tx)?;
+                        muxer_context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
                     } else {
-                        let _ =
-                            FlvContext::init_context(demuxer_context, flv.tx).map(|flv_context| {
-                                muxer_context.flv = Some(FlvSupperCtx::FlvCtx(flv_context));
-                            });
+                        let flv_context = FlvContext::init_context(demuxer_context, flv.tx)?;
+                        muxer_context.flv = Some(FlvSupperCtx::FlvCtx(flv_context));
                     }
                 },
                 MuxerKind::Ts(_) => {
@@ -42,9 +42,8 @@ impl MuxerEvent {
                     warn!("stream muxer event ignored unsupported mp4 output");
                 }
                 MuxerKind::FMp4(fmp4) => {
-                    let _ = CmafFmp4Context::init_context(demuxer_context, fmp4.tx).map(|ctx| {
-                        muxer_context.fmp4 = Some(ctx);
-                    });
+                    muxer_context.fmp4 =
+                        Some(CmafFmp4Context::init_context(demuxer_context, fmp4.tx)?);
                 }
                 MuxerKind::HlsTs(_) => {
                     warn!("stream muxer event ignored unsupported hls-ts output");
@@ -59,15 +58,14 @@ impl MuxerEvent {
                     warn!("stream muxer event ignored unsupported rtp-enc output");
                 }
                 MuxerKind::DashMp4(dash_mp4) => {
-                    let _ =
-                        DashCmafMp4Context::init_context(demuxer_context, dash_mp4.tx).map(|ctx| {
-                            muxer_context.dash_mp4 = Some(ctx);
-                        });
+                    muxer_context.dash_mp4 = Some(DashCmafMp4Context::init_context(
+                        demuxer_context,
+                        dash_mp4.tx,
+                    )?);
                 }
                 MuxerKind::HlsMp4(hls_mp4) => {
-                    let _ = HlsFmp4Context::init_context(demuxer_context, hls_mp4.tx).map(|ctx| {
-                        muxer_context.hls_mp4 = Some(ctx);
-                    });
+                    muxer_context.hls_mp4 =
+                        Some(HlsFmp4Context::init_context(demuxer_context, hls_mp4.tx)?);
                 }
             },
             // cache缓存的media layer；在发布关闭事件时做出判断-关闭是否muxer/filter等关联输出是否为空，为空则直接释放对应的ssrc资源,不会造成空转
@@ -94,6 +92,7 @@ impl MuxerEvent {
                 }
             },
         }
+        Ok(())
     }
 }
 

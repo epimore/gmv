@@ -2112,6 +2112,7 @@ impl BusinessControl {
             endpoint: session_response.endpoint,
             video_codec: session_response.video_codec,
             audio_codec: session_response.audio_codec,
+            mime_codec: session_response.mime_codec,
             broadcast_profile: session_response.broadcast_profile,
             requested_stream_profile: matches!(kind, DeviceStreamKind::Live)
                 .then(|| stream_profile_name(session_response.requested_stream_profile))
@@ -2232,6 +2233,7 @@ impl BusinessControl {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            mime_codec: String::new(),
             broadcast_profile: String::new(),
             requested_stream_profile: String::new(),
             effective_stream_profile: String::new(),
@@ -2339,6 +2341,7 @@ impl BusinessControl {
             endpoint: String::new(),
             video_codec: String::new(),
             audio_codec: String::new(),
+            mime_codec: String::new(),
             broadcast_profile: String::new(),
             requested_stream_profile: String::new(),
             effective_stream_profile: String::new(),
@@ -3496,6 +3499,9 @@ fn stream_output_summary(output: OutputInfo) -> StreamOutputSummary {
         output_type: output.output_type,
         endpoint: output.endpoint,
         state,
+        video_codec: output.video_codec,
+        audio_codec: output.audio_codec,
+        mime_codec: output.mime_codec,
     }
 }
 
@@ -3628,6 +3634,29 @@ mod tests {
     use gmv_protocol::common::v1::ErrorDetail;
 
     use super::*;
+
+    #[test]
+    fn stream_output_summary_preserves_actual_media_metadata() {
+        let summary = stream_output_summary(OutputInfo {
+            output_id: "output-1".to_string(),
+            stream_id: "stream-1".to_string(),
+            output_type: "fmp4".to_string(),
+            endpoint: "http://127.0.0.1/stream-1.fmp4".to_string(),
+            state: OutputState::Ready as i32,
+            subscription_id: "subscription-1".to_string(),
+            video_codec: "hvc1.1.6.L123.B0".to_string(),
+            audio_codec: "mp4a.40.2".to_string(),
+            mime_codec: "video/mp4; codecs=\"hvc1.1.6.L123.B0, mp4a.40.2\"".to_string(),
+        });
+
+        assert_eq!(summary.state, StreamOutputState::Ready);
+        assert_eq!(summary.video_codec, "hvc1.1.6.L123.B0");
+        assert_eq!(summary.audio_codec, "mp4a.40.2");
+        assert_eq!(
+            summary.mime_codec,
+            "video/mp4; codecs=\"hvc1.1.6.L123.B0, mp4a.40.2\""
+        );
+    }
 
     #[test]
     fn live_input_keys_isolate_main_and_sub_profiles() {

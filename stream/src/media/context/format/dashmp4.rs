@@ -1,5 +1,5 @@
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::fmp4::CmafFmp4Context;
+use crate::media::context::format::fmp4::{CmafFmp4Context, clone_packet_for_mp4};
 use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, fmp4, write_callback};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use axum::body::Bytes;
@@ -8,9 +8,9 @@ use base::once_cell::sync::Lazy;
 use log::{debug, error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE,
-    AVFormatContext, AVIOContext, AVPacket, av_dict_set, av_free, av_guess_format,
-    av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVCodecID_AV_CODEC_ID_AAC, AVFMT_FLAG_AUTO_BSF,
+    AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE, AVFormatContext, AVIOContext, AVPacket, av_dict_set,
+    av_free, av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_rescale_ts,
     av_write_frame, av_write_trailer, avformat_alloc_context, avformat_write_header,
     avio_alloc_context, avio_context_free, avio_flush,
 };
@@ -178,19 +178,21 @@ impl FmtMuxer for DashCmafMp4Context {
                     return Ok(());
                 }
                 Some(&in_tb) => {
-                    let mut cloned = std::mem::zeroed::<AVPacket>();
-                    // 写入当前帧
-                    av_packet_ref(&mut cloned, pkt);
                     let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
-                    av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
-                    cloned.pos = -1;
-                    let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+                    let codecpar = (*out_st).codecpar;
+                    let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
+                        && !(*codecpar).extradata.is_null()
+                        && (*codecpar).extradata_size > 0;
+                    let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
+                    av_packet_rescale_ts(cloned.as_mut_ptr(), in_tb, (*out_st).time_base);
+                    (*cloned.as_mut_ptr()).pos = -1;
+                    let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
                     if ret < 0 {
-                        warn!("dash MP4 write failed:{}", show_ffmpeg_error_msg(ret));
-                        av_packet_unref(&mut cloned);
-                        return Ok(());
+                        return Err(GlobalError::new_sys_error(
+                            &format!("dash MP4 write failed: {}", show_ffmpeg_error_msg(ret)),
+                            |msg| warn!("{msg}"),
+                        ));
                     }
-                    av_packet_unref(&mut cloned);
                     let is_keyframe =
                         self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if self.flush_fragment(

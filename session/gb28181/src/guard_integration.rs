@@ -2673,6 +2673,15 @@ impl SessionControlRpc {
             )),
         }
         .unwrap_or_else(device_error);
+        if response.state == DeviceStreamState::Running as i32
+            && matches!(stream_type, "live" | "playback")
+        {
+            let stream_id = response.stream_id.clone();
+            if let Err(err) = apply_actual_output_metadata(&mut response).await {
+                stream_close::begin(stream_id);
+                response = device_error(err);
+            }
+        }
         if response.state == DeviceStreamState::Running as i32 {
             if stream_type == "playback" {
                 if let Err(err) = SipDialogSessionRepository::initialize_playback_control(
@@ -3095,6 +3104,7 @@ fn device_response(
         endpoint: String::new(),
         video_codec: String::new(),
         audio_codec: String::new(),
+        mime_codec: String::new(),
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
@@ -3547,6 +3557,7 @@ fn stream_response(
         endpoint,
         video_codec,
         audio_codec,
+        mime_codec: String::new(),
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
@@ -3570,6 +3581,7 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         endpoint: String::new(),
         video_codec: String::new(),
         audio_codec: String::new(),
+        mime_codec: String::new(),
         subscription_id: String::new(),
         session_node_id: String::new(),
         session_instance_id: String::new(),
@@ -3580,6 +3592,30 @@ fn device_error(err: GlobalError) -> DeviceStreamResponse {
         effective_stream_profile: VideoStreamProfile::Unspecified as i32,
         stream_profile_verification: StreamProfileVerification::Unspecified as i32,
     }
+}
+
+async fn apply_actual_output_metadata(response: &mut DeviceStreamResponse) -> GlobalResult<()> {
+    let (node_id, _) = crate::state::session::Cache::stream_map_query_node_ssrc(
+        &response.stream_id,
+    )
+    .ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "stream route is unavailable for media metadata query",
+            |msg| log_error!("{msg}: stream_id={}", response.stream_id),
+        )
+    })?;
+    let node = ensure_stream_node(&node_id).await?;
+    let metadata = stream_rpc::wait_for_output_metadata(
+        &node,
+        &response.stream_id,
+        std::time::Duration::from_secs(crate::service::EXPIRES),
+    )
+    .await?;
+    response.video_codec = metadata.video_codec;
+    response.audio_codec = metadata.audio_codec;
+    response.mime_codec = metadata.mime_codec;
+    Ok(())
 }
 
 fn operation_id(operation: Option<&OperationRef>) -> String {

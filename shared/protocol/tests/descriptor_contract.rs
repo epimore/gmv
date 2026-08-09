@@ -442,6 +442,8 @@ fn live_stream_profile_contract_is_stable() {
     );
 
     let response = descriptor_message(session, "DeviceStreamResponse");
+    assert_eq!(descriptor_field_number(response, "video_codec"), Some(5));
+    assert_eq!(descriptor_field_number(response, "audio_codec"), Some(6));
     assert_eq!(
         descriptor_field_number(response, "requested_stream_profile"),
         Some(13)
@@ -473,6 +475,9 @@ fn live_stream_profile_contract_is_stable() {
     let query = descriptor_message(stream, "QueryStreamResponse");
     assert_eq!(descriptor_field_number(query, "readiness_stage"), Some(18));
     assert_eq!(descriptor_field_number(query, "queue_drop_count"), Some(25));
+    assert_eq!(descriptor_field_number(query, "audio_codec"), Some(26));
+    assert_eq!(descriptor_field_number(query, "mime_codec"), Some(27));
+    assert_eq!(descriptor_field_number(response, "mime_codec"), Some(16));
 }
 
 #[test]
@@ -600,6 +605,9 @@ fn stream_output_lifecycle_contract_is_stable() {
     assert_eq!(field_number("OutputInfo", "output_id"), Some(1));
     assert_eq!(field_number("OutputInfo", "state"), Some(5));
     assert_eq!(field_number("OutputInfo", "subscription_id"), Some(6));
+    assert_eq!(field_number("OutputInfo", "video_codec"), Some(7));
+    assert_eq!(field_number("OutputInfo", "audio_codec"), Some(8));
+    assert_eq!(field_number("OutputInfo", "mime_codec"), Some(9));
     assert_eq!(
         field_number("StreamJsonRequest", "subscription_id"),
         Some(2)

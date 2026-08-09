@@ -31,6 +31,8 @@ pub struct StreamSummary {
     pub video_codec: String,
     pub audio_codec: String,
     #[serde(default)]
+    pub mime_codec: String,
+    #[serde(default)]
     pub broadcast_profile: String,
     #[serde(default)]
     pub requested_stream_profile: String,
@@ -208,6 +210,9 @@ pub struct StreamOutputSummary {
     pub output_type: String,
     pub endpoint: String,
     pub state: StreamOutputState,
+    pub video_codec: String,
+    pub audio_codec: String,
+    pub mime_codec: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]

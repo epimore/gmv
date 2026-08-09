@@ -19,7 +19,7 @@ export class Fmp4Engine extends BaseEngine {
       throw new Error(`${GmvErrorCode.MediaSourceUnavailable}: 当前浏览器不支持 MediaSource`);
     }
     if (!source.mimeCodec) {
-      throw new Error(`${GmvErrorCode.UnsupportedCodec}: FMP4 播放必须提供 mimeCodec`);
+      throw new Error(`${GmvErrorCode.CodecMetadataMissing}: FMP4 播放缺少服务端 mimeCodec`);
     }
     if (!MediaSource.isTypeSupported(source.mimeCodec)) {
       throw new Error(`${GmvErrorCode.UnsupportedCodec}: 当前浏览器不支持 ${source.mimeCodec}`);

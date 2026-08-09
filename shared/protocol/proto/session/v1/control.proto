@@ -341,6 +341,7 @@ message DeviceStreamResponse {
   VideoStreamProfile requested_stream_profile = 13;
   VideoStreamProfile effective_stream_profile = 14;
   StreamProfileVerification stream_profile_verification = 15;
+  string mime_codec = 16;
 }
 
 enum DeviceStreamState {

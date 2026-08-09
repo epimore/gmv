@@ -44,7 +44,9 @@ use crate::io::local::mp4::Mp4OutputInnerEvent;
 use crate::io::media_endpoint::{
     ConnectMediaEndpoint, MediaConnectionState, MediaEndpointManager, ReserveMediaEndpoint,
 };
-use crate::state::register::{FinalizeStreamResult, Register, StreamRuntimeObservation};
+use crate::state::register::{
+    FinalizeStreamResult, OutputRuntimeState, Register, StreamRuntimeObservation,
+};
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
 static GUARD_CHANNEL: OnceLock<RpcChannelConfig> = OnceLock::new();
@@ -685,15 +687,41 @@ struct OutputRuntime {
 }
 
 impl OutputRuntime {
-    fn info(&self) -> OutputInfo {
+    fn info(&self, use_media_runtime: bool) -> OutputInfo {
+        let metadata = use_media_runtime
+            .then(|| Register::output_media_metadata(&self.stream_id, &self.output_type))
+            .flatten();
         OutputInfo {
             output_id: self.output_id.clone(),
             stream_id: self.stream_id.clone(),
             output_type: self.output_type.clone(),
             endpoint: self.endpoint.clone(),
-            state: self.state as i32,
+            state: metadata
+                .as_ref()
+                .map(|metadata| output_state(metadata.state))
+                .unwrap_or(self.state) as i32,
             subscription_id: self.subscription_id.clone(),
+            video_codec: metadata
+                .as_ref()
+                .map(|metadata| metadata.video_codec.clone())
+                .unwrap_or_default(),
+            audio_codec: metadata
+                .as_ref()
+                .map(|metadata| metadata.audio_codec.clone())
+                .unwrap_or_default(),
+            mime_codec: metadata
+                .map(|metadata| metadata.mime_codec)
+                .unwrap_or_default(),
         }
+    }
+}
+
+fn output_state(state: OutputRuntimeState) -> OutputState {
+    match state {
+        OutputRuntimeState::Preparing => OutputState::Preparing,
+        OutputRuntimeState::Ready => OutputState::Ready,
+        OutputRuntimeState::Failed => OutputState::Failed,
+        OutputRuntimeState::Closed => OutputState::Closed,
     }
 }
 
@@ -1298,16 +1326,32 @@ impl StreamControlAdapter {
             .get(&request.stream_id)
             .map(|stream| stream.primary_output_format.clone())
             .unwrap_or_default();
-        let output_ready = self.outputs.values().any(|output| {
-            output.stream_id == request.stream_id
-                && output.state == OutputState::Ready
-                && (self.media_tx.is_none()
-                    || Register::is_live_output_open(&request.stream_id, &output.output_type))
+        let primary_output_metadata = self.media_tx.as_ref().and_then(|_| {
+            Register::output_media_metadata(&request.stream_id, &primary_output_format)
         });
-        let readiness_stage = if state == StreamState::Failed {
+        let output_ready = if self.media_tx.is_some() {
+            primary_output_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.state == OutputRuntimeState::Ready)
+        } else {
+            self.outputs.values().any(|output| {
+                output.stream_id == request.stream_id && output.state == OutputState::Ready
+            })
+        };
+        let actual_media_profile = self
+            .media_tx
+            .as_ref()
+            .and_then(|_| Register::actual_media_profile(&request.stream_id));
+        let readiness_stage = if state == StreamState::Failed
+            || primary_output_metadata
+                .as_ref()
+                .is_some_and(|metadata| metadata.state == OutputRuntimeState::Failed)
+        {
             MediaReadinessStage::Failed
         } else if output_ready {
             MediaReadinessStage::OutputReady
+        } else if actual_media_profile.is_some() {
+            MediaReadinessStage::CodecReady
         } else if observation.is_some() {
             MediaReadinessStage::InputObserved
         } else {
@@ -1351,9 +1395,9 @@ impl StreamControlAdapter {
             input_observed: observation.is_some(),
             primary_output_format,
             readiness_stage: readiness_stage as i32,
-            video_codec: media_ext
+            video_codec: actual_media_profile
                 .as_ref()
-                .and_then(|ext| ext.video_params.codec_id.clone())
+                .map(|profile| profile.video_codec.clone())
                 .unwrap_or_default(),
             video_width,
             video_height,
@@ -1370,6 +1414,12 @@ impl StreamControlAdapter {
                 * 1_000,
             rtp_loss_count: 0,
             queue_drop_count: 0,
+            audio_codec: actual_media_profile
+                .map(|profile| profile.audio_codec)
+                .unwrap_or_default(),
+            mime_codec: primary_output_metadata
+                .map(|metadata| metadata.mime_codec)
+                .unwrap_or_default(),
         }
     }
 
@@ -1541,7 +1591,7 @@ impl StreamControlAdapter {
                     }
                 }
             }
-            let output = existing.info();
+            let output = existing.info(self.media_tx.is_some());
             return CreateOutputResponse {
                 output_id,
                 endpoints: self.playback_endpoints(),
@@ -1573,10 +1623,14 @@ impl StreamControlAdapter {
             stream_id: request.stream_id,
             output_type: output_type.to_string(),
             endpoint,
-            state: OutputState::Ready,
+            state: if self.media_tx.is_some() {
+                OutputState::Preparing
+            } else {
+                OutputState::Ready
+            },
             subscription_id: request.subscription_id,
         };
-        let output = runtime.info();
+        let output = runtime.info(self.media_tx.is_some());
         self.outputs.insert(output_id.clone(), runtime);
         CreateOutputResponse {
             output_id,
@@ -1601,7 +1655,7 @@ impl StreamControlAdapter {
                     "output_stream_mismatch",
                     "output does not belong to stream",
                 )),
-                output: Some(runtime.info()),
+                output: Some(runtime.info(self.media_tx.is_some())),
             };
         }
         self.outputs.remove(&request.output_id);
@@ -1620,10 +1674,10 @@ impl StreamControlAdapter {
             return CloseOutputResponse {
                 closed: false,
                 error: Some(detail_from_error(error_value)),
-                output: Some(runtime.info()),
+                output: Some(runtime.info(self.media_tx.is_some())),
             };
         }
-        let mut output = runtime.info();
+        let mut output = runtime.info(self.media_tx.is_some());
         output.state = OutputState::Closed as i32;
         CloseOutputResponse {
             closed: true,
@@ -1700,7 +1754,7 @@ impl StreamControlAdapter {
                     self.media_tx.is_none()
                         || Register::is_live_output_open(&output.stream_id, &output.output_type)
                 })
-                .map(OutputRuntime::info)
+                .map(|output| output.info(self.media_tx.is_some()))
                 .collect(),
         }
     }
@@ -1745,7 +1799,7 @@ impl StreamControlAdapter {
                         stream_id,
                         output_type: output_type.to_string(),
                         endpoint,
-                        state: OutputState::Ready,
+                        state: OutputState::Preparing,
                         subscription_id,
                     });
             }
@@ -2103,6 +2157,23 @@ pub fn operation(operation_id: &str) -> OperationRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn actual_output_runtime_state_maps_to_protocol_state() {
+        assert_eq!(
+            output_state(OutputRuntimeState::Preparing),
+            OutputState::Preparing
+        );
+        assert_eq!(output_state(OutputRuntimeState::Ready), OutputState::Ready);
+        assert_eq!(
+            output_state(OutputRuntimeState::Failed),
+            OutputState::Failed
+        );
+        assert_eq!(
+            output_state(OutputRuntimeState::Closed),
+            OutputState::Closed
+        );
+    }
     use crate::general::cfg::{MediaListenerConf, MediaListenerMode, MediaPortRange};
     use crate::io::media_endpoint::{MediaBootstrap, MediaEndpointManager, find_free_test_range};
     use base::utils::rt::GlobalRuntime;

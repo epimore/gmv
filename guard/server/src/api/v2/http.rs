@@ -2062,6 +2062,7 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "endpoint",
             "video_codec",
             "audio_codec",
+            "mime_codec",
             "broadcast_profile",
             "requested_stream_profile",
             "effective_stream_profile",
@@ -2075,9 +2076,16 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "playback_end_time_sec",
             "state",
         ],
-        "/streams/{stream_id}/outputs" if method == "get" => {
-            &["output_id", "stream_id", "output_type", "endpoint", "state"]
-        }
+        "/streams/{stream_id}/outputs" if method == "get" => &[
+            "output_id",
+            "stream_id",
+            "output_type",
+            "endpoint",
+            "state",
+            "video_codec",
+            "audio_codec",
+            "mime_codec",
+        ],
         "/streams/{stream_id}/outputs" => &[
             "operation_id",
             "state",
@@ -2491,6 +2499,7 @@ fn openapi_response_field_description(field: &str) -> &'static str {
         }
         "video_codec" => "媒体视频编码名称。",
         "audio_codec" => "媒体音频编码名称。",
+        "mime_codec" => "Stream 根据实际输出生成的完整 MIME codec 字符串。",
         "requested_stream_profile" => "调用方请求的码流档位。",
         "effective_stream_profile" => "设备或会话实际生效的码流档位。",
         "stream_profile_verification" => "实际码流档位的验证状态。",
@@ -2934,6 +2943,7 @@ fn mqtt_action_payload_schemas() -> base::serde_json::Value {
                 "stream_profile_verification": {"type": "string", "description": "码流选择确认状态。"},
                 "video_codec": {"type": "string"},
                 "audio_codec": {"type": "string"},
+                "mime_codec": {"type": "string"},
                 "state": {"type": "string", "enum": ["running", "stopping", "stopped", "failed"]}
             }
         },
@@ -10012,6 +10022,7 @@ pub(crate) fn stream_summaries(store: &InMemoryGuardStore) -> Vec<StreamSummary>
                 endpoint: String::new(),
                 video_codec: String::new(),
                 audio_codec: String::new(),
+                mime_codec: String::new(),
                 broadcast_profile: String::new(),
                 requested_stream_profile: String::new(),
                 effective_stream_profile: String::new(),
@@ -10783,6 +10794,28 @@ mod tests {
                 .as_object()
                 .map(base::serde_json::Map::len),
             Some(crate::integration::model::MQTT_COMMAND_ACTIONS.len())
+        );
+    }
+
+    #[test]
+    fn stream_contract_exposes_actual_codec_and_mime_metadata() {
+        let streams = openapi_success_schema("get", "/streams", "查询媒体流");
+        let stream_properties = &streams["items"]["properties"];
+        assert!(stream_properties.get("video_codec").is_some());
+        assert!(stream_properties.get("audio_codec").is_some());
+        assert!(stream_properties.get("mime_codec").is_some());
+
+        let outputs = openapi_success_schema("get", "/streams/{stream_id}/outputs", "查询媒体输出");
+        let output_properties = &outputs["items"]["properties"];
+        assert!(output_properties.get("video_codec").is_some());
+        assert!(output_properties.get("audio_codec").is_some());
+        assert!(output_properties.get("mime_codec").is_some());
+
+        let mqtt = mqtt_action_payload_schemas();
+        assert!(
+            mqtt["StreamCommandResult"]["properties"]
+                .get("mime_codec")
+                .is_some()
         );
     }
 

@@ -145,6 +145,8 @@ message QueryStreamResponse {
   uint64 input_bitrate_bps = 23;
   uint64 rtp_loss_count = 24;
   uint64 queue_drop_count = 25;
+  string audio_codec = 26;
+  string mime_codec = 27;
 }
 
 enum MediaReadinessStage {
@@ -217,6 +219,9 @@ message OutputInfo {
   string endpoint = 4;
   OutputState state = 5;
   string subscription_id = 6;
+  string video_codec = 7;
+  string audio_codec = 8;
+  string mime_codec = 9;
 }
 
 enum OutputState {

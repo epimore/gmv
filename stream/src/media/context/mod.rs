@@ -9,7 +9,7 @@ use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::MuxerContext;
 use crate::media::context::utils::codecpar::repair_basic_stream_info;
-use crate::media::context::utils::extradata::dump_stream_info;
+use crate::media::context::utils::extradata::{self, dump_stream_info};
 use crate::media::context::utils::time_scale::{
     ProcessResult, TimelineNormalizer, repair_missing_timestamps,
 };
@@ -17,13 +17,17 @@ use crate::media::rtp::RtpPacketBuffer;
 use crate::media::show_ffmpeg_error_msg;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
+use crate::state::register::{
+    ActualMediaProfile, OutputMediaMetadata, OutputRuntimeState, Register,
+};
 use base::bus::mpsc::TypedReceiver;
 use base::bytes::BytesMut;
 use base::chrono::Local;
+use base::err::BaseErrorCode;
 use base::exception::typed::common::MessageBusError;
-use base::exception::{BizError, GlobalError, GlobalResult};
+use base::exception::{GlobalError, GlobalResult};
 use gmv_domain::info::media_info_ext::MediaExt;
-use log::warn;
+use log::{error, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVERROR_EOF, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO,
@@ -45,6 +49,8 @@ pub mod utils;
 /// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 const FIX_MAX_READ_FRAME: usize = 128;
+const TOPOLOGY_SETTLE_PACKETS: usize = 64;
+const TOPOLOGY_SETTLE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaCompletion {
@@ -141,6 +147,7 @@ impl RtpState {
 }
 pub struct MediaContext {
     pub ssrc: u32,
+    pub stream_id: Option<Arc<str>>,
     pub media_ext: MediaExt,
     pub codec_context: Option<CodecContext>,
     pub filter_context: FilterContext,
@@ -148,6 +155,7 @@ pub struct MediaContext {
     pub context_event_rx: TypedReceiver<ContextEvent>,
     pub demuxer_context: DemuxerContext,
     pub rtp_state: *mut RtpState,
+    actual_media_profile: Option<ActualMediaProfile>,
 }
 impl Drop for MediaContext {
     fn drop(&mut self) {
@@ -166,6 +174,87 @@ struct InitCacheInfo {
     pkts: VecDeque<AVPacket>,
     timeline_normalizer: TimelineNormalizer,
 }
+
+#[derive(Default)]
+struct TopologySettleState {
+    packets_since_change: usize,
+    bytes_since_change: usize,
+}
+
+impl TopologySettleState {
+    fn observe_packet(&mut self, supported_stream_discovered: bool, packet_size: usize) {
+        if supported_stream_discovered {
+            self.packets_since_change = 0;
+            self.bytes_since_change = 0;
+        } else {
+            self.packets_since_change = self.packets_since_change.saturating_add(1);
+            self.bytes_since_change = self.bytes_since_change.saturating_add(packet_size);
+        }
+    }
+
+    fn is_stable(&self) -> bool {
+        self.packets_since_change > TOPOLOGY_SETTLE_PACKETS
+            && self.bytes_since_change > TOPOLOGY_SETTLE_BYTES
+    }
+}
+
+fn is_supported_av(media_type: AVMediaType) -> bool {
+    matches!(
+        media_type,
+        AVMediaType_AVMEDIA_TYPE_VIDEO | AVMediaType_AVMEDIA_TYPE_AUDIO
+    )
+}
+
+fn supported_stream_params_ready(streams: impl Iterator<Item = (AVMediaType, bool)>) -> bool {
+    streams
+        .filter(|(media_type, _)| is_supported_av(*media_type))
+        .all(|(_, ready)| ready)
+}
+
+unsafe fn init_stream_timeline(
+    fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
+    timeline_normalizer: &mut TimelineNormalizer,
+    idx: usize,
+) -> Option<AVMediaType> {
+    let stream = unsafe { *(*fmt_ctx).streams.add(idx) };
+    if stream.is_null() {
+        return None;
+    }
+    let codecpar = unsafe { (*stream).codecpar };
+    if codecpar.is_null() {
+        return None;
+    }
+    let media_type = unsafe { (*codecpar).codec_type };
+    timeline_normalizer.init_stream(
+        idx,
+        media_type,
+        unsafe { (*stream).time_base },
+        unsafe { (*codecpar).codec_id },
+        unsafe { (*codecpar).video_delay },
+    );
+    Some(media_type)
+}
+
+unsafe fn sync_discovered_streams(
+    demuxer_context: &mut DemuxerContext,
+    timeline_normalizer: &mut TimelineNormalizer,
+) -> usize {
+    let fmt_ctx = demuxer_context.avio.fmt_ctx;
+    demuxer_context.sync_params();
+    let mut supported_streams_discovered = 0;
+    for idx in 0..demuxer_context.params.len() {
+        if timeline_normalizer.is_stream_initialized(idx) {
+            continue;
+        }
+        if unsafe { init_stream_timeline(fmt_ctx, timeline_normalizer, idx) }
+            .is_some_and(is_supported_av)
+        {
+            supported_streams_discovered += 1;
+        }
+    }
+    supported_streams_discovered
+}
+
 impl MediaContext {
     /// 判断是否有视频流
     fn has_video_stream(&self) -> (bool, usize) {
@@ -229,11 +318,13 @@ impl MediaContext {
             codec_context: CodecContext::init(converter.codec, converter.transcode),
             filter_context: FilterContext::init(converter.filter),
             ssrc,
+            stream_id: Register::stream_id_by_ssrc(ssrc),
             media_ext: stream_config.media_ext,
             context_event_rx: stream_config.context_event_rx,
             muxer_context: Default::default(),
             demuxer_context,
             rtp_state: rtp_state_ptr,
+            actual_media_profile: None,
         };
         Ok((context, converter.muxer))
     }
@@ -241,28 +332,18 @@ impl MediaContext {
     unsafe fn fix_basic_stream_info(&mut self) -> Result<InitCacheInfo, MediaRunError> {
         let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
         let ext = &self.media_ext;
-        let params = &mut self.demuxer_context.params;
         let mut cache_info = InitCacheInfo {
             pkts: VecDeque::new(),
-            timeline_normalizer: TimelineNormalizer::new(params.len()),
+            timeline_normalizer: TimelineNormalizer::new(0),
         };
-        let mut has_video = false;
-        for i in 0..params.len() {
-            let stream = *(*fmt_ctx).streams.add(i);
-            let media_type = (*stream).codecpar.as_ref().unwrap().codec_type;
-            if media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                has_video = true;
+        for i in 0..self.demuxer_context.params.len() {
+            unsafe {
+                init_stream_timeline(fmt_ctx, &mut cache_info.timeline_normalizer, i);
             }
-            cache_info.timeline_normalizer.init_stream(
-                i,
-                media_type,
-                (*stream).time_base,
-                (*(*stream).codecpar).codec_id,
-                (*(*stream).codecpar).video_delay,
-            );
         }
         let mut video_keyframe_found = false;
         let mut audio_ready = false;
+        let mut topology_settle = TopologySettleState::default();
 
         let mut counter = 0;
         while counter < FIX_MAX_READ_FRAME {
@@ -271,14 +352,32 @@ impl MediaContext {
             if !classify_read_frame(ret, "fix_basic_stream_info")? {
                 break;
             }
+            counter += 1;
 
+            let supported_streams_discovered = unsafe {
+                sync_discovered_streams(
+                    &mut self.demuxer_context,
+                    &mut cache_info.timeline_normalizer,
+                )
+            };
+            topology_settle
+                .observe_packet(supported_streams_discovered > 0, pkt.size.max(0) as usize);
+
+            if pkt.stream_index < 0 {
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+                continue;
+            }
             let idx = pkt.stream_index as usize;
-            if idx >= params.len() {
+            if idx >= self.demuxer_context.params.len() {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
             let st = *(*fmt_ctx).streams.add(idx);
             let codecpar = (*st).codecpar;
+            if codecpar.is_null() {
+                rsmpeg::ffi::av_packet_unref(&mut pkt);
+                continue;
+            }
             if pkt.data.is_null() || pkt.size <= 0 {
                 warn!(
                     "Discard empty packet; ssrc: {}, pts: {}, dts: {} key frame: {}",
@@ -297,8 +396,9 @@ impl MediaContext {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
-            if !params[idx].ready {
-                params[idx].ready = repair_basic_stream_info(st, &pkt, ext, &mut params[idx]);
+            let param = &mut self.demuxer_context.params[idx];
+            if !param.ready {
+                param.ready = repair_basic_stream_info(st, &pkt, ext, param);
             }
             // 标记状态
             match (*codecpar).codec_type {
@@ -314,7 +414,7 @@ impl MediaContext {
             }
 
             // 起播条件
-            let should_cache = if has_video {
+            let should_cache = if self.has_video_stream().0 {
                 video_keyframe_found
             } else {
                 audio_ready
@@ -329,9 +429,14 @@ impl MediaContext {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
             }
 
-            counter += 1;
-
-            if should_cache && params.iter().all(|p| p.ready) {
+            let params = &self.demuxer_context.params;
+            let supported_params_ready =
+                supported_stream_params_ready((0..params.len()).filter_map(|idx| {
+                    let stream = *(*fmt_ctx).streams.add(idx);
+                    let codecpar = stream.as_ref()?.codecpar.as_ref()?;
+                    Some((codecpar.codec_type, params[idx].ready))
+                }));
+            if should_cache && supported_params_ready && topology_settle.is_stable() {
                 break;
             }
         }
@@ -356,12 +461,29 @@ impl MediaContext {
             if let Some(codec) = &mut self.codec_context {
                 codec.prepare(&mut self.demuxer_context)?;
             }
+            let media_param = extradata::parse_media_param(&self.demuxer_context);
+            let actual_media_profile = ActualMediaProfile {
+                video_codec: media_param
+                    .video
+                    .as_ref()
+                    .map(|video| video.codec.clone())
+                    .unwrap_or_default(),
+                audio_codec: media_param
+                    .audio
+                    .as_ref()
+                    .map(|audio| audio.codec.clone())
+                    .unwrap_or_default(),
+            };
+            if let Some(stream_id) = self.stream_id.as_deref() {
+                Register::set_actual_media_profile(stream_id, actual_media_profile.clone())?;
+            }
+            self.actual_media_profile = Some(actual_media_profile);
             //初始化muxer
-            self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer);
+            self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer)?;
             //消费缓存数据，以关键帧开始
             while let Some(mut pkt) = cache_info.pkts.pop_front() {
                 match self.context_event_rx.try_recv() {
-                    Ok(event) => self.handle_event(event),
+                    Ok(event) => self.handle_event(event)?,
                     Err(MessageBusError::ChannelClosed) => {
                         rsmpeg::ffi::av_packet_unref(&mut pkt);
                         self.finish_pipeline()?;
@@ -379,7 +501,7 @@ impl MediaContext {
             //write body
             loop {
                 match self.context_event_rx.try_recv() {
-                    Ok(event) => self.handle_event(event),
+                    Ok(event) => self.handle_event(event)?,
                     Err(MessageBusError::ChannelClosed) => {
                         self.finish_pipeline()?;
                         return Ok(MediaCompletion::InputClosed);
@@ -389,6 +511,16 @@ impl MediaContext {
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
                 if !classify_read_frame(ret, "read_frame")? {
                     break;
+                }
+                if let Err(error) = self.ensure_output_topology_unchanged() {
+                    rsmpeg::ffi::av_packet_unref(&mut pkt);
+                    return Err(error.into());
+                }
+                if pkt.stream_index < 0
+                    || pkt.stream_index as usize >= self.demuxer_context.params.len()
+                {
+                    rsmpeg::ffi::av_packet_unref(&mut pkt);
+                    continue;
                 }
 
                 // let rtp_state = &mut *self.rtp_state;
@@ -460,6 +592,32 @@ impl MediaContext {
         }
         Ok(())
     }
+
+    unsafe fn ensure_output_topology_unchanged(&self) -> GlobalResult<()> {
+        let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+        let initialized_stream_count = self.demuxer_context.params.len();
+        let current_stream_count = (*fmt_ctx).nb_streams as usize;
+        for idx in initialized_stream_count..current_stream_count {
+            let stream = *(*fmt_ctx).streams.add(idx);
+            let Some(stream) = stream.as_ref() else {
+                continue;
+            };
+            let Some(codecpar) = stream.codecpar.as_ref() else {
+                continue;
+            };
+            if is_supported_av(codecpar.codec_type) {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    &format!(
+                        "stream topology changed after muxer initialization: previous_stream_count={}, current_stream_count={}",
+                        initialized_stream_count, current_stream_count
+                    ),
+                    |msg| error!("{msg}"),
+                ));
+            }
+        }
+        Ok(())
+    }
     fn handle_codec(codec: &mut CodecContext) {}
     fn handle_filter(filter: &mut FilterContext) {}
 
@@ -520,16 +678,51 @@ impl MediaContext {
                 let pkt_tx = context.pkt_tx.clone();
                 context.flush();
                 let next_segment_seq = context.next_segment_seq();
-                muxer.hls_mp4 = HlsFmp4Context::init_context(&self.demuxer_context, pkt_tx)
-                    .ok()
-                    .map(|mut context| {
-                        context.set_segment_seq(next_segment_seq);
-                        context
-                    });
+                let mut context = HlsFmp4Context::init_context(&self.demuxer_context, pkt_tx)?;
+                context.set_segment_seq(next_segment_seq);
+                muxer.hls_mp4 = Some(context);
             }
         }
         if let Some(context) = &mut muxer.hls_mp4 {
             context.write_packet(pkt, ts)?;
+        }
+        self.sync_output_readiness()?;
+        Ok(())
+    }
+
+    fn sync_output_readiness(&self) -> GlobalResult<()> {
+        let Some(stream_id) = self.stream_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(profile) = self.actual_media_profile.as_ref() else {
+            return Ok(());
+        };
+        let muxer = &self.muxer_context;
+        let flv_published = match muxer.flv.as_ref() {
+            Some(FlvSupperCtx::FlvCtx(context)) => context.pkt_tx.has_published(),
+            Some(FlvSupperCtx::H265FlvCtx(context)) => context.tx.has_published(),
+            None => false,
+        };
+        if flv_published {
+            set_output_ready(stream_id, "flv", profile)?;
+        }
+        if muxer
+            .fmp4
+            .as_ref()
+            .is_some_and(|context| context.pkt_tx.has_published())
+        {
+            set_output_ready(stream_id, "fmp4", profile)?;
+        }
+        if muxer
+            .hls_mp4
+            .as_ref()
+            .is_some_and(|context| context.pkt_tx.has_published())
+        {
+            for output_type in ["hls", "ll_hls"] {
+                if Register::output_media_metadata(stream_id, output_type).is_some() {
+                    set_output_ready(stream_id, output_type, profile)?;
+                }
+            }
         }
         Ok(())
     }
@@ -573,13 +766,13 @@ impl MediaContext {
         }
     }
 
-    fn handle_event(&mut self, event: ContextEvent) {
+    fn handle_event(&mut self, event: ContextEvent) -> GlobalResult<()> {
         match event {
             ContextEvent::Codec(_) => {
                 warn!("stream context ignored unsupported codec event");
             }
             ContextEvent::Muxer(m_event) => {
-                m_event.handle_event(&mut self.muxer_context, &self.demuxer_context);
+                m_event.handle_event(&mut self.muxer_context, &self.demuxer_context)?;
             }
             ContextEvent::Filter(_) => {
                 warn!("stream context ignored unsupported filter event");
@@ -588,12 +781,54 @@ impl MediaContext {
                 i_event.handle_event(&self);
             }
         }
+        Ok(())
+    }
+}
+
+fn set_output_ready(
+    stream_id: &str,
+    output_type: &str,
+    profile: &ActualMediaProfile,
+) -> GlobalResult<()> {
+    if Register::output_media_metadata(stream_id, output_type)
+        .is_some_and(|metadata| metadata.state == OutputRuntimeState::Ready)
+    {
+        return Ok(());
+    }
+    Register::set_output_media_metadata(
+        stream_id,
+        output_type,
+        OutputMediaMetadata {
+            state: OutputRuntimeState::Ready,
+            video_codec: profile.video_codec.clone(),
+            audio_codec: profile.audio_codec.clone(),
+            mime_codec: output_mime_codec(output_type, profile),
+        },
+    )
+}
+
+fn output_mime_codec(output_type: &str, profile: &ActualMediaProfile) -> String {
+    if output_type == "flv" {
+        return "video/x-flv".to_string();
+    }
+    let codecs = [profile.video_codec.as_str(), profile.audio_codec.as_str()]
+        .into_iter()
+        .filter(|codec| !codec.is_empty())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if codecs.is_empty() {
+        String::new()
+    } else if profile.video_codec.is_empty() {
+        format!("audio/mp4; codecs=\"{codecs}\"")
+    } else {
+        format!("video/mp4; codecs=\"{codecs}\"")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rsmpeg::ffi::AVMediaType_AVMEDIA_TYPE_DATA;
 
     #[test]
     fn read_frame_classifies_packet_eof_and_failure() {
@@ -607,5 +842,80 @@ mod tests {
             }
             _ => panic!("non-EOF FFmpeg result must remain a failure"),
         }
+    }
+
+    #[test]
+    fn topology_settle_window_reads_past_initial_probe_limit() {
+        let mut state = TopologySettleState::default();
+        for _ in 0..TOPOLOGY_SETTLE_PACKETS {
+            state.observe_packet(false, 1024);
+        }
+        assert!(!state.is_stable());
+
+        state.observe_packet(true, 1024);
+        assert!(!state.is_stable());
+    }
+
+    #[test]
+    fn early_audio_and_video_are_ready_after_settle_window() {
+        let streams = [
+            (AVMediaType_AVMEDIA_TYPE_VIDEO, true),
+            (AVMediaType_AVMEDIA_TYPE_AUDIO, true),
+        ];
+        let mut state = TopologySettleState::default();
+        for _ in 0..=TOPOLOGY_SETTLE_PACKETS {
+            state.observe_packet(false, 1024);
+        }
+
+        assert!(supported_stream_params_ready(streams.into_iter()));
+        assert!(state.is_stable());
+    }
+
+    #[test]
+    fn late_audio_resets_topology_settle_window() {
+        let mut state = TopologySettleState::default();
+        for _ in 0..=TOPOLOGY_SETTLE_PACKETS {
+            state.observe_packet(false, 1024);
+        }
+        assert!(state.is_stable());
+
+        state.observe_packet(true, 1024);
+        assert!(!state.is_stable());
+    }
+
+    #[test]
+    fn pure_video_topology_stabilizes_within_read_bound() {
+        let mut state = TopologySettleState::default();
+        for _ in 0..=TOPOLOGY_SETTLE_PACKETS {
+            state.observe_packet(false, 1024);
+        }
+
+        assert!(state.is_stable());
+        assert!(state.packets_since_change < FIX_MAX_READ_FRAME);
+    }
+
+    #[test]
+    fn unknown_stream_does_not_block_supported_stream_readiness() {
+        let streams = [
+            (AVMediaType_AVMEDIA_TYPE_VIDEO, true),
+            (AVMediaType_AVMEDIA_TYPE_AUDIO, true),
+            (AVMediaType_AVMEDIA_TYPE_DATA, false),
+        ];
+
+        assert!(supported_stream_params_ready(streams.into_iter()));
+    }
+
+    #[test]
+    fn output_mime_uses_actual_audio_and_video_codec_strings() {
+        let profile = ActualMediaProfile {
+            video_codec: "hev1.1.6.L78".to_string(),
+            audio_codec: "mp4a.40.2".to_string(),
+        };
+
+        assert_eq!(
+            output_mime_codec("fmp4", &profile),
+            "video/mp4; codecs=\"hev1.1.6.L78, mp4a.40.2\""
+        );
+        assert_eq!(output_mime_codec("flv", &profile), "video/x-flv");
     }
 }

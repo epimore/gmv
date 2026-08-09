@@ -51,10 +51,31 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe('Fmp4Engine errors', () => {
+  it('distinguishes missing codec metadata from browser codec support', async () => {
+    const engine = new Fmp4Engine();
+
+    await expect(engine.attach(video(), {
+      protocol: 'fmp4',
+      url: 'http://127.0.0.1/live.fmp4',
+    })).rejects.toThrow('CODEC_METADATA_MISSING');
+  });
+
+  it('reports a browser codec capability failure after metadata is present', async () => {
+    vi.spyOn(FakeMediaSource, 'isTypeSupported').mockReturnValue(false);
+    const engine = new Fmp4Engine();
+
+    await expect(engine.attach(video(), {
+      protocol: 'fmp4',
+      url: 'http://127.0.0.1/live.fmp4',
+      mimeCodec: 'video/mp4; codecs="hvc1.1.6.L123.B0, mp4a.40.2"',
+    })).rejects.toThrow('UNSUPPORTED_CODEC');
+  });
+
   it('forwards fetch failures to the video lifecycle', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('fMP4 fetch failed')));
     const element = video();

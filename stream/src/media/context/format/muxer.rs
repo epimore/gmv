@@ -10,6 +10,7 @@ use crate::media::context::format::mp4::Mp4Context;
 use crate::media::context::format::rtp::{RtpEncContext, RtpFrameContext, RtpPsContext};
 use crate::media::context::format::ts::TsContext;
 use crate::state::layer::muxer_layer::MuxerLayer;
+use base::exception::GlobalResult;
 use base::log::warn;
 use base::serde::{Deserialize, Serialize};
 use gmv_domain::info::output::OutputEnum;
@@ -62,30 +63,22 @@ pub struct MuxerContext {
     pub rtp_frame: Option<RtpFrameContext>,
 }
 impl MuxerContext {
-    pub fn init(demuxer_context: &DemuxerContext, muxer: MuxerLayer) -> MuxerContext {
+    pub fn init(demuxer_context: &DemuxerContext, muxer: MuxerLayer) -> GlobalResult<MuxerContext> {
         let mut context = MuxerContext::default();
         if let Some(flv_layer) = muxer.flv {
             let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
             unsafe {
                 if input_has_hevc_video(in_fmt_ctx) {
-                    let _ = H265FlvContext::init_context(demuxer_context, flv_layer.tx).map(
-                        |flv_context| {
-                            context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
-                        },
-                    );
+                    let flv_context = H265FlvContext::init_context(demuxer_context, flv_layer.tx)?;
+                    context.flv = Some(FlvSupperCtx::H265FlvCtx(flv_context));
                 } else {
-                    let _ = FlvContext::init_context(demuxer_context, flv_layer.tx).map(
-                        |flv_context| {
-                            context.flv = Some(FlvSupperCtx::FlvCtx(flv_context));
-                        },
-                    );
+                    let flv_context = FlvContext::init_context(demuxer_context, flv_layer.tx)?;
+                    context.flv = Some(FlvSupperCtx::FlvCtx(flv_context));
                 }
             }
         }
         if let Some(mp4_layer) = muxer.mp4 {
-            let _ = Mp4Context::init_context(demuxer_context, mp4_layer.tx).map(|mp4_context| {
-                context.mp4 = Some(mp4_context);
-            });
+            context.mp4 = Some(Mp4Context::init_context(demuxer_context, mp4_layer.tx)?);
         }
         if muxer.ts.is_some() {
             warn!("stream muxer init ignored unsupported ts output");
@@ -103,23 +96,25 @@ impl MuxerContext {
             warn!("stream muxer init ignored unsupported rtp-enc output");
         }
         if let Some(fmp4_layer) = muxer.fmp4 {
-            let _ = CmafFmp4Context::init_context(demuxer_context, fmp4_layer.tx).map(|ctx| {
-                context.fmp4 = Some(ctx);
-            });
+            context.fmp4 = Some(CmafFmp4Context::init_context(
+                demuxer_context,
+                fmp4_layer.tx,
+            )?);
         }
         if let Some(dash_mp4_layer) = muxer.dash_mp4 {
-            let _ =
-                DashCmafMp4Context::init_context(demuxer_context, dash_mp4_layer.tx).map(|ctx| {
-                    context.dash_mp4 = Some(ctx);
-                });
+            context.dash_mp4 = Some(DashCmafMp4Context::init_context(
+                demuxer_context,
+                dash_mp4_layer.tx,
+            )?);
         }
         if let Some(hls_mp4_layer) = muxer.hls_mp4 {
-            let _ = HlsFmp4Context::init_context(demuxer_context, hls_mp4_layer.tx).map(|ctx| {
-                context.hls_mp4 = Some(ctx);
-            });
+            context.hls_mp4 = Some(HlsFmp4Context::init_context(
+                demuxer_context,
+                hls_mp4_layer.tx,
+            )?);
         }
 
-        context
+        Ok(context)
     }
 }
 

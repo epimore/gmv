@@ -64,6 +64,7 @@ struct MuxPacketChannel {
     tx: broadcast::Sender<Arc<MuxPacket>>,
     replay: Mutex<MuxPacketReplay>,
     close: watch::Sender<bool>,
+    published: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,7 @@ impl MuxPacketSender {
                 tx,
                 replay: Mutex::new(MuxPacketReplay::default()),
                 close,
+                published: AtomicU64::new(0),
             }),
         }
     }
@@ -97,6 +99,7 @@ impl MuxPacketSender {
             replay.clear();
         }
         replay.epoch = Some(packet.epoch);
+        self.inner.published.fetch_add(1, Ordering::Relaxed);
 
         if packet.is_key {
             replay.clear();
@@ -131,6 +134,10 @@ impl MuxPacketSender {
             rx,
             close: self.inner.close.subscribe(),
         }
+    }
+
+    pub fn has_published(&self) -> bool {
+        self.inner.published.load(Ordering::Relaxed) > 0
     }
 
     pub fn close(&self) {
@@ -267,10 +274,12 @@ mod tests {
     #[test]
     fn late_subscribers_receive_the_latest_decodable_window() {
         let sender = MuxPacketSender::new(4);
+        assert!(!sender.has_published());
         let epoch = Instant::now();
         let key = packet(epoch, 1, true);
         let delta = packet(epoch, 2, false);
         assert_eq!(sender.send(key.clone()).ok(), Some(0));
+        assert!(sender.has_published());
         assert_eq!(sender.send(delta.clone()).ok(), Some(0));
 
         let mut first = sender.subscribe();

@@ -1295,7 +1295,7 @@ const playerSources = computed<GmvSource[]>(() => {
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: lastStream.value?.mime_codec ?? fmp4MimeCodec(codec, hasAudio),
+    mimeCodec: streamMimeCodec(lastStream.value, codec, hasAudio),
     hasAudio,
     rateMode: protocol === 'mp4' ? 'local-file' : lastAction.value === '历史回放' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, hasAudio),
@@ -1448,8 +1448,8 @@ function streamProtocol(endpoint: string): GmvSource['protocol'] {
 }
 function streamCodec(stream?: StreamSummary): GmvCodec | undefined {
   const codec = (stream?.video_codec || '').trim().toLowerCase();
-  if (codec === 'h264' || codec === 'h.264' || codec === 'avc' || codec === 'avc1') return 'h264';
-  if (codec === 'h265' || codec === 'h.265' || codec === 'hevc' || codec === 'hev1' || codec === 'hvc1') return 'h265';
+  if (codec === 'h264' || codec === 'h.264' || codec === 'avc' || codec.startsWith('avc1')) return 'h264';
+  if (codec === 'h265' || codec === 'h.265' || codec === 'hevc' || codec.startsWith('hev1') || codec.startsWith('hvc1')) return 'h265';
   return undefined;
 }
 function streamAudioCodec(stream?: StreamSummary) {
@@ -1462,6 +1462,10 @@ function fmp4MimeCodec(codec?: GmvCodec, hasAudio = false) {
   if (codec === 'h264') return `video/mp4; codecs="avc1.42E01E${audioCodec}"`;
   if (codec === 'h265') return `video/mp4; codecs="hvc1.1.6.L123.B0${audioCodec}"`;
   return undefined;
+}
+function streamMimeCodec(stream: StreamSummary | undefined, codec?: GmvCodec, hasAudio = false) {
+  const actual = stream?.mime_codec?.trim();
+  return actual || fmp4MimeCodec(codec, hasAudio);
 }
 function streamSourceLabel(codec: GmvCodec | undefined, hasAudio: boolean) {
   return `默认${hasAudio ? '音视频' : '静音'} · ${codec?.toUpperCase() || 'AUTO'}`;
@@ -1520,7 +1524,7 @@ function streamSources(stream?: StreamSummary, mode: MultiMode = 'live'): GmvSou
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: stream?.mime_codec ?? fmp4MimeCodec(codec, hasAudio),
+    mimeCodec: streamMimeCodec(stream, codec, hasAudio),
     hasAudio,
     rateMode: protocol === 'mp4' ? 'local-file' : mode === 'playback' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, hasAudio),

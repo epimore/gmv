@@ -2,7 +2,7 @@ use crate::media::context::format::MuxPacket;
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::{MediaCompletion, MediaContext, MediaRunError};
 use crate::state::msg::StreamConfig;
-use crate::state::register::Register;
+use crate::state::register::{OutputRuntimeState, Register};
 use base::bytes::Bytes;
 use base::exception::GlobalResult;
 use base::log::{debug, error};
@@ -68,6 +68,9 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
                     };
                     let result = ctx.invoke(muxer_layer);
                     let failed = result.is_err();
+                    if failed {
+                        mark_outputs_failed(&worker_stream_id);
+                    }
                     match result {
                         Ok(MediaCompletion::Eof) => debug!(
                             "media worker completed: stage=demux, outcome=eof, stream_id={}, ssrc={}",
@@ -102,6 +105,21 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
                     ssrc
                 );
             }
+        }
+    }
+}
+
+fn mark_outputs_failed(stream_id: &str) {
+    for output_type in ["flv", "fmp4", "hls", "ll_hls"] {
+        let Some(mut metadata) = Register::output_media_metadata(stream_id, output_type) else {
+            continue;
+        };
+        metadata.state = OutputRuntimeState::Failed;
+        if let Err(error) = Register::set_output_media_metadata(stream_id, output_type, metadata) {
+            error!(
+                "output failure state update failed: stream_id={}, output_type={}, reason={error}",
+                stream_id, output_type
+            );
         }
     }
 }
