@@ -38,7 +38,7 @@ export interface CreateIntegrationPayload { name: string; transport: Integration
 export interface IntegrationCredentialInfo { credential_id: string; access_key: string; integration_id: string; purpose: 'http_inbound_verify' | 'http_callback_sign'; key_version: number; status: 'active' | 'revoked'; not_before_ms: number; expires_at_ms: number | null; revoked_at_ms: number | null; created_by: string; created_at_ms: number; updated_at_ms: number }
 export interface CreatedIntegrationCredential { credential: IntegrationCredentialInfo; secret: string }
 export interface IntegrationMqttConfig { integration_id: string; protocol_version: 'v3' | 'v5'; allowed_actions: string[]; command_topic: string; result_topic: string; event_topic_prefix: string; updated_at_ms: number }
-export interface IntegrationMqttRuntime { enabled: boolean; protocol_version: 'v3' | 'v5'; connection_scope: 'deployment'; qos: number; retain: boolean }
+export interface IntegrationMqttRuntime { enabled: boolean; protocol_version: 'v3' | 'v5'; connection_scope: 'deployment'; qos: number; retain: boolean; supported_actions: string[] }
 export interface IntegrationHttpConfig { integration_id: string; callback_url: string | null; callback_timeout_ms: number; private_network_policy: 'deny' | 'allowlist'; private_network_allowlist: string[]; max_attempts: number; event_ttl_ms: number; max_response_bytes: number; updated_at_ms: number }
 export interface IntegrationMappingInfo { mapping_id: string; integration_id: string; direction: 'INBOUND' | 'OUTBOUND'; source_type: string; schema_version: string; destination_kind: 'HTTP' | 'MQTT'; destination: string; payload_profile: string; enabled: boolean; created_at_ms: number; updated_at_ms: number }
 export type StreamProfile = 'main' | 'sub';

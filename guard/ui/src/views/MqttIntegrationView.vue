@@ -80,7 +80,23 @@
         <small>用于明确三方契约版本；必须与 Guard 当前部署的 Broker runtime 版本一致。</small>
       </div>
       <div class="protocol-selector">
-        <span>允许的入站命令</span>
+        <div class="action-toolbar">
+          <span>允许的入站命令</span>
+          <div>
+            <el-button
+              size="small"
+              text
+              :disabled="!auth.isAdmin || !selectedIntegrationId"
+              @click="selectAllActions"
+            >全选</el-button>
+            <el-button
+              size="small"
+              text
+              :disabled="!auth.isAdmin || !selectedIntegrationId"
+              @click="resetAllowedActions"
+            >重置</el-button>
+          </div>
+        </div>
         <el-checkbox-group v-model="allowedActions" class="action-selector">
           <el-checkbox v-for="action in actionOptions" :key="action" :value="action">{{ action }}</el-checkbox>
         </el-checkbox-group>
@@ -214,10 +230,10 @@ const selectedIntegrationId = ref("");
 const saving = ref(false);
 const mqttConfig = ref<IntegrationMqttConfig | null>(null);
 const allowedActions = ref<string[]>([]);
-const actionOptions = ["stream.start", "stream.stop", "stream.playback", "stream.download", "device.broadcast", "device.ptz", "ai.start", "ai.cancel", "playback.ticket.renew"];
 const mappingSource = ref("");
 const eventMappings = ref<IntegrationMappingInfo[]>([]);
 const mqttRuntime = ref<IntegrationMqttRuntime | null>(null);
+const actionOptions = computed(() => mqttRuntime.value?.supported_actions ?? []);
 const runtimeStatus = computed(() => {
   if (!mqttRuntime.value?.enabled) return "部署级 MQTT runtime 未启用";
   const version = mqttRuntime.value.protocol_version === "v5" ? "V5.0" : "V3.1.1";
@@ -305,6 +321,14 @@ async function saveProtocol() {
   } finally {
     saving.value = false;
   }
+}
+
+function selectAllActions() {
+  allowedActions.value = [...actionOptions.value];
+}
+
+function resetAllowedActions() {
+  allowedActions.value = [...(mqttConfig.value?.allowed_actions ?? [])];
 }
 
 async function addEventMapping() {
@@ -461,6 +485,18 @@ function openDocs() {
   font-size: 12px;
 }
 
+.action-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.action-toolbar > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .protocol-selector small {
   color: var(--faint);
   line-height: 1.45;
@@ -471,6 +507,12 @@ function openDocs() {
   display: flex;
   flex-wrap: wrap;
   gap: 6px 14px;
+}
+
+.action-selector {
+  max-height: 280px;
+  overflow-y: auto;
+  padding-right: 6px;
 }
 
 .mapping-editor {

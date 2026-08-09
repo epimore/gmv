@@ -248,13 +248,17 @@ test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => 
     config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
   };
   let savedVersion = '';
+  let savedActions: string[] = [];
 
   await page.route('**/api/v2/integrations', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify([integration]),
   }));
   await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
     status: 200, contentType: 'application/json',
-    body: JSON.stringify({ enabled: true, protocol_version: 'v5', connection_scope: 'deployment', qos: 1, retain: false }),
+    body: JSON.stringify({
+      enabled: true, protocol_version: 'v5', connection_scope: 'deployment', qos: 1, retain: false,
+      supported_actions: ['stream.stop', 'gb.device.create', 'runtime.status.get'],
+    }),
   }));
   await page.route('**/api/v2/integrations/mqtt-app-1/mqtt', async (route) => {
     const config = {
@@ -263,8 +267,11 @@ test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => 
       event_topic_prefix: 'gmv/events/mqtt-app-1', updated_at_ms: 1,
     };
     if (route.request().method() === 'POST') {
-      savedVersion = (route.request().postDataJSON() as { protocol_version: string }).protocol_version;
+      const payload = route.request().postDataJSON() as { protocol_version: string; allowed_actions: string[] };
+      savedVersion = payload.protocol_version;
+      savedActions = payload.allowed_actions;
       config.protocol_version = savedVersion;
+      config.allowed_actions = savedActions;
     }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) });
   });
@@ -281,9 +288,22 @@ test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => 
   await expect(page.getByText('部署级 MQTT runtime 已启用 · V5.0')).toBeVisible();
   await expect(page.getByText('V5.0', { exact: true }).first()).toBeVisible();
 
+  await expect(page.getByText('gb.device.create', { exact: true })).toBeVisible();
+  await expect(page.getByText('runtime.status.get', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: '全选', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'gb.device.create' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'runtime.status.get' })).toBeChecked();
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await expect(page.getByRole('checkbox', { name: 'stream.stop' })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'gb.device.create' })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'runtime.status.get' })).not.toBeChecked();
+
+  await page.getByText('runtime.status.get', { exact: true }).click();
   await page.getByText('V3.1.1', { exact: true }).last().click();
   await page.getByRole('button', { name: '保存配置' }).click();
   await expect.poll(() => savedVersion).toBe('v3');
+  await expect.poll(() => savedActions).toEqual(['stream.stop', 'runtime.status.get']);
 });
 
 test('MQTT Runtime 未启用时应用页禁止启用 MQTT 接入', async ({ page }) => {
@@ -301,7 +321,10 @@ test('MQTT Runtime 未启用时应用页禁止启用 MQTT 接入', async ({ page
   await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
-    body: JSON.stringify({ enabled: false, protocol_version: 'v3', connection_scope: 'deployment', qos: 1, retain: false }),
+    body: JSON.stringify({
+      enabled: false, protocol_version: 'v3', connection_scope: 'deployment', qos: 1, retain: false,
+      supported_actions: [],
+    }),
   }));
 
   await page.goto('/integrations/apps');

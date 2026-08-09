@@ -288,21 +288,30 @@
         const payloadSchema = spec.components?.schemas?.[usage.payload_schema] || {};
         const resultSchema = spec.components?.schemas?.[usage.result_schema] || {};
         const details = element("details", "operation");
-        details.dataset.search = `${action} ${usage.target || ""} ${(usage.http_equivalents || []).join(" ")} ${payloadSchema.description || ""}`.toLowerCase();
+        details.dataset.search = `${action} ${usage.summary || ""} ${usage.target || ""} ${(usage.http_equivalents || []).join(" ")} ${payloadSchema.description || ""}`.toLowerCase();
         const summary = element("summary", "operation-head");
         summary.append(element("span", "method publish", "ACTION"));
         summary.append(element("code", "path", action));
-        summary.append(element("span", "summary-text", payloadSchema.description || "MQTT 命令"));
+        summary.append(element("span", "summary-text", usage.summary || payloadSchema.description || "MQTT 命令"));
         summary.append(element("span", "chevron", "›"));
         details.append(summary);
 
         const body = element("div", "operation-body");
+        body.append(element("p", "description", usage.summary || payloadSchema.description || "MQTT 命令"));
         const info = element("div", "info-row");
         info.append(element("span", "chip", `target：${usage.target || "见契约"}`));
         info.append(element("span", "chip", `所需权限：${usage.required_scope || "—"}`));
         info.append(element("span", "chip ok", "QoS：1 / retain=false"));
         body.append(info);
-        if (Array.isArray(usage.http_equivalents) && usage.http_equivalents.length) {
+        if (Array.isArray(usage.http_equivalent_operations) && usage.http_equivalent_operations.length) {
+          usage.http_equivalent_operations.forEach((operation) => {
+            const equivalent = element("p", "description");
+            equivalent.append(document.createTextNode("HTTP 等价接口："));
+            equivalent.append(element("code", "", `${operation.method} ${operation.path}`));
+            equivalent.append(document.createTextNode(` ${operation.summary || ""}`));
+            body.append(equivalent);
+          });
+        } else if (Array.isArray(usage.http_equivalents) && usage.http_equivalents.length) {
           body.append(element("p", "description", `HTTP 等价接口：${usage.http_equivalents.join("；")}`));
         }
         body.append(element("h3", "", "payload 请求字段"));

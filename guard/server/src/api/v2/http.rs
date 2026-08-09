@@ -2989,22 +2989,41 @@ fn mqtt_target_field(action: &str) -> &'static str {
 fn mqtt_action_usage_contract() -> base::serde_json::Value {
     let mut usage = base::serde_json::Map::new();
     for action in crate::integration::model::MQTT_COMMAND_ACTIONS {
-        let http = OPEN_BUSINESS_OPERATIONS
+        let equivalents = OPEN_BUSINESS_OPERATIONS
             .iter()
             .flat_map(|(path, methods)| methods.iter().map(move |method| (*method, *path)))
             .filter(|(method, path)| {
                 crate::integration::model::mqtt_action_for_http(method, path) == Some(*action)
             })
+            .collect::<Vec<_>>();
+        let summary = equivalents
+            .first()
+            .map(|(method, path)| openapi_operation_summary(method, path))
+            .unwrap_or("MQTT 命令");
+        let http = equivalents
+            .iter()
             .map(|(method, path)| format!("{} /openapi/v1{path}", method.to_uppercase()))
+            .collect::<Vec<_>>();
+        let http_operations = equivalents
+            .iter()
+            .map(|(method, path)| {
+                base::serde_json::json!({
+                    "method": method.to_uppercase(),
+                    "path": format!("/openapi/v1{path}"),
+                    "summary": openapi_operation_summary(method, path)
+                })
+            })
             .collect::<Vec<_>>();
         usage.insert(
             (*action).to_string(),
             base::serde_json::json!({
+                "summary": summary,
                 "target": mqtt_target_field(action),
                 "required_scope": crate::integration::model::mqtt_action_scope(action),
                 "payload_schema": mqtt_payload_schema_name(action),
                 "result_schema": mqtt_result_schema_name(action),
-                "http_equivalents": http
+                "http_equivalents": http,
+                "http_equivalent_operations": http_operations
             }),
         );
     }
@@ -5020,7 +5039,8 @@ async fn integration_mqtt_runtime(
         "protocol_version": state.mqtt_runtime_protocol_version,
         "connection_scope": "deployment",
         "qos": 1,
-        "retain": false
+        "retain": false,
+        "supported_actions": crate::integration::model::MQTT_COMMAND_ACTIONS
     })))
 }
 
@@ -10056,6 +10076,17 @@ mod tests {
         let asyncapi = asyncapi_contract();
         let action_usage = asyncapi["x-gmv-action-usage"].as_object().unwrap();
         let action_examples = asyncapi["x-gmv-action-examples"].as_object().unwrap();
+        let stop_all_usage = &action_usage["broadcast.stop_all"];
+        assert_eq!(stop_all_usage["summary"], "停止语音广播全部目标");
+        assert!(
+            stop_all_usage["http_equivalent_operations"]
+                .as_array()
+                .is_some_and(|items| items.contains(&base::serde_json::json!({
+                    "method": "POST",
+                    "path": "/openapi/v1/gb28181/broadcasts/{broadcast_id}/stop-all",
+                    "summary": "停止语音广播全部目标"
+                })))
+        );
         let mut operation_count = 0;
         let mut special_count = 0;
 
@@ -10089,6 +10120,20 @@ mod tests {
                             method.to_uppercase()
                         )))
                     }));
+                    assert!(
+                        usage["summary"]
+                            .as_str()
+                            .is_some_and(|summary| !summary.is_empty())
+                    );
+                    assert!(
+                        usage["http_equivalent_operations"]
+                            .as_array()
+                            .is_some_and(|items| items.contains(&base::serde_json::json!({
+                                "method": method.to_uppercase(),
+                                "path": format!("/openapi/v1{path}"),
+                                "summary": openapi_operation_summary(method, path)
+                            })))
+                    );
                 } else {
                     special_count += 1;
                     assert_eq!((*method, *path), ("get", "/events"));
@@ -10174,6 +10219,8 @@ mod tests {
         assert!(include_str!("api_docs.js").contains("查看原始 JSON 定义"));
         assert!(include_str!("api_docs.js").contains("MQTT 调用闭环"));
         assert!(include_str!("api_docs.js").contains("MQTT Action 请求与结果"));
+        assert!(include_str!("api_docs.js").contains("HTTP 等价接口"));
+        assert!(include_str!("api_docs.js").contains("usage.summary"));
         assert!(include_str!("api_docs.js").contains("取值约束"));
         assert!(include_str!("api_docs.js").contains("成功响应字段"));
         assert!(include_str!("api_docs.js").contains("失败响应示例"));
