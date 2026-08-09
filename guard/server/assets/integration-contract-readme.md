@@ -11,21 +11,38 @@
 - 同一应用在 24 小时内以相同请求 ID 和相同内容重试会得到原响应；相同请求 ID 配合不同内容会被拒绝。
 - nonce 仍是每次网络请求唯一值。重试时使用新 nonce，但保持相同 `X-GMV-Request-ID`。
 
+### HTTP callback
+
+Guard 将已启用 mapping 匹配到的公开业务事件写入持久化 outbox。HTTP 配置中的 `callback_url` 是基础地址，实际 POST 地址为 `{callback_url}/{event_type.replace('.', '/')}`，例如 `session.alarm` 投递到 `{callback_url}/session/alarm`。请求头包含 `x-gmv-access-key`、`x-gmv-timestamp`、`x-gmv-nonce`、`x-gmv-content-sha256`、`x-gmv-signature`；签名使用独立的 `HTTP_CALLBACK_SIGN` 凭证，并覆盖实际请求路径，canonical request 的 `request_id` 字段为空字符串。第三方返回任意 2xx 即视为成功。
+
+callback 默认使用 HTTPS。需要使用 HTTP 时，必须在 Guard HTTP 接入页面启用 allowlist，并让 URL 的 hostname/IP 命中精确 hostname、精确 IP 或 CIDR。策略不区分公网、内网、本机、link-local 或 metadata 地址类型；白名单即明确授权 Guard 访问该目标。
+
+完整回调定义位于 `openapi.json` 的 `webhooks`，每个 `event_type` 都有独立 webhook、实际路径、payload 字段和完整示例。HTTP 与 MQTT 使用相同的 `event-envelope-v1` 和 payload：
+
+| `event_type` | HTTP 后缀 / MQTT Topic 后缀 | `payload` 主要字段 |
+| --- | --- | --- |
+| `session.alarm` | `session/alarm` | `priority`、`method`、`alarmType`、`timeStr`、`deviceId`、`channelId` |
+| `session.playback_presence_terminal` | `session/playback_presence_terminal` | `playback_id`、`stream_id`、`subscription_id`、`generation`、`stream_stopped`、`reason` |
+| `avai.task.result` | `avai/task/result` | `task_id`、`task_type`、`route_id`、`state`、`result` |
+| `integration.playback_ticket.renew_requested` | `integration/playback_ticket/renew_requested` | `token`、`playback_id`、`stream_id`、`output_id`、`subscription_id`、`expires_at_ms`、`response_action` |
+
 ## MQTT 接入前提
 
-现场应为每个第三方应用交付以下非敏感配置和独立凭据：
+每套 Guard 只交付一个第三方业务应用。现场应为该应用交付以下非敏感配置和独立凭据：
 
 | 配置 | 说明 |
 | --- | --- |
 | `integration_id` | 应用唯一标识，必须与消息体和 Topic 绑定关系一致 |
 | Broker/TLS/账号 | 由部署方通过受控渠道交付，生产环境应启用 TLS |
-| MQTT 版本 | `v3` 表示 MQTT 3.1.1，`v5` 表示 MQTT 5.0；必须与 Guard runtime 一致 |
+| MQTT 版本 | `v3` 表示 MQTT 3.1.1，`v5` 表示 MQTT 5.0；以 Guard MQTT Runtime 当前 active revision 为准 |
 | `command_topic` | 发布命令的精确 Topic，例如 `gmv/commands/partner-a` |
 | `result_topic` | 订阅命令终态的精确 Topic，例如 `gmv/command-results/partner-a` |
 | event topics | 按应用 mapping 和 Broker ACL 授权，不应订阅无关应用事件 |
-| allowed actions | 应用获授权的 action 清单；Broker ACL 不等于 Guard 业务授权 |
+| action | 当前二进制 AsyncAPI 注册的 action 均可调用；Broker ACL 不等于 Guard 业务授权 |
 
 MQTT V3.1.1 与 V5 使用完全相同的 UTF-8 JSON payload。命令和结果推荐 QoS 1，命令必须 `retain=false`。PUBACK 只表示 Broker 收到消息，不表示业务成功；业务终态只以 `result_topic` 的 `state` 为准。
+
+业务事件发布到 `gmv/events/{integration_id}/{event_type}`，使用 QoS 1、`retain=false` 和与 HTTP callback 相同的 `event-envelope-v1`。事件名中的点号转换为 Topic 斜杠层级，例如 `session.alarm` 对应 `gmv/events/{integration_id}/session/alarm`。完整事件列表、Topic、字段和示例位于 `asyncapi.json` 的 `channels.events` 与 `x-gmv-event-types`。
 
 以下 Topic 均为示例。调用方必须使用现场为本应用配置的精确 Topic，不得自行替换 `integration_id` 或使用通配 Topic 发布。
 
@@ -49,7 +66,7 @@ MQTT V3.1.1 与 V5 使用完全相同的 UTF-8 JSON payload。命令和结果推
 | `command_id` | 是 | 1～128 个非空白字符；全局唯一；同一业务重试必须复用 |
 | `issued_at_ms` | 是 | 调用方签发时的 Unix 毫秒时间戳 |
 | `expires_at_ms` | 是 | 不早于 `issued_at_ms`，二者差值不超过 300000 ms；建议 60000 ms |
-| `action` | 是 | 必须属于应用 allowed actions，并与 `payload` schema 对应 |
+| `action` | 是 | 必须是当前二进制已注册 action，并与 `payload` schema 对应 |
 | `target` | 是 | action 的主目标，具体含义见 action 表 |
 | `payload` | 是 | JSON 对象；即使 action 无参数也发送 `{}` |
 
@@ -65,7 +82,7 @@ Guard 对外开放的 HTTP 与 MQTT 是并列协议适配器，均直接调用�
 
 协议特例只有明确登记的边界：HTTP `GET /events` 是历史事件轮询，MQTT 使用 event Topic 推送同一类事件；图片、录像文件、播放媒体等二进制或数据面内容不进入 MQTT payload，MQTT 返回受控 access URL/播放 endpoint 后由调用方通过对应数据协议读取。
 
-每个 action 的在线/离线契约均包含 `target` 含义、所需 scope、payload 字段、成功 result 字段、HTTP 等价接口，以及完整 request/success/failure JSON 示例。应用除配置 `allowed_actions` 外，还必须获得 action 对应 scope；任一条件不满足都会 fail-closed。
+每个 action 的在线/离线契约均包含 `target` 含义、所需 scope、payload 字段、成功 result 字段、HTTP 等价接口，以及完整 request/success/failure JSON 示例。当前二进制已注册 action 均可调用，但应用仍必须获得 action 对应 scope；未知 action 或 scope 不满足都会 fail-closed。
 
 ## MQTT 实时点播完整流程
 

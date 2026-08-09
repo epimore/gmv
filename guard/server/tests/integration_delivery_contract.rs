@@ -3,9 +3,12 @@ use base_db::dbx::{
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
 use gmv_guard_server::integration::model::{
-    Integration, IntegrationMqttConfig, IntegrationTransport,
+    Integration, IntegrationHttpConfig, IntegrationMapping, IntegrationMqttConfig,
+    IntegrationTransport,
 };
 use gmv_guard_server::mqttc::{CommandIdRepository, MqttCommandPolicy};
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::runtime::event_forwarder::EventForwarder;
 use gmv_guard_server::store::command::{HttpCommandClaim, http_command_id};
 use gmv_guard_server::store::persistent::{CommandRepository, IntegrationRepository};
 use gmv_guard_server::store::sqlite::SqliteStore;
@@ -138,10 +141,12 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
             };
             integrations.upsert(&integration).await.unwrap();
             integrations
+                .bind_business_integration("app-1", "test", 100)
+                .await
+                .unwrap();
+            integrations
                 .upsert_mqtt_config(&IntegrationMqttConfig {
                     integration_id: "app-1".to_string(),
-                    protocol_version: "v5".to_string(),
-                    allowed_actions: vec!["stream.stop".to_string()],
                     command_topic: "gmv/commands/app-1".to_string(),
                     result_topic: "gmv/command-results/app-1".to_string(),
                     event_topic_prefix: "gmv/events/app-1".to_string(),
@@ -165,7 +170,6 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                         "gmv/commands/app-1",
                         payload,
                         1500,
-                        "v5",
                         &commands,
                         &integrations,
                     )
@@ -180,7 +184,6 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                         "gmv/commands/unknown",
                         &unknown_topic,
                         1500,
-                        "v5",
                         &commands,
                         &integrations,
                     )
@@ -197,7 +200,6 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                         "gmv/commands/app-1",
                         &scope_revoked,
                         1500,
-                        "v5",
                         &commands,
                         &integrations,
                     )
@@ -215,7 +217,6 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                         "gmv/commands/app-1",
                         &disabled,
                         1500,
-                        "v5",
                         &commands,
                         &integrations,
                     )
@@ -223,6 +224,120 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                     .is_err()
             );
             drop(commands);
+            drop(integrations);
+            drop(store);
+            let _ = std::fs::remove_file(path);
+        });
+}
+
+#[test]
+fn http_callback_only_enqueues_documented_business_events() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-http-callback-contract-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let store = SqliteStore::new(
+                build_sqlite_pool(
+                    SqliteConnectionConfig::new(&path),
+                    DatabasePoolConfig {
+                        max_size: 1,
+                        min_idle: Some(0),
+                        ..DatabasePoolConfig::default()
+                    },
+                )
+                .unwrap(),
+            );
+            store.migrate().await.unwrap();
+            let integrations = IntegrationRepository::Sqlite(store.clone());
+            integrations
+                .upsert(&Integration {
+                    integration_id: "app-http".to_string(),
+                    name: "HTTP app".to_string(),
+                    transport: IntegrationTransport::Http,
+                    inbound_enabled: false,
+                    outbound_enabled: true,
+                    enabled: true,
+                    scopes: Vec::new(),
+                    expires_at_ms: None,
+                    config_version: 1,
+                    created_by: "test".to_string(),
+                    created_at_ms: 100,
+                    updated_at_ms: 100,
+                })
+                .await
+                .unwrap();
+            integrations
+                .bind_business_integration("app-http", "test", 100)
+                .await
+                .unwrap();
+            integrations
+                .upsert_http_config(&IntegrationHttpConfig {
+                    integration_id: "app-http".to_string(),
+                    callback_url: Some("https://partner.example.test/gmv/events".to_string()),
+                    callback_timeout_ms: 5_000,
+                    private_network_policy: "deny".to_string(),
+                    private_network_allowlist: Vec::new(),
+                    max_attempts: 5,
+                    event_ttl_ms: 86_400_000,
+                    max_response_bytes: 65_536,
+                    updated_at_ms: 100,
+                })
+                .await
+                .unwrap();
+            integrations
+                .upsert_mapping(&IntegrationMapping {
+                    mapping_id: "mapping-all".to_string(),
+                    integration_id: "app-http".to_string(),
+                    direction: "OUTBOUND".to_string(),
+                    source_type: "**".to_string(),
+                    schema_version: "v1".to_string(),
+                    destination_kind: "HTTP".to_string(),
+                    destination: "https://stale.example.test/events".to_string(),
+                    payload_profile: "event-envelope-v1".to_string(),
+                    enabled: true,
+                    created_at_ms: 100,
+                    updated_at_ms: 100,
+                })
+                .await
+                .unwrap();
+
+            let outbox = OutboxRepository::from(store.clone());
+            let forwarder = EventForwarder::new(outbox.clone(), Vec::new())
+                .with_integrations(integrations.clone());
+            forwarder
+                .forward(
+                    "event-public".to_string(),
+                    "session.alarm".to_string(),
+                    br#"{"deviceId":"device-1"}"#.to_vec(),
+                )
+                .await
+                .unwrap();
+            forwarder
+                .forward(
+                    "event-internal".to_string(),
+                    "stream.registered.fallback".to_string(),
+                    b"diagnostic".to_vec(),
+                )
+                .await
+                .unwrap();
+
+            let records = outbox.list(10).await.unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].event_id, "event-public");
+            assert_eq!(
+                records[0].destination,
+                "https://partner.example.test/gmv/events/session/alarm"
+            );
+            let envelope: base::serde_json::Value =
+                base::serde_json::from_slice(&records[0].payload).unwrap();
+            assert_eq!(envelope["event_type"], "session.alarm");
+            assert_eq!(envelope["schema_version"], "v1");
+
+            drop(forwarder);
+            drop(outbox);
             drop(integrations);
             drop(store);
             let _ = std::fs::remove_file(path);

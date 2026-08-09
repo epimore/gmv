@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use gmv_guard_server::auth::{AuthState, Role, SessionPolicy};
 use gmv_guard_server::mqttc::{
-    CommandAction, CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy,
-    MqttProtocolVersion, RoutedCommand,
+    CommandAction, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy, MqttProtocolVersion,
+    RoutedCommand,
 };
 use gmv_guard_server::operation::OperationService;
 use gmv_guard_server::outbox::OutboxRepository;
@@ -89,57 +89,6 @@ fn mqtt_commands_enforce_schema_ttl_permissions_and_idempotency() {
 
     let forbidden = payload.replace_ascii(b"stream.stop", b"device.ptz ");
     assert!(policy.decode(&forbidden, 1500).is_err());
-}
-
-#[test]
-fn mqtt_command_topic_is_bound_to_integration_and_action_allowlist() {
-    base::tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async {
-            let policy = MqttCommandPolicy::new(["stream.stop".to_string()], 60_000)
-                .unwrap()
-                .with_topic_routes([
-                    (
-                        "gmv/commands/app-1".to_string(),
-                        "app-1".to_string(),
-                        vec!["stream.stop".to_string()],
-                    ),
-                    (
-                        "gmv/commands/app-2".to_string(),
-                        "app-2".to_string(),
-                        vec!["ai.start".to_string()],
-                    ),
-                ])
-                .unwrap();
-            let repository = CommandIdRepository::from(InMemoryGuardStore::default());
-            let payload = br#"{
-              "integration_id":"app-1",
-              "command_id":"cmd-topic-1",
-              "issued_at_ms":1000,
-              "expires_at_ms":2000,
-              "action":"stream.stop",
-              "target":"stream-1"
-            }"#;
-            let command = policy
-                .decode_topic_with_repository("gmv/commands/app-1", payload, 1500, &repository)
-                .await
-                .unwrap()
-                .unwrap();
-            assert_eq!(command.integration_id, "app-1");
-
-            let mismatched = payload.replace_ascii(b"cmd-topic-1", b"cmd-topic-2");
-            assert!(
-                policy
-                    .decode_topic_with_repository(
-                        "gmv/commands/app-2",
-                        &mismatched,
-                        1500,
-                        &repository,
-                    )
-                    .await
-                    .is_err()
-            );
-        });
 }
 
 #[test]

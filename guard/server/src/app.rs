@@ -13,15 +13,12 @@ use sha2::{Digest, Sha256};
 
 use crate::api::v2::ApiV2;
 use crate::app_config::GuardAppConfig;
-use crate::auth::{AuthState, Secret, SessionPolicy};
+use crate::auth::{AuthState, SessionPolicy};
 use crate::core::{GuardError, GuardResult};
-use crate::mqttc::{
-    CommandIdRepository, MqttClientConfig, MqttCommandExecutor, MqttCommandPolicy,
-    MqttProtocolVersion, MqttRuntime,
-};
+use crate::mqttc::{CommandIdRepository, MqttCommandExecutor, MqttRuntimeManager};
 use crate::operation::OperationService;
 use crate::outbox::{DeliveryRouter, OutboxWorker};
-use crate::runtime::event_forwarder::{EventForwardRule, EventForwarder};
+use crate::runtime::event_forwarder::EventForwarder;
 use crate::runtime::node_rpc::{self, NodeRpcConfig};
 use crate::runtime::web::{self, WebServerConfig};
 use crate::runtime::{lease_expirer, node_expirer};
@@ -107,55 +104,15 @@ pub async fn start_guard(
     let users = persistent.load_users().await?;
     let user_repository = persistent.user_repository();
     let integration_repository = persistent.integration_repository();
-    let integration_master_key = config.integrations.master_key_value()?;
-    let integration_secrets = integration_master_key
-        .as_deref()
-        .map(crate::integration::secret::IntegrationSecretCipher::from_base64_key_no_pad)
-        .transpose()?;
-    if integration_secrets.is_none()
-        && integration_repository
-            .list()
-            .await?
-            .iter()
-            .any(|integration| {
-                integration.enabled
-                    && integration.transport
-                        == crate::integration::model::IntegrationTransport::Http
-            })
-    {
-        return Err(GuardError::InvalidConfig(format!(
-            "{} is required while an HTTP integration is enabled",
-            crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
-        ))
-        .into());
-    }
-    for integration in integration_repository.list().await? {
-        if integration.enabled
-            && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
-            && !config.integrations.mqtt.enabled
-        {
-            return Err(GuardError::InvalidConfig(format!(
-                "MQTT integration {} is enabled while MQTT runtime is disabled",
-                integration.integration_id
-            ))
-            .into());
-        }
-        if integration.enabled
-            && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
-            && let Some(mqtt) = integration_repository
-                .mqtt_config(&integration.integration_id)
-                .await?
-            && mqtt.protocol_version != config.integrations.mqtt.protocol_version
-        {
-            return Err(GuardError::InvalidConfig(format!(
-                "MQTT integration {} declares {}, but runtime uses {}",
-                integration.integration_id,
-                mqtt.protocol_version,
-                config.integrations.mqtt.protocol_version
-            ))
-            .into());
-        }
-    }
+    let integration_master_key = integration_repository
+        .master_key()
+        .await?
+        .ok_or_else(|| GuardError::Conflict("integration master key is missing".to_string()))?;
+    let integration_secrets = Some(crate::integration::secret::IntegrationSecretManager::new(
+        crate::integration::secret::IntegrationSecretCipher::from_base64_key_no_pad(
+            &integration_master_key.key_material,
+        )?,
+    ));
     let store = InMemoryGuardStore::default();
     let auth = AuthState::new(
         users,
@@ -193,38 +150,43 @@ pub async fn start_guard(
             lease_expirer::spawn(&runtime, api_store.clone())?,
         ),
     ];
-    let mqtt_publisher = if config.integrations.mqtt.enabled {
-        let (publisher, task) = spawn_mqtt_runtime(
-            &runtime,
-            &config,
-            &persistent,
-            operations.clone(),
-            api_store.clone(),
-            auth.clone(),
-            &integration_repository,
-        )
-        .await?;
-        background_tasks.push(("mqtt-runtime", task));
-        Some(publisher)
-    } else {
-        None
+    let command_ids = match &persistent {
+        #[cfg(feature = "db-mysql")]
+        PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
+        #[cfg(feature = "db-sqlite")]
+        PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
     };
-    let mqtt_rules = if config.integrations.mqtt.enabled {
-        config
-            .integrations
-            .mqtt
-            .publish_event_topics
-            .iter()
-            .map(|pattern| EventForwardRule {
-                pattern: pattern.clone(),
-                topic_prefix: config.integrations.mqtt.publish_topic_prefix.clone(),
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let mqtt_executor = MqttCommandExecutor::new(operations.clone(), api_store.clone())
+        .with_auth(auth.clone())
+        .with_media_https_http2_verified(config.http.media_https_http2_verified)
+        .with_dynamic_result_outbox(
+            persistent.outbox_repository(),
+            integration_repository.clone(),
+        );
+    let mqtt_manager = MqttRuntimeManager::new(
+        integration_repository.clone(),
+        command_ids,
+        mqtt_executor,
+        integration_secrets.clone(),
+    );
+    let mqtt_publisher = mqtt_manager.publisher();
+    let mqtt_cancel = runtime.cancel.clone();
+    let mqtt_shutdown = mqtt_cancel.clone();
+    background_tasks.push((
+        "mqtt-runtime-manager",
+        runtime.spawn("guard-mqtt-runtime-manager", async move {
+            if let Err(error) = mqtt_manager.run(mqtt_cancel).await {
+                error!(
+                    "MQTT runtime manager failed: action=mqtt_runtime, stage=manager, outcome=failed, reason={error}"
+                );
+                if !mqtt_shutdown.is_cancelled() {
+                    GlobalRuntime::request_shutdown_with_error();
+                }
+            }
+        })?,
+    ));
     let event_forwarder = Some(
-        EventForwarder::new(persistent.outbox_repository(), mqtt_rules)
+        EventForwarder::new(persistent.outbox_repository(), Vec::new())
             .with_integrations(integration_repository.clone()),
     );
     if let Some(forwarder) = event_forwarder.clone() {
@@ -234,12 +196,10 @@ pub async fn start_guard(
         ));
     }
     let mut delivery = DeliveryRouter::default();
-    if let Some(publisher) = mqtt_publisher {
-        delivery = delivery.with(
-            crate::store::model::OutboxDestinationKind::Mqtt,
-            Arc::new(publisher),
-        );
-    }
+    delivery = delivery.with(
+        crate::store::model::OutboxDestinationKind::Mqtt,
+        Arc::new(mqtt_publisher),
+    );
     if let Some(cipher) = integration_secrets.clone() {
         delivery = delivery.with(
             crate::store::model::OutboxDestinationKind::Webhook,
@@ -263,8 +223,6 @@ pub async fn start_guard(
         integration_repository,
         persistent.command_repository(),
         integration_secrets,
-        config.integrations.mqtt.protocol_version.clone(),
-        config.integrations.mqtt.enabled,
         event_forwarder.clone(),
         runtime.cancel.clone(),
     );
@@ -313,93 +271,6 @@ pub async fn start_guard(
     web_result?;
     rpc_result?;
     Ok(())
-}
-
-async fn spawn_mqtt_runtime(
-    managed_runtime: &GlobalRuntime,
-    config: &GuardAppConfig,
-    persistent: &PersistentStore,
-    operations: OperationService,
-    store: InMemoryGuardStore,
-    auth: AuthState,
-    integrations: &crate::store::persistent::IntegrationRepository,
-) -> GuardResult<(
-    crate::mqttc::MqttPublisher,
-    base::tokio::task::JoinHandle<()>,
-)> {
-    let mqtt = &config.integrations.mqtt;
-    let runtime = MqttRuntime::new(MqttClientConfig {
-        protocol_version: MqttProtocolVersion::parse(&mqtt.protocol_version)?,
-        client_id: mqtt.client_id.clone(),
-        host: mqtt.broker.clone(),
-        port: mqtt.port,
-        username: Some(mqtt.username.clone()),
-        password: Some(Secret::new(mqtt.password()?)),
-        keep_alive: Duration::from_secs(30),
-        request_capacity: 100,
-        tls: mqtt.tls,
-        retry: base_rpc::RetryPolicy::default(),
-    })?;
-    let publisher = runtime.publisher.clone();
-    let mut topics = mqtt.subscribe_topics.clone();
-    topics.push("gmv/commands/#".to_string());
-    for integration in integrations
-        .list()
-        .await?
-        .into_iter()
-        .filter(|integration| {
-            integration.enabled
-                && integration.inbound_enabled
-                && integration.transport == crate::integration::model::IntegrationTransport::Mqtt
-        })
-    {
-        if let Some(integration_mqtt) = integrations
-            .mqtt_config(&integration.integration_id)
-            .await?
-        {
-            topics.push(integration_mqtt.command_topic.clone());
-            topics.push(integration_mqtt.command_topic);
-        }
-    }
-    topics.sort();
-    topics.dedup();
-    let policy = MqttCommandPolicy::new(
-        crate::integration::model::MQTT_COMMAND_ACTIONS
-            .iter()
-            .copied()
-            .map(str::to_string),
-        300_000,
-    )?;
-    let repository = match persistent {
-        #[cfg(feature = "db-mysql")]
-        PersistentStore::Mysql(store) => CommandIdRepository::from(store.clone()),
-        #[cfg(feature = "db-sqlite")]
-        PersistentStore::Sqlite(store) => CommandIdRepository::from(store.clone()),
-    };
-    let executor = MqttCommandExecutor::new(operations, store)
-        .with_auth(auth)
-        .with_media_https_http2_verified(config.http.media_https_http2_verified)
-        .with_dynamic_result_outbox(persistent.outbox_repository(), integrations.clone());
-    let integrations = integrations.clone();
-    let cancel = managed_runtime.cancel.clone();
-    let shutdown = cancel.clone();
-    let task = managed_runtime.spawn("guard-mqtt-runtime", async move {
-        let result = if topics.is_empty() {
-            runtime.run(cancel).await
-        } else {
-            runtime
-                .run_commands(topics, policy, repository, executor, integrations, cancel)
-                .await
-        };
-        if let Err(error) = result {
-            error!("MQTT runtime stopped: {error}");
-            GlobalRuntime::request_shutdown_with_error();
-        } else if !shutdown.is_cancelled() {
-            error!("MQTT runtime stopped unexpectedly");
-            GlobalRuntime::request_shutdown_with_error();
-        }
-    })?;
-    Ok((publisher, task))
 }
 
 fn spawn_outbox_worker(

@@ -90,7 +90,6 @@ pub struct MqttRuntime {
     pub publisher: MqttPublisher,
     client: MqttClient,
     event_loop: MqttEventLoop,
-    protocol_version: MqttProtocolVersion,
 }
 
 impl MqttRuntime {
@@ -134,15 +133,44 @@ impl MqttRuntime {
             publisher: MqttPublisher::new(publish_client, config.retry),
             client,
             event_loop,
-            protocol_version: config.protocol_version,
         })
     }
 
     pub async fn run(mut self, cancel: CancellationToken) -> GuardResult<()> {
-        self.run_loop(cancel, None).await
+        self.run_loop(cancel, None, None).await
+    }
+
+    pub async fn run_with_ready(
+        mut self,
+        cancel: CancellationToken,
+        ready: base::tokio::sync::oneshot::Sender<()>,
+    ) -> GuardResult<()> {
+        self.run_loop(cancel, None, Some(ready)).await
     }
 
     pub async fn run_commands(
+        self,
+        topics: Vec<String>,
+        policy: MqttCommandPolicy,
+        repository: CommandIdRepository,
+        executor: MqttCommandExecutor,
+        integrations: IntegrationRepository,
+        cancel: CancellationToken,
+    ) -> GuardResult<()> {
+        self.run_commands_with_ready(
+            topics,
+            policy,
+            repository,
+            executor,
+            integrations,
+            cancel,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_commands_with_ready(
         mut self,
         topics: Vec<String>,
         policy: MqttCommandPolicy,
@@ -150,6 +178,7 @@ impl MqttRuntime {
         executor: MqttCommandExecutor,
         integrations: IntegrationRepository,
         cancel: CancellationToken,
+        ready: Option<base::tokio::sync::oneshot::Sender<()>>,
     ) -> GuardResult<()> {
         if topics.is_empty() {
             return Err(GuardError::InvalidConfig(
@@ -184,8 +213,8 @@ impl MqttRuntime {
                 repository,
                 executor,
                 integrations,
-                protocol_version: self.protocol_version,
             }),
+            ready,
         )
         .await
     }
@@ -194,6 +223,7 @@ impl MqttRuntime {
         &mut self,
         cancel: CancellationToken,
         mut commands: Option<CommandRuntime>,
+        mut ready: Option<base::tokio::sync::oneshot::Sender<()>>,
     ) -> GuardResult<()> {
         let mut attempt = 0;
         loop {
@@ -202,6 +232,11 @@ impl MqttRuntime {
                 event = poll_event(&mut self.event_loop) => match event {
                     Ok(event) => {
                         attempt = 0;
+                        if event.is_connected()
+                            && let Some(ready) = ready.take()
+                        {
+                            let _ = ready.send(());
+                        }
                         if let (Some(commands), Some((topic, payload))) = (commands.as_mut(), event.publish())
                             && let Err(error) = commands.handle(topic, payload).await
                         {
@@ -231,6 +266,17 @@ enum IncomingEvent {
 }
 
 impl IncomingEvent {
+    fn is_connected(&self) -> bool {
+        match self {
+            Self::V3(Event::Incoming(Packet::ConnAck(_))) => true,
+            Self::V5(event) => matches!(
+                event.as_ref(),
+                EventV5::Incoming(rumqttc::v5::mqttbytes::v5::Packet::ConnAck(_))
+            ),
+            _ => false,
+        }
+    }
+
     fn publish(&self) -> Option<(&str, &[u8])> {
         match self {
             Self::V3(Event::Incoming(Packet::Publish(publish))) => {
@@ -267,7 +313,6 @@ struct CommandRuntime {
     repository: CommandIdRepository,
     executor: MqttCommandExecutor,
     integrations: IntegrationRepository,
-    protocol_version: MqttProtocolVersion,
 }
 
 impl CommandRuntime {
@@ -279,7 +324,6 @@ impl CommandRuntime {
                 topic,
                 payload,
                 now_ms,
-                self.protocol_version.as_str(),
                 &self.repository,
                 &self.integrations,
             )

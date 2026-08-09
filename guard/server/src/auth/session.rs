@@ -51,6 +51,7 @@ pub struct AuthState {
     users: Arc<RwLock<HashMap<String, UserAccount>>>,
     sessions: Arc<Mutex<HashMap<String, UiSession>>>,
     failed_attempts: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+    secondary_failed_attempts: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     policy: SessionPolicy,
 }
 
@@ -65,6 +66,7 @@ impl AuthState {
             )),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             failed_attempts: Arc::new(Mutex::new(HashMap::new())),
+            secondary_failed_attempts: Arc::new(Mutex::new(HashMap::new())),
             policy,
         }
     }
@@ -119,6 +121,24 @@ impl AuthState {
         };
         self.sessions.lock().insert(token.clone(), session.clone());
         Ok((token, session))
+    }
+
+    pub fn verify_current_password(&self, username: &str, password: &str) -> GuardResult<bool> {
+        let now_ms = now_ms()?;
+        self.check_secondary_rate_limit(username, now_ms)?;
+        let user = self.users.read().get(username).cloned();
+        let verified = user
+            .as_ref()
+            .map(|user| user.verify_password(password))
+            .transpose()?
+            .unwrap_or(false)
+            && !user.is_some_and(|user| user.is_expired_at(now_ms));
+        if verified {
+            self.secondary_failed_attempts.lock().remove(username);
+        } else {
+            self.record_secondary_failure(username, now_ms);
+        }
+        Ok(verified)
     }
 
     pub fn issue_service_session(
@@ -320,6 +340,27 @@ impl AuthState {
             .or_default()
             .push(now_ms);
     }
+
+    fn check_secondary_rate_limit(&self, username: &str, now_ms: u64) -> GuardResult<()> {
+        let cutoff = now_ms.saturating_sub(self.policy.login_window.as_millis() as u64);
+        let mut attempts = self.secondary_failed_attempts.lock();
+        let failures = attempts.entry(username.to_string()).or_default();
+        failures.retain(|attempt| *attempt >= cutoff);
+        if failures.len() >= self.policy.max_failed_attempts {
+            return Err(GuardError::Capacity(
+                "secondary authentication rate limit exceeded".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_secondary_failure(&self, username: &str, now_ms: u64) {
+        self.secondary_failed_attempts
+            .lock()
+            .entry(username.to_string())
+            .or_default()
+            .push(now_ms);
+    }
 }
 
 pub fn cookie_value(cookie_header: &str, name: &str) -> Option<String> {
@@ -459,5 +500,18 @@ mod tests {
             auth.renew_session(&token).unwrap().expires_at_ms,
             valid_until
         );
+    }
+
+    #[test]
+    fn current_password_verification_does_not_issue_a_session() {
+        let hash = crate::auth::hash_password("secret").unwrap();
+        let auth = AuthState::new(
+            [UserAccount::new("admin", Role::Admin, hash)],
+            SessionPolicy::default(),
+        );
+
+        assert!(auth.verify_current_password("admin", "secret").unwrap());
+        assert!(!auth.verify_current_password("admin", "wrong").unwrap());
+        assert!(auth.sessions.lock().is_empty());
     }
 }

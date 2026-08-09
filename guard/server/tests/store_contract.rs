@@ -2,7 +2,7 @@ use gmv_guard_server::auth::{Role, Secret};
 use gmv_guard_server::core::GuardConfig;
 use gmv_guard_server::store::migration::{
     MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES, MYSQL_0004_COLUMNS, MYSQL_0004_INDEXES,
-    SQLITE_0003, SQLITE_0004, migration_pairs,
+    MYSQL_0007, SQLITE_0003, SQLITE_0004, SQLITE_0007, migration_pairs,
 };
 
 #[test]
@@ -11,6 +11,15 @@ fn guard_config_and_secret_baselines_hold() {
     assert!(Role::Admin.allows(Role::Operator));
     let secret = Secret::new("super-secret");
     assert!(!format!("{secret:?}").contains("super-secret"));
+}
+
+#[test]
+fn master_key_migration_drops_unsupported_legacy_ciphertext() {
+    for migration in [MYSQL_0007, SQLITE_0007] {
+        assert!(migration.contains("DELETE FROM guard_mqtt_runtime_state"));
+        assert!(migration.contains("DELETE FROM guard_mqtt_runtime_revision"));
+        assert!(migration.contains("DELETE FROM guard_integration_credential"));
+    }
 }
 
 #[test]
@@ -63,6 +72,10 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         "guard_integration_mapping",
         "guard_integration_audit",
         "guard_integration_delivery",
+        "guard_integration_slot",
+        "guard_integration_master_key",
+        "guard_mqtt_runtime_revision",
+        "guard_mqtt_runtime_state",
     ] {
         assert!(mysql_all.contains(table), "mysql missing {table}");
         assert!(sqlite_all.contains(table), "sqlite missing {table}");

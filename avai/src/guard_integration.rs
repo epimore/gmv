@@ -412,16 +412,21 @@ impl AvaiControlAdapter {
         }
         task.state = AiTaskState::Succeeded;
         task.result = result.clone();
-        Some(self.task_event(task_id, EventPriority::P1, result))
+        let payload = avai_task_result_payload(task_id, task, &result)?;
+        Some(self.task_event(task_id, "avai.task.result", EventPriority::P1, payload))
     }
 
     pub fn progress_event(&self, task_id: &str, progress: u8) -> Option<NodeToGuardMessage> {
-        self.tasks.get(task_id)?;
-        Some(self.task_event(
-            task_id,
-            EventPriority::P2,
-            format!("progress={progress}").into_bytes(),
-        ))
+        let task = self.tasks.get(task_id)?;
+        let payload = base::serde_json::to_vec(&base::serde_json::json!({
+            "task_id": task_id,
+            "task_type": task.task_type,
+            "route_id": task.route_id,
+            "state": "running",
+            "progress": progress
+        }))
+        .ok()?;
+        Some(self.task_event(task_id, "avai.task.progress", EventPriority::P2, payload))
     }
 
     pub fn resource_snapshot(&self) -> NodeResourceSnapshot {
@@ -452,6 +457,7 @@ impl AvaiControlAdapter {
     fn task_event(
         &self,
         task_id: &str,
+        topic: &str,
         priority: EventPriority,
         payload: Vec<u8>,
     ) -> NodeToGuardMessage {
@@ -461,7 +467,7 @@ impl AvaiControlAdapter {
             sent_at_epoch_ms: 0,
             payload: Some(node_to_guard_message::Payload::Event(NodeEvent {
                 event_id: format!("ai-{task_id}-{}", priority as i32),
-                topic: "avai.task.result".to_string(),
+                topic: topic.to_string(),
                 priority: priority as i32,
                 payload,
             })),
@@ -476,6 +482,21 @@ impl AvaiControlAdapter {
             })
             .unwrap_or(true)
     }
+}
+
+fn avai_task_result_payload(task_id: &str, task: &AiTask, result: &[u8]) -> Option<Vec<u8>> {
+    let result =
+        base::serde_json::from_slice::<base::serde_json::Value>(result).unwrap_or_else(|_| {
+            base::serde_json::Value::String(String::from_utf8_lossy(result).into_owned())
+        });
+    base::serde_json::to_vec(&base::serde_json::json!({
+        "task_id": task_id,
+        "task_type": task.task_type,
+        "route_id": task.route_id,
+        "state": "succeeded",
+        "result": result
+    }))
+    .ok()
 }
 
 fn now_epoch_ms() -> i64 {
@@ -568,6 +589,29 @@ mod tests {
         assert_eq!(control.resource_snapshot().resources.len(), 0);
         assert!(control.progress_event("task-1", 50).is_none());
         assert!(control.complete_task("task-1", b"ok".to_vec()).is_none());
+    }
+
+    #[test]
+    fn avai_task_result_has_a_stable_public_payload() {
+        let task = AiTask {
+            task_type: "ai.vehicle".to_string(),
+            route_id: "route-1".to_string(),
+            frame: None,
+            state: AiTaskState::Succeeded,
+            result: Vec::new(),
+        };
+        let payload = avai_task_result_payload(
+            "task-1",
+            &task,
+            br#"{"detections":[{"label":"car","score":0.98}]}"#,
+        )
+        .unwrap();
+        let payload: base::serde_json::Value = base::serde_json::from_slice(&payload).unwrap();
+        assert_eq!(payload["task_id"], "task-1");
+        assert_eq!(payload["task_type"], "ai.vehicle");
+        assert_eq!(payload["route_id"], "route-1");
+        assert_eq!(payload["state"], "succeeded");
+        assert_eq!(payload["result"]["detections"][0]["label"], "car");
     }
 
     #[test]

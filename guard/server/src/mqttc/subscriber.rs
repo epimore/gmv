@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use base::serde::Deserialize;
@@ -120,15 +120,14 @@ impl CommandIdRepository {
 
 #[derive(Debug, Clone)]
 pub struct MqttCommandPolicy {
-    allowed_actions: HashSet<String>,
-    topic_routes: HashMap<String, (String, HashSet<String>)>,
+    supported_actions: HashSet<String>,
     seen: Arc<Mutex<HashSet<String>>>,
     max_ttl_ms: i64,
 }
 
 impl MqttCommandPolicy {
     pub fn new(
-        allowed_actions: impl IntoIterator<Item = String>,
+        supported_actions: impl IntoIterator<Item = String>,
         max_ttl_ms: i64,
     ) -> GuardResult<Self> {
         if max_ttl_ms <= 0 {
@@ -137,36 +136,14 @@ impl MqttCommandPolicy {
             ));
         }
         Ok(Self {
-            allowed_actions: allowed_actions.into_iter().collect(),
-            topic_routes: HashMap::new(),
+            supported_actions: supported_actions.into_iter().collect(),
             seen: Arc::new(Mutex::new(HashSet::new())),
             max_ttl_ms,
         })
     }
 
-    pub fn with_topic_routes(
-        mut self,
-        routes: impl IntoIterator<Item = (String, String, Vec<String>)>,
-    ) -> GuardResult<Self> {
-        for (topic, integration_id, actions) in routes {
-            if topic.is_empty()
-                || topic.contains(['#', '+'])
-                || integration_id.is_empty()
-                || self
-                    .topic_routes
-                    .insert(topic, (integration_id, actions.into_iter().collect()))
-                    .is_some()
-            {
-                return Err(GuardError::InvalidConfig(
-                    "invalid or duplicate MQTT integration command route".to_string(),
-                ));
-            }
-        }
-        Ok(self)
-    }
-
     pub fn decode(&self, payload: &[u8], now_ms: i64) -> GuardResult<Option<RoutedCommand>> {
-        let (command, routed) = self.validate(None, payload, now_ms)?;
+        let (command, routed) = self.validate(payload, now_ms)?;
         let mut seen = self.seen.lock();
         if !seen.insert(command.command_id) {
             return Ok(None);
@@ -180,7 +157,7 @@ impl MqttCommandPolicy {
         now_ms: i64,
         repository: &CommandIdRepository,
     ) -> GuardResult<Option<RoutedCommand>> {
-        let (command, routed) = self.validate(None, payload, now_ms)?;
+        let (command, routed) = self.validate(payload, now_ms)?;
         if !repository.claim_mqtt(&command, now_ms).await? {
             base::log::debug!(
                 "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}",
@@ -194,46 +171,17 @@ impl MqttCommandPolicy {
         Ok(Some(routed))
     }
 
-    pub async fn decode_topic_with_repository(
-        &self,
-        topic: &str,
-        payload: &[u8],
-        now_ms: i64,
-        repository: &CommandIdRepository,
-    ) -> GuardResult<Option<RoutedCommand>> {
-        let (command, routed) = self.validate(Some(topic), payload, now_ms)?;
-        if !repository.claim_mqtt(&command, now_ms).await? {
-            base::log::debug!(
-                "MQTT command reused: action=mqtt_command, stage=claim, outcome=duplicate, command_id={}, integration_id={}, command_action={}, target={}, topic={}",
-                command.command_id,
-                command.integration_id,
-                command.action,
-                command.target,
-                topic
-            );
-            return Ok(None);
-        }
-        Ok(Some(routed))
-    }
-
     pub async fn decode_authorized_topic_with_repository(
         &self,
         topic: &str,
         payload: &[u8],
         now_ms: i64,
-        protocol_version: &str,
         repository: &CommandIdRepository,
         integrations: &IntegrationRepository,
     ) -> GuardResult<Option<RoutedCommand>> {
         let (command, routed) = self.validate_command(payload, now_ms)?;
         integrations
-            .authorize_mqtt_command(
-                topic,
-                &command.integration_id,
-                &command.action,
-                protocol_version,
-                now_ms,
-            )
+            .authorize_mqtt_command(topic, &command.integration_id, &command.action, now_ms)
             .await?;
         if !repository.claim_mqtt(&command, now_ms).await? {
             base::log::debug!(
@@ -249,31 +197,11 @@ impl MqttCommandPolicy {
         Ok(Some(routed))
     }
 
-    fn validate(
-        &self,
-        topic: Option<&str>,
-        payload: &[u8],
-        now_ms: i64,
-    ) -> GuardResult<(MqttCommand, RoutedCommand)> {
+    fn validate(&self, payload: &[u8], now_ms: i64) -> GuardResult<(MqttCommand, RoutedCommand)> {
         let (command, routed) = self.validate_command(payload, now_ms)?;
-        let route_actions = topic
-            .and_then(|topic| self.topic_routes.get(topic))
-            .map(|(integration_id, actions)| {
-                if command.integration_id != *integration_id {
-                    return Err(GuardError::InvalidIdentity(
-                        "MQTT command integration does not match topic".to_string(),
-                    ));
-                }
-                Ok(actions)
-            })
-            .transpose()?;
-        let action_allowed = route_actions.map_or_else(
-            || self.allowed_actions.contains(&command.action),
-            |actions| actions.contains(&command.action),
-        );
-        if !action_allowed {
+        if !self.supported_actions.contains(&command.action) {
             return Err(GuardError::InvalidIdentity(
-                "MQTT command action is not allowed".to_string(),
+                "MQTT command action is unsupported".to_string(),
             ));
         }
         Ok((command, routed))

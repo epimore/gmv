@@ -1252,7 +1252,7 @@ find bin config contracts guard-ui -type f -print0 | sort -z | xargs -0 sha256su
 tar -czf ../gmv-delivery-split.tar.gz .
 ```
 
-实际交付前应把 `config/*.yml` 调整为目标现场 IP、域名、证书、数据库和节点 ID。仓库示例配置已保持 MQTT、HTTP integration 和 bootstrap secret 为空；不得把开发环境数据库、日志、broker 凭据、bootstrap 密码或 `guard.integrations.master_key` 打入通用交付包。现场 secret 应通过受控渠道单独注入，并将配置权限限制为服务账号可读。
+实际交付前应把 `config/*.yml` 调整为目标现场 IP、域名、证书、数据库和节点 ID。仓库示例配置不包含 MQTT/HTTP integration 凭据；不得把开发环境数据库、日志、broker 凭据或 bootstrap 密码打入通用交付包。集成主密钥由 Guard 空库首次启动时随机生成并保存在数据库中，不再通过配置文件注入。
 
 ## 19. 升级和回滚
 
@@ -1369,6 +1369,8 @@ ls third_party/pjproject-2.17/dist/lib/libpjsip*.a
 
 ## 21. 第三方应用集成交付
 
+每套 Guard 部署只保留一个第三方业务应用，在 HTTP 与 MQTT 中单选。服务提供商远程运维通道是独立交付依赖项，必须使用独立身份、控制面、网络边界和审计；不得创建第二个业务 integration，也不得复用业务 HMAC、MQTT Broker 账号/Topic 或本地 UI Session。本节不交付远程运维 agent、云端控制面、VPN/ZTNA 或远程 Shell。
+
 ### 21.1 协议边界和接口入口
 
 HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准把 MQTT 转成 HTTP”或反向转换。两种入口都完成独立认证、授权、幂等和 DTO 解码后进入 Guard 的 `BusinessControl`；Session、Stream、Avai 继续维护各自业务事实和资源状态机。
@@ -1377,7 +1379,7 @@ HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准
 | --- | --- | --- | --- |
 | Guard UI | `/api/v2/**` | Cookie Session + CSRF | 供管理员、操作员和查看者使用 |
 | 第三方 HTTP | `/openapi/v1/**` | `GMV-HMAC-SHA256-V1` + integration scope | 不创建 Admin UI session，不开放用户、integration 管理和内部 RPC |
-| 第三方 MQTT command | `gmv/commands/{integration_id}` | Broker TLS/账号/ACL + Guard 应用级动态授权 | 每条消息检查应用状态、有效期、精确 topic、协议版本和 action |
+| 第三方 MQTT command | `gmv/commands/{integration_id}` | Broker TLS/账号/ACL + Guard 应用级动态授权 | 每条消息检查唯一业务应用、状态、有效期、精确 topic、scope 和 action |
 | MQTT command result | `gmv/command-results/{integration_id}` | Broker ACL | Guard 通过持久化 outbox 发布执行终态 |
 | HTTP callback / MQTT event | integration mapping | HMAC 或 Broker ACL | 先进入持久化 outbox，再按策略重试 |
 | 在线契约 | `/api-docs/**` | Admin UI session | 只读查看 OpenAPI、AsyncAPI 和 manifest |
@@ -1402,17 +1404,19 @@ HTTP 与 MQTT 是并列的外部协议适配器，不存在“以 HTTP 为标准
 
 部署时必须满足：
 
-- `guard.integrations.master_key` 为 32 字节随机密钥的无填充 Base64；启用 HTTP integration 前必须设置。
+- 集成主密钥无需部署配置：数据库缺少 `business` 单例记录时，Guard 启动使用系统安全随机源生成 32 字节密钥并持久化；后续启动复用原值。
 - 配置文件权限至少限制为服务账号和管理员可读，不能写入日志、URL、错误 details 或通用交付包。
-- 升级、回滚和迁移必须保留原 master key；更换为新值会使历史 credential ciphertext 无法解密。
+- 升级、回滚和迁移必须同时保留主密钥记录及其 ciphertext；需要更换时只能通过接入应用页执行事务性轮换，禁止直接修改数据库 key material。
 - integration 停用、过期、scope 收缩或 credential revoke 后，新请求立即失败。
 - Nginx 对 `/openapi/v1/**` 只提供 HTTPS、请求体大小和连接限流，不得改写签名使用的 path/query/body。
 
 ### 21.3 MQTT Broker、TLS 和运行期授权
 
-MQTT 使用部署级单 Broker 连接。`guard.integrations.mqtt.protocol_version` 选择 `v3`（MQTT 3.1.1）或 `v5`（MQTT 5.0），应用配置必须与当前 runtime 一致；broker 地址、TLS、账号和协议版本变更后重启 Guard。
+MQTT 使用部署级单 Broker 连接。协议版本、Broker、端口、Client ID、账号、只写密码、TLS 和事件 TTL 由 Guard UI“MQTT 接入”页面维护，保存为数据库 revision 并动态应用；应用配置不再重复保存协议版本，连接参数变更不要求重启 Guard。保存成功仅表示 desired revision 已落库，必须等待真实 CONNACK 后状态进入 `CONNECTED` 且 active revision 等于 desired revision。
 
-应用启停、有效期、command topic、`allowed_actions` 和 integration scopes 由数据库维护，每条 command 执行前实时校验，因此这些变更不依赖重启。action 白名单与业务 scope 必须同时满足；例如设备写操作即使在 `allowed_actions` 中存在，缺少对应 `devices:write` 仍会拒绝。Guard 固定接收 `gmv/commands/#` 命名空间，但 wildcard subscription 只负责接收，不授予业务权限；未知 integration/topic/action 必须 fail-closed。
+MQTT 密码使用数据库中的集成主密钥加密，查询 API 只返回是否已配置。接入应用页只展示主密钥状态和版本并允许 Admin 随机轮换，不返回或接收明文。CA/客户端证书文件、Broker 用户和 ACL 仍由部署系统管理。Broker 不可达时 MQTT 通道进入 `DEGRADED` 并有限重试，Admin Web/API 必须继续可用，以便管理员修复配置。
+
+应用启停、有效期、精确 command topic 和 integration scopes 由数据库维护，每条 command 执行前实时校验，因此这些变更不依赖重启。当前二进制已注册的 MQTT action 均可调用，但仍必须满足对应业务 scope；例如缺少 `devices:write` 时设备写操作会被拒绝。Guard 固定接收 `gmv/commands/#` 命名空间，但 wildcard subscription 只负责接收，不授予业务权限；未知 integration/topic/action 必须 fail-closed。
 
 Broker 最小 ACL 示例语义：
 
@@ -1429,7 +1433,7 @@ Partner A subscribe: gmv/events/partner-a/#
 
 ### 21.4 MQTT 点播交付与最小调用流程
 
-交付 MQTT 应用时，不能只交付 Broker 地址和 Topic。部署方必须同时交付 `integration_id`、MQTT 版本、TLS/账号、精确 `command_topic`、精确 `result_topic`、event topics、`allowed_actions` 以及由当前二进制导出的 `asyncapi.json` 和 `README.md`。在线入口为 `/api-docs/asyncapi.json`，离线契约通过以下命令生成：
+交付 MQTT 应用时，不能只交付 Broker 地址和 Topic。部署方必须同时交付 `integration_id`、MQTT 版本、TLS/账号、精确 `command_topic`、精确 `result_topic`、event topics，以及由当前二进制导出的 `asyncapi.json` 和 `README.md`。在线入口为 `/api-docs/asyncapi.json`，离线契约通过以下命令生成：
 
 ```bash
 gmv-guard-server export-integration-contracts ./integration-contracts
@@ -1469,7 +1473,7 @@ gmv-guard-server export-integration-contracts ./integration-contracts
 | Guard -> MQTT Broker | TCP/TLS，通常 8883 | 最小账号和 topic ACL |
 | Guard -> callback endpoint | HTTPS 443 | DNS/IP/私网策略校验，禁止未授权内网地址和重定向 |
 
-Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_credential`、`guard_integration_http`、`guard_integration_mqtt`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前同时备份数据库和 Guard 配置；不得单独恢复数据库而遗漏对应 master key。
+Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_slot`、`guard_integration_master_key`、`guard_integration_credential`、`guard_integration_http`、`guard_integration_mqtt`、`guard_mqtt_runtime_revision`、`guard_mqtt_runtime_state`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前备份完整数据库和 Guard 配置；恢复时不得遗漏主密钥记录或只恢复部分集成表。
 
 ### 21.6 第三方专项验收矩阵
 
@@ -1479,12 +1483,14 @@ Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_out
 [ ] HMAC 正确请求成功，错误签名、过期 timestamp 和 nonce replay 被拒绝
 [ ] 同一请求 ID/相同内容跨 Guard 重启返回原响应
 [ ] 同一请求 ID/不同内容返回 409
-[ ] MQTT V3 或 V5 与现场 runtime 版本一致
+[ ] “接入应用”只允许创建一个 integration，HTTP/MQTT 单选；HTTP/MQTT 参数分别位于对应子页面
+[ ] MQTT Runtime 页面分别验证 V3.1.1/V5.0；desired revision 只有在真实 CONNACK 后进入 CONNECTED 并成为 active revision
+[ ] Broker 不可达时 MQTT 为 DEGRADED，但 Admin Web/API 仍可用于修复配置
 [ ] 58 个开放 HTTP path、65 个 method/path operation 均映射到 MQTT action 或登记的事件 Topic 特例
 [ ] 62 个 MQTT action 均有 scope、payload/result schema、request/success/failure 示例和实际 executor 映射
 [ ] 原有九种 MQTT action 名称与 payload 兼容，旧客户端回归通过
 [ ] 未知 topic、错误 integration_id、停用/过期应用和未授权 action 被拒绝
-[ ] 应用停用、allowed_actions 或 scopes 收缩无需重启立即生效
+[ ] 应用停用或 scopes 收缩无需重启立即生效；当前二进制注册 action 均可调用
 [ ] command result 包含 schema_version、integration_id、command_id、operation_id、state、error_code、occurred_at_ms
 [ ] HTTP callback 签名、超时、重试、失败终态和重启恢复通过
 [ ] MQTT event mapping、outbox retry、event_id 幂等和重启恢复通过
@@ -1534,7 +1540,7 @@ Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_out
 [ ] 配置文件和证书私钥权限正确
 [ ] ui_dist_dir 未指向敏感目录
 [ ] 前端 dist 不含 sourcemap
-[ ] guard.integrations.master_key 已通过受控渠道注入并纳入升级备份
+[ ] 数据库备份包含 guard_integration_master_key，接入应用页显示主密钥已初始化
 [ ] MQTT 已启用 TLS、独立账号和最小 topic ACL
 [ ] 制品扫描确认不含数据库、日志、Access Key、Secret、broker 凭据或私钥
 ```

@@ -1,5 +1,6 @@
 #[cfg(feature = "db-sqlite")]
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(feature = "db-mysql")]
 use base_db::dbx::mysqlx::build_mysql_pool;
@@ -17,8 +18,10 @@ use crate::auth::{Role, UserAccess, UserAccount, UserProfile};
 use crate::core::{GuardError, GuardResult};
 use crate::integration::model::{
     Integration, IntegrationAudit, IntegrationCredential, IntegrationHttpConfig,
-    IntegrationMapping, IntegrationMqttConfig,
+    IntegrationMapping, IntegrationMasterKey, IntegrationMqttConfig, MqttRuntimeApplyState,
+    MqttRuntimeConfig, MqttRuntimeRevision,
 };
+use crate::integration::secret::IntegrationSecretCipher;
 use crate::outbox::OutboxRepository;
 use crate::store::command::HttpCommandClaim;
 #[cfg(feature = "db-mysql")]
@@ -130,6 +133,47 @@ macro_rules! dispatch_integration {
 }
 
 impl IntegrationRepository {
+    pub async fn master_key(&self) -> GuardResult<Option<IntegrationMasterKey>> {
+        dispatch_integration!(self, get_integration_master_key())
+    }
+
+    pub async fn ensure_master_key(
+        &self,
+        key_material: &str,
+        actor: &str,
+        now_ms: i64,
+    ) -> GuardResult<IntegrationMasterKey> {
+        dispatch_integration!(
+            self,
+            ensure_integration_master_key(key_material, actor, now_ms)
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn rotate_master_key(
+        &self,
+        current_cipher: &IntegrationSecretCipher,
+        new_cipher: &IntegrationSecretCipher,
+        new_key_material: &str,
+        expected_key_version: i64,
+        actor: &str,
+        audit_id: &str,
+        now_ms: i64,
+    ) -> GuardResult<IntegrationMasterKey> {
+        dispatch_integration!(
+            self,
+            rotate_integration_master_key(
+                current_cipher,
+                new_cipher,
+                new_key_material,
+                expected_key_version,
+                actor,
+                audit_id,
+                now_ms
+            )
+        )
+    }
+
     pub async fn list(&self) -> GuardResult<Vec<Integration>> {
         dispatch_integration!(self, list_integrations())
     }
@@ -191,9 +235,13 @@ impl IntegrationRepository {
         topic: &str,
         integration_id: &str,
         action: &str,
-        protocol_version: &str,
         now_ms: i64,
     ) -> GuardResult<IntegrationMqttConfig> {
+        if self.business_integration_id().await?.as_deref() != Some(integration_id) {
+            return Err(GuardError::InvalidIdentity(
+                "MQTT integration is not the active business integration".to_string(),
+            ));
+        }
         let integration = self
             .get(integration_id)
             .await?
@@ -214,23 +262,9 @@ impl IntegrationRepository {
             .ok_or_else(|| {
                 GuardError::InvalidIdentity("MQTT integration config is missing".to_string())
             })?;
-        if config.protocol_version != protocol_version {
-            return Err(GuardError::InvalidIdentity(
-                "MQTT integration protocol does not match runtime".to_string(),
-            ));
-        }
         if config.command_topic != topic {
             return Err(GuardError::InvalidIdentity(
                 "MQTT command topic is not authorized".to_string(),
-            ));
-        }
-        if !config
-            .allowed_actions
-            .iter()
-            .any(|allowed| allowed == action)
-        {
-            return Err(GuardError::InvalidIdentity(
-                "MQTT command action is not allowed".to_string(),
             ));
         }
         let required_scope =
@@ -247,6 +281,89 @@ impl IntegrationRepository {
             ));
         }
         Ok(config)
+    }
+
+    pub async fn business_integration_id(&self) -> GuardResult<Option<String>> {
+        dispatch_integration!(self, business_integration_id())
+    }
+
+    pub async fn business_integration(&self) -> GuardResult<Option<Integration>> {
+        let Some(integration_id) = self.business_integration_id().await? else {
+            return Ok(None);
+        };
+        self.get(&integration_id).await
+    }
+
+    pub async fn bind_business_integration(
+        &self,
+        integration_id: &str,
+        actor: &str,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        dispatch_integration!(
+            self,
+            bind_business_integration(integration_id, actor, now_ms)
+        )
+    }
+
+    pub async fn transport_switch_blockers(&self, integration_id: &str) -> GuardResult<(i64, i64)> {
+        dispatch_integration!(self, integration_transport_switch_blockers(integration_id))
+    }
+
+    pub async fn deactivate_transport(
+        &self,
+        integration_id: &str,
+        transport: crate::integration::model::IntegrationTransport,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        dispatch_integration!(
+            self,
+            deactivate_integration_transport(integration_id, transport, now_ms)
+        )
+    }
+
+    pub async fn mqtt_runtime_config(&self) -> GuardResult<Option<MqttRuntimeConfig>> {
+        dispatch_integration!(self, get_mqtt_runtime_config())
+    }
+
+    pub async fn mqtt_runtime_revision(
+        &self,
+        revision: i64,
+    ) -> GuardResult<Option<MqttRuntimeRevision>> {
+        dispatch_integration!(self, get_mqtt_runtime_revision(revision))
+    }
+
+    pub async fn save_mqtt_runtime_config(
+        &self,
+        value: &MqttRuntimeRevision,
+        expected_config_version: i64,
+    ) -> GuardResult<MqttRuntimeConfig> {
+        dispatch_integration!(
+            self,
+            save_mqtt_runtime_config(value, expected_config_version)
+        )
+    }
+
+    pub async fn update_mqtt_runtime_state(
+        &self,
+        desired_revision: i64,
+        active_revision: Option<i64>,
+        apply_state: MqttRuntimeApplyState,
+        last_error_code: Option<&str>,
+        last_error_summary: Option<&str>,
+        now_ms: i64,
+    ) -> GuardResult<()> {
+        dispatch_integration!(
+            self,
+            update_mqtt_runtime_state(
+                desired_revision,
+                active_revision,
+                apply_state,
+                last_error_code,
+                last_error_summary,
+                now_ms
+            )
+        )
     }
 
     pub async fn list_mappings(
@@ -398,6 +515,17 @@ impl PersistentStore {
                     .to_string(),
             ));
         }
+        self.integration_repository()
+            .ensure_master_key(
+                &IntegrationSecretCipher::random_key_material(),
+                "system:init",
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|error| GuardError::Conflict(error.to_string()))?
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64,
+            )
+            .await?;
         Ok(())
     }
 

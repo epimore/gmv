@@ -91,7 +91,7 @@ impl EventForwarder {
         }
         if let Some(integrations) = &self.integrations {
             let envelope = event_envelope(&event_id, &topic, &payload, now)?;
-            for integration in integrations.list().await? {
+            for integration in integrations.business_integration().await?.into_iter() {
                 if target_integration_id.is_some_and(|target| target != integration.integration_id)
                 {
                     continue;
@@ -111,6 +111,7 @@ impl EventForwarder {
                     if !mapping.enabled
                         || mapping.direction != "OUTBOUND"
                         || !topic_matches(&mapping.source_type, &topic)
+                        || !crate::integration::model::is_integration_callback_event(&topic)
                     {
                         continue;
                     }
@@ -128,12 +129,25 @@ impl EventForwarder {
                                 };
                                 (
                                     OutboxDestinationKind::Webhook,
-                                    destination,
+                                    crate::integration::model::integration_callback_url(
+                                        &destination,
+                                        &topic,
+                                    )?,
                                     Some(now.saturating_add(config.event_ttl_ms)),
                                 )
                             }
                             (crate::integration::model::IntegrationTransport::Mqtt, "MQTT") => {
-                                (OutboxDestinationKind::Mqtt, mapping.destination, None)
+                                let Some(config) = integrations
+                                    .mqtt_config(&integration.integration_id)
+                                    .await?
+                                else {
+                                    continue;
+                                };
+                                (
+                                    OutboxDestinationKind::Mqtt,
+                                    mqtt_topic(&config.event_topic_prefix, &topic),
+                                    None,
+                                )
                             }
                             _ => continue,
                         };

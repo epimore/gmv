@@ -24,8 +24,6 @@ pub struct GuardAppConfig {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
-    #[serde(default)]
-    pub integrations: IntegrationsConfig,
 }
 
 impl GuardAppConfig {
@@ -43,8 +41,7 @@ impl GuardAppConfig {
         self.grpc.validate()?;
         self.registry.validate()?;
         self.database.validate()?;
-        self.bootstrap.validate()?;
-        self.integrations.validate()
+        self.bootstrap.validate()
     }
 }
 
@@ -583,140 +580,6 @@ impl BootstrapAdminConfig {
     }
 }
 
-#[derive(Clone, Default, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct IntegrationsConfig {
-    #[serde(default)]
-    pub master_key_crypto_enable: bool,
-    #[serde(default)]
-    pub master_key: String,
-    #[serde(default)]
-    pub mqtt: MqttStartupConfig,
-}
-
-impl IntegrationsConfig {
-    fn validate(&self) -> GuardResult<()> {
-        self.mqtt.validate()?;
-        if let Some(master_key) = self.master_key_value()? {
-            crate::integration::secret::IntegrationSecretCipher::from_base64_key_no_pad(
-                &master_key,
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn master_key_value(&self) -> GuardResult<Option<String>> {
-        if self.master_key.is_empty() {
-            return Ok(None);
-        }
-        let value = if self.master_key_crypto_enable {
-            default_decrypt(&self.master_key)
-                .map_err(|error| GuardError::InvalidConfig(error.to_string()))?
-        } else {
-            self.master_key.clone()
-        };
-        Ok(Some(value))
-    }
-}
-
-#[derive(Clone, Deserialize)]
-#[serde(crate = "base::serde")]
-pub struct MqttStartupConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default = "default_mqtt_protocol_version")]
-    pub protocol_version: String,
-    #[serde(default)]
-    pub broker: String,
-    #[serde(default = "default_mqtt_port")]
-    pub port: u16,
-    #[serde(default)]
-    pub client_id: String,
-    #[serde(default)]
-    pub username: String,
-    #[serde(default)]
-    pub pass_crypto_enable: bool,
-    #[serde(default)]
-    pub pass: String,
-    #[serde(default = "default_true")]
-    pub tls: bool,
-    #[serde(default)]
-    pub subscribe_topics: Vec<String>,
-    #[serde(default)]
-    pub publish_event_topics: Vec<String>,
-    #[serde(default = "default_mqtt_publish_topic_prefix")]
-    pub publish_topic_prefix: String,
-    #[serde(default = "default_mqtt_publish_event_ttl_sec")]
-    pub publish_event_ttl_sec: u64,
-}
-
-impl Default for MqttStartupConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            protocol_version: default_mqtt_protocol_version(),
-            broker: String::new(),
-            port: default_mqtt_port(),
-            client_id: String::new(),
-            username: String::new(),
-            pass_crypto_enable: false,
-            pass: String::new(),
-            tls: true,
-            subscribe_topics: Vec::new(),
-            publish_event_topics: Vec::new(),
-            publish_topic_prefix: default_mqtt_publish_topic_prefix(),
-            publish_event_ttl_sec: default_mqtt_publish_event_ttl_sec(),
-        }
-    }
-}
-
-impl MqttStartupConfig {
-    fn validate(&self) -> GuardResult<()> {
-        if !matches!(self.protocol_version.as_str(), "v3" | "v5") {
-            return Err(GuardError::InvalidConfig(
-                "guard.integrations.mqtt.protocol_version must be v3 or v5".to_string(),
-            ));
-        }
-        if self.enabled
-            && (self.broker.trim().is_empty()
-                || self.client_id.trim().is_empty()
-                || self.username.trim().is_empty()
-                || self.pass.is_empty())
-        {
-            return Err(GuardError::InvalidConfig(
-                "guard.integrations.mqtt connection fields are required when enabled".to_string(),
-            ));
-        }
-        if self.enabled && self.publish_event_ttl_sec == 0 {
-            return Err(GuardError::InvalidConfig(
-                "guard.integrations.mqtt.publish_event_ttl_sec must be positive".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
-    pub fn password(&self) -> GuardResult<String> {
-        if self.pass_crypto_enable {
-            default_decrypt(&self.pass)
-                .map_err(|error| GuardError::InvalidConfig(error.to_string()))
-        } else {
-            Ok(self.pass.clone())
-        }
-    }
-}
-
-fn default_mqtt_publish_topic_prefix() -> String {
-    "gmv/events".to_string()
-}
-
-fn default_mqtt_protocol_version() -> String {
-    "v3".to_string()
-}
-
-fn default_mqtt_publish_event_ttl_sec() -> u64 {
-    86_400
-}
-
 pub fn config_path_from_args() -> GuardResult<String> {
     let mut args = std::env::args().skip(1).collect::<Vec<_>>();
     if args.first().is_some_and(|value| value == "start") {
@@ -789,10 +652,6 @@ fn default_mysql_port() -> u16 {
 fn default_admin_username() -> String {
     "admin".to_string()
 }
-fn default_mqtt_port() -> u16 {
-    8883
-}
-
 #[cfg(test)]
 mod tests {
     use argon2::PasswordHash;
@@ -830,64 +689,6 @@ mod tests {
         argon2::Argon2::default()
             .verify_password("admin-secret".as_bytes(), &parsed)
             .unwrap();
-    }
-
-    #[test]
-    fn mqtt_startup_password_supports_plaintext_and_encrypted_sources() {
-        let plaintext = MqttStartupConfig {
-            enabled: true,
-            protocol_version: "v3".to_string(),
-            broker: "127.0.0.1".to_string(),
-            port: 1883,
-            client_id: "guard".to_string(),
-            username: "guard".to_string(),
-            pass_crypto_enable: false,
-            pass: "mqtt-secret".to_string(),
-            tls: false,
-            subscribe_topics: Vec::new(),
-            publish_event_topics: Vec::new(),
-            publish_topic_prefix: default_mqtt_publish_topic_prefix(),
-            publish_event_ttl_sec: default_mqtt_publish_event_ttl_sec(),
-        };
-        assert_eq!(plaintext.password().unwrap(), "mqtt-secret");
-
-        let encrypted = MqttStartupConfig {
-            pass_crypto_enable: true,
-            pass: default_encrypt("mqtt-secret").unwrap(),
-            ..plaintext
-        };
-        assert_eq!(encrypted.password().unwrap(), "mqtt-secret");
-    }
-
-    #[test]
-    fn integration_master_key_supports_plaintext_and_encrypted_config_sources() {
-        let key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let plaintext = IntegrationsConfig {
-            master_key_crypto_enable: false,
-            master_key: key.to_string(),
-            mqtt: MqttStartupConfig::default(),
-        };
-        plaintext.validate().unwrap();
-        assert_eq!(plaintext.master_key_value().unwrap().as_deref(), Some(key));
-
-        let encrypted = IntegrationsConfig {
-            master_key_crypto_enable: true,
-            master_key: default_encrypt(key).unwrap(),
-            mqtt: MqttStartupConfig::default(),
-        };
-        encrypted.validate().unwrap();
-        assert_eq!(encrypted.master_key_value().unwrap().as_deref(), Some(key));
-    }
-
-    #[test]
-    fn integration_master_key_rejects_invalid_config_value() {
-        let config = IntegrationsConfig {
-            master_key_crypto_enable: false,
-            master_key: "not-a-32-byte-key".to_string(),
-            mqtt: MqttStartupConfig::default(),
-        };
-
-        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -944,7 +745,6 @@ mod tests {
         let config: GuardAppConfig = base::serde_yaml::from_value(guard).unwrap();
 
         config.database.pool.validate().unwrap();
-        config.integrations.validate().unwrap();
     }
 
     #[test]

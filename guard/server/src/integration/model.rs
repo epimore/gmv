@@ -1,5 +1,56 @@
 use crate::core::{GuardError, GuardResult};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationCallbackPayloadKind {
+    SessionAlarm,
+    SessionPlaybackPresenceTerminal,
+    AvaiTaskResult,
+    PlaybackTicketRenewRequested,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegrationCallbackEventContract {
+    pub event_type: &'static str,
+    pub summary: &'static str,
+    pub description: &'static str,
+    pub payload_kind: IntegrationCallbackPayloadKind,
+}
+
+pub const INTEGRATION_CALLBACK_EVENTS: &[IntegrationCallbackEventContract] = &[
+    IntegrationCallbackEventContract {
+        event_type: "session.alarm",
+        summary: "设备报警通知",
+        description: "GB28181 设备上报报警后，Guard 将报警业务数据放入事件信封的 payload。",
+        payload_kind: IntegrationCallbackPayloadKind::SessionAlarm,
+    },
+    IntegrationCallbackEventContract {
+        event_type: "session.playback_presence_terminal",
+        summary: "回放在线状态终止",
+        description: "回放在线心跳结束、超时或被关闭时，通知第三方同步回放终态。",
+        payload_kind: IntegrationCallbackPayloadKind::SessionPlaybackPresenceTerminal,
+    },
+    IntegrationCallbackEventContract {
+        event_type: "avai.task.result",
+        summary: "智能分析任务结果",
+        description: "智能分析任务成功产生结果时，通知第三方处理任务结果。",
+        payload_kind: IntegrationCallbackPayloadKind::AvaiTaskResult,
+    },
+    IntegrationCallbackEventContract {
+        event_type: "integration.playback_ticket.renew_requested",
+        summary: "回放票据续期请求",
+        description: "回放访问票据即将过期时，请求第三方通过开放接口提交新的票据。",
+        payload_kind: IntegrationCallbackPayloadKind::PlaybackTicketRenewRequested,
+    },
+];
+
+pub const INTEGRATION_CALLBACK_URL_MAX_LEN: usize = 512;
+
+pub fn is_integration_callback_event(event_type: &str) -> bool {
+    INTEGRATION_CALLBACK_EVENTS
+        .iter()
+        .any(|contract| contract.event_type == event_type)
+}
+
 pub const MQTT_COMMAND_ACTIONS: &[&str] = &[
     "stream.start",
     "stream.stop",
@@ -496,28 +547,95 @@ impl IntegrationHttpConfig {
             })
         {
             return Err(GuardError::InvalidConfig(
-                "invalid HTTP private network allowlist".to_string(),
+                "invalid HTTP callback allowlist".to_string(),
             ));
         }
-        if self
-            .callback_url
-            .as_deref()
-            .is_some_and(|value| !value.starts_with("https://") || value.len() > 512)
-        {
+        if self.callback_url.as_deref().is_some_and(|value| {
+            value.len() > INTEGRATION_CALLBACK_URL_MAX_LEN
+                || !callback_url_scheme_allowed(
+                    value,
+                    &self.private_network_policy,
+                    &self.private_network_allowlist,
+                )
+                || INTEGRATION_CALLBACK_EVENTS
+                    .iter()
+                    .any(|event| integration_callback_url(value, event.event_type).is_err())
+        }) {
             return Err(GuardError::InvalidConfig(
-                "HTTP callback_url must use https and not exceed 512 bytes".to_string(),
+                "HTTP callback_url must use https, or http with an explicitly allowlisted host/IP, and leave room for the event path within 512 bytes".to_string(),
             ));
         }
         Ok(())
     }
 }
 
+pub fn integration_callback_url(base_url: &str, event_type: &str) -> GuardResult<String> {
+    let mut url = url::Url::parse(base_url)
+        .map_err(|error| GuardError::InvalidConfig(format!("invalid callback URL: {error}")))?;
+    if event_type.is_empty() || event_type.split('.').any(str::is_empty) {
+        return Err(GuardError::InvalidConfig(
+            "invalid callback event type".to_string(),
+        ));
+    }
+    {
+        let mut segments = url.path_segments_mut().map_err(|_| {
+            GuardError::InvalidConfig("callback URL cannot be a base URL".to_string())
+        })?;
+        segments.pop_if_empty();
+        segments.extend(event_type.split('.'));
+    }
+    let destination = url.to_string();
+    if destination.len() > INTEGRATION_CALLBACK_URL_MAX_LEN {
+        return Err(GuardError::InvalidConfig(
+            "callback URL with event path exceeds 512 bytes".to_string(),
+        ));
+    }
+    Ok(destination)
+}
+
+fn callback_url_scheme_allowed(
+    value: &str,
+    private_network_policy: &str,
+    private_network_allowlist: &[String],
+) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    if !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    if url.scheme() == "https" {
+        return url.host_str().is_some();
+    }
+    if url.scheme() != "http" || private_network_policy != "allowlist" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    callback_http_host_allowlisted(host, private_network_allowlist)
+}
+
+fn callback_http_host_allowlisted(host: &str, private_network_allowlist: &[String]) -> bool {
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return private_network_allowlist
+            .iter()
+            .any(|entry| entry.eq_ignore_ascii_case(host));
+    };
+    private_network_allowlist.iter().any(|entry| {
+        entry
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|allowed| allowed == ip)
+            || entry
+                .parse::<ipnet::IpNet>()
+                .is_ok_and(|network| network.contains(&ip))
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct IntegrationMqttConfig {
     pub integration_id: String,
-    pub protocol_version: String,
-    pub allowed_actions: Vec<String>,
     pub command_topic: String,
     pub result_topic: String,
     pub event_topic_prefix: String,
@@ -526,11 +644,6 @@ pub struct IntegrationMqttConfig {
 
 impl IntegrationMqttConfig {
     pub fn validate(&self) -> GuardResult<()> {
-        if !matches!(self.protocol_version.as_str(), "v3" | "v5") {
-            return Err(GuardError::InvalidConfig(
-                "MQTT protocol_version must be v3 or v5".to_string(),
-            ));
-        }
         if self.command_topic != format!("gmv/commands/{}", self.integration_id)
             || self.result_topic != format!("gmv/command-results/{}", self.integration_id)
             || self.event_topic_prefix != format!("gmv/events/{}", self.integration_id)
@@ -539,17 +652,132 @@ impl IntegrationMqttConfig {
                 "MQTT integration topics must use the fixed integration prefix".to_string(),
             ));
         }
-        let mut actions = std::collections::HashSet::new();
-        for action in &self.allowed_actions {
-            if !MQTT_COMMAND_ACTIONS.contains(&action.as_str()) || !actions.insert(action) {
-                return Err(GuardError::InvalidConfig(
-                    "MQTT integration allowed_actions contains an invalid or duplicate action"
-                        .to_string(),
-                ));
-            }
+        Ok(())
+    }
+}
+
+pub const BUSINESS_INTEGRATION_SLOT: &str = "business";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum MqttRuntimeApplyState {
+    Disabled,
+    Pending,
+    Applying,
+    Connected,
+    Degraded,
+    RollingBack,
+}
+
+impl MqttRuntimeApplyState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "DISABLED",
+            Self::Pending => "PENDING",
+            Self::Applying => "APPLYING",
+            Self::Connected => "CONNECTED",
+            Self::Degraded => "DEGRADED",
+            Self::RollingBack => "ROLLING_BACK",
+        }
+    }
+
+    pub fn parse(value: &str) -> GuardResult<Self> {
+        match value {
+            "DISABLED" => Ok(Self::Disabled),
+            "PENDING" => Ok(Self::Pending),
+            "APPLYING" => Ok(Self::Applying),
+            "CONNECTED" => Ok(Self::Connected),
+            "DEGRADED" => Ok(Self::Degraded),
+            "ROLLING_BACK" => Ok(Self::RollingBack),
+            _ => Err(GuardError::Conflict(format!(
+                "invalid stored MQTT runtime state {value}"
+            ))),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct MqttRuntimeRevision {
+    pub revision: i64,
+    pub protocol_version: String,
+    pub broker: String,
+    pub port: u16,
+    pub client_id: String,
+    pub username: Option<String>,
+    pub password_ciphertext: Option<String>,
+    pub tls: bool,
+    pub publish_event_ttl_sec: i64,
+    pub created_by: String,
+    pub created_at_ms: i64,
+}
+
+impl std::fmt::Debug for MqttRuntimeRevision {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("MqttRuntimeRevision")
+            .field("revision", &self.revision)
+            .field("protocol_version", &self.protocol_version)
+            .field("broker", &"[REDACTED]")
+            .field("port", &self.port)
+            .field("client_id", &self.client_id)
+            .field("username", &self.username)
+            .field(
+                "password_ciphertext",
+                &self.password_ciphertext.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("tls", &self.tls)
+            .field("publish_event_ttl_sec", &self.publish_event_ttl_sec)
+            .field("created_by", &self.created_by)
+            .field("created_at_ms", &self.created_at_ms)
+            .finish()
+    }
+}
+
+impl MqttRuntimeRevision {
+    pub fn validate(&self) -> GuardResult<()> {
+        if !matches!(self.protocol_version.as_str(), "v3" | "v5")
+            || self.broker.trim().is_empty()
+            || self.broker.len() > 255
+            || self.broker.chars().any(char::is_whitespace)
+            || self.port == 0
+            || self.client_id.trim().is_empty()
+            || self.client_id.len() > 255
+            || self.publish_event_ttl_sec <= 0
+            || self.publish_event_ttl_sec > 2_592_000
+            || self.username.is_some() != self.password_ciphertext.is_some()
+            || self
+                .username
+                .as_ref()
+                .is_some_and(|value| value.trim().is_empty() || value.len() > 255)
+        {
+            return Err(GuardError::InvalidConfig(
+                "invalid MQTT runtime configuration".to_string(),
+            ));
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct MqttRuntimeConfig {
+    pub protocol_version: String,
+    pub broker: String,
+    pub port: u16,
+    pub client_id: String,
+    pub username: Option<String>,
+    pub password_configured: bool,
+    pub tls: bool,
+    pub publish_event_ttl_sec: i64,
+    pub desired_revision: i64,
+    pub active_revision: Option<i64>,
+    pub config_version: i64,
+    pub apply_state: MqttRuntimeApplyState,
+    pub last_error_code: Option<String>,
+    pub last_error_summary: Option<String>,
+    pub last_transition_at_ms: i64,
+    pub updated_by: String,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
@@ -579,6 +807,28 @@ pub struct IntegrationAudit {
     pub outcome: String,
     pub detail_summary: String,
     pub created_at_ms: i64,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct IntegrationMasterKey {
+    pub key_material: String,
+    pub key_version: i64,
+    pub created_at_ms: i64,
+    pub updated_by: String,
+    pub updated_at_ms: i64,
+}
+
+impl std::fmt::Debug for IntegrationMasterKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IntegrationMasterKey")
+            .field("key_material", &"<redacted>")
+            .field("key_version", &self.key_version)
+            .field("created_at_ms", &self.created_at_ms)
+            .field("updated_by", &self.updated_by)
+            .field("updated_at_ms", &self.updated_at_ms)
+            .finish()
+    }
 }
 
 #[cfg(test)]
@@ -633,10 +883,31 @@ mod tests {
     }
 
     #[test]
+    fn master_key_debug_redacts_key_material() {
+        let master_key = IntegrationMasterKey {
+            key_material: "sensitive-master-key".to_string(),
+            key_version: 1,
+            created_at_ms: 1,
+            updated_by: "system:init".to_string(),
+            updated_at_ms: 1,
+        };
+
+        assert!(!format!("{master_key:?}").contains("sensitive-master-key"));
+    }
+
+    #[test]
     fn http_callback_url_must_fit_the_mapping_destination_column() {
+        let longest_event_path = INTEGRATION_CALLBACK_EVENTS
+            .iter()
+            .map(|event| event.event_type.replace('.', "/").len() + 1)
+            .max()
+            .unwrap();
+        let prefix = "https://example.com/";
+        let allowed_base_path_len =
+            INTEGRATION_CALLBACK_URL_MAX_LEN - prefix.len() - longest_event_path;
         let mut value = IntegrationHttpConfig {
             integration_id: "partner-1".to_string(),
-            callback_url: Some(format!("https://example.com/{}", "a".repeat(492))),
+            callback_url: Some(format!("{prefix}{}", "a".repeat(allowed_base_path_len))),
             callback_timeout_ms: 5_000,
             private_network_policy: "deny".to_string(),
             private_network_allowlist: Vec::new(),
@@ -646,7 +917,65 @@ mod tests {
             updated_at_ms: 1,
         };
         value.validate().unwrap();
-        value.callback_url = Some(format!("https://example.com/{}", "a".repeat(493)));
+        value.callback_url = Some(format!("{prefix}{}", "a".repeat(allowed_base_path_len + 1)));
         assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn callback_url_appends_the_slash_separated_event_type() {
+        assert_eq!(
+            integration_callback_url("https://partner.example.com/gmv/events", "session.alarm")
+                .unwrap(),
+            "https://partner.example.com/gmv/events/session/alarm"
+        );
+        assert_eq!(
+            integration_callback_url(
+                "https://partner.example.com/gmv/events/?tenant=gmv",
+                "integration.playback_ticket.renew_requested"
+            )
+            .unwrap(),
+            "https://partner.example.com/gmv/events/integration/playback_ticket/renew_requested?tenant=gmv"
+        );
+    }
+
+    #[test]
+    fn http_callback_requires_an_allowlist_match_without_network_classification() {
+        let mut value = IntegrationHttpConfig {
+            integration_id: "partner-1".to_string(),
+            callback_url: Some("http://192.168.0.8/events".to_string()),
+            callback_timeout_ms: 5_000,
+            private_network_policy: "deny".to_string(),
+            private_network_allowlist: Vec::new(),
+            max_attempts: 5,
+            event_ttl_ms: 259_200_000,
+            max_response_bytes: 65_536,
+            updated_at_ms: 1,
+        };
+        assert!(value.validate().is_err());
+
+        value.private_network_policy = "allowlist".to_string();
+        value.private_network_allowlist = vec!["192.168.0.8".to_string()];
+        value.validate().unwrap();
+        value.private_network_allowlist = vec!["192.168.0.0/24".to_string()];
+        value.validate().unwrap();
+
+        value.callback_url = Some("http://127.0.0.1:9000/events".to_string());
+        value.private_network_allowlist = vec!["127.0.0.1".to_string()];
+        value.validate().unwrap();
+        value.private_network_allowlist = vec!["127.0.0.0/8".to_string()];
+        value.validate().unwrap();
+
+        value.callback_url = Some("http://localhost:9000/events".to_string());
+        value.private_network_allowlist = vec!["localhost".to_string()];
+        value.validate().unwrap();
+
+        value.callback_url = Some("http://8.8.8.8/events".to_string());
+        value.private_network_allowlist = vec!["8.8.8.8".to_string()];
+        value.validate().unwrap();
+        value.private_network_allowlist = vec!["1.1.1.1".to_string()];
+        assert!(value.validate().is_err());
+        value.callback_url = Some("http://169.254.169.254/latest/meta-data".to_string());
+        value.private_network_allowlist = vec!["169.254.169.254".to_string()];
+        value.validate().unwrap();
     }
 }

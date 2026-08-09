@@ -8,6 +8,7 @@ use gmv_guard_server::api::v2::ApiV2;
 use gmv_guard_server::api::v2::http::{HttpState, router};
 use gmv_guard_server::app_config::GuardAppConfig;
 use gmv_guard_server::auth::{AuthState, SessionPolicy};
+use gmv_guard_server::integration::secret::{IntegrationSecretCipher, IntegrationSecretManager};
 use gmv_guard_server::operation::OperationService;
 use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_guard_server::store::persistent::PersistentStore;
@@ -128,6 +129,11 @@ guard:
             let persistent = PersistentStore::connect(&config).await.unwrap();
             persistent.initialize(&config).await.unwrap();
             let users = persistent.load_users().await.unwrap();
+            let integrations = persistent.integration_repository();
+            let master_key = integrations.master_key().await.unwrap().unwrap();
+            let integration_secrets = IntegrationSecretManager::new(
+                IntegrationSecretCipher::from_base64_key_no_pad(&master_key.key_material).unwrap(),
+            );
             let memory = InMemoryGuardStore::default();
             let app = router(HttpState {
                 api: ApiV2::new(memory, OperationService::default()),
@@ -145,15 +151,13 @@ guard:
                 ),
                 outbox: persistent.outbox_repository(),
                 users: Some(persistent.user_repository()),
-                integrations: Some(persistent.integration_repository()),
+                integrations: Some(integrations),
                 commands: Some(persistent.command_repository()),
-                integration_secrets: None,
+                integration_secrets: Some(integration_secrets),
                 integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(
                     300_000, 100,
                 )
                 .unwrap(),
-                mqtt_runtime_protocol_version: "v3".to_string(),
-                mqtt_runtime_enabled: false,
                 event_forwarder: None,
                 media_https_http2_verified: false,
             });
@@ -161,26 +165,34 @@ guard:
             let (status, admin_cookie, admin_csrf) = login(&app, "admin", "admin-secret").await;
             assert_eq!(status, StatusCode::OK);
 
-            let (status, _, error) = call(
+            let (status, _, master_key_status) = call(
+                &app,
+                Request::get("/api/v2/integrations/master-key")
+                    .header(COOKIE, &admin_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(master_key_status["configured"], true);
+            assert_eq!(master_key_status["key_version"], 1);
+            assert!(master_key_status.get("key_material").is_none());
+            let (status, _, rotated_master_key) = call(
                 &app,
                 write_request(
-                    "/api/v2/integrations",
+                    "/api/v2/integrations/master-key/rotate",
                     &admin_cookie,
                     &admin_csrf,
                     json!({
-                        "name": "HTTP without master key",
-                        "transport": "http",
-                        "inbound_enabled": true,
-                        "outbound_enabled": true,
-                        "enabled": true,
-                        "scopes": ["*"],
-                        "expires_at_ms": null
+                        "request_id": "rotate-master-key-1",
+                        "expected_key_version": 1
                     }),
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            assert_eq!(error["code"], "integration_master_key_missing");
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(rotated_master_key["key_version"], 2);
+            assert!(rotated_master_key.get("key_material").is_none());
 
             let (status, _, disabled_http) = call(
                 &app,
@@ -202,7 +214,7 @@ guard:
             .await;
             assert_eq!(status, StatusCode::CREATED);
             let integration_id = disabled_http["integration_id"].as_str().unwrap();
-            let (status, _, error) = call(
+            let (status, _, enabled_http) = call(
                 &app,
                 write_request(
                     &format!("/api/v2/integrations/{integration_id}"),
@@ -220,8 +232,8 @@ guard:
                 ),
             )
             .await;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            assert_eq!(error["code"], "integration_master_key_missing");
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(enabled_http["enabled"], true);
 
             let initial_expires_at_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

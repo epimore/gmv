@@ -30,10 +30,10 @@ export const menuRoutes: MenuRouteItem[] = [
   { path: '/events', label: '告警与事件', icon: 'Bell', experimental: true },
   {
     path: '/integrations/apps',
-    label: '三方集成',
+    label: '第三方集成',
     icon: 'Link',
     children: [
-      { path: '/integrations/apps', label: '应用与凭证', icon: 'Key' },
+      { path: '/integrations/apps', label: '接入应用', icon: 'Key' },
       { path: '/integrations/http', label: 'HTTP 接入', icon: 'Document' },
       { path: '/integrations/mqtt', label: 'MQTT 接入', icon: 'Promotion' },
     ],
@@ -67,7 +67,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'nodes', redirect: '/system/health' },
       { path: 'events', component: () => import('@/views/EventsView.vue'), meta: { title: '告警与事件', experimental: true } },
       { path: 'integrations', redirect: '/integrations/apps' },
-      { path: 'integrations/apps', component: () => import('@/views/IntegrationsView.vue'), meta: { title: '应用与凭证' } },
+      { path: 'integrations/business', redirect: '/integrations/apps' },
+      { path: 'integrations/apps', component: () => import('@/views/IntegrationsView.vue'), meta: { title: '接入应用' } },
       { path: 'integrations/http', component: () => import('@/views/HttpIntegrationView.vue'), meta: { title: 'HTTP 接入' } },
       { path: 'integrations/mqtt', component: () => import('@/views/MqttIntegrationView.vue'), meta: { title: 'MQTT 接入' } },
       { path: 'system', redirect: '/system/health' },

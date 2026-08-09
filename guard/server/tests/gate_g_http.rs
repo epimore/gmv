@@ -59,8 +59,6 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
                 300_000, 100,
             )
             .unwrap(),
-            mqtt_runtime_protocol_version: "v3".to_string(),
-            mqtt_runtime_enabled: false,
             event_forwarder: None,
             media_https_http2_verified: false,
         }),

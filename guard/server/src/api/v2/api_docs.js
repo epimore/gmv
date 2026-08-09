@@ -113,7 +113,19 @@
     body.append(element("pre", "", JSON.stringify(value, null, 2)));
   };
 
-  const operationCard = ({ spec, method, path, summary, description, scope, parameters, requestSchema, requestExample, responses, raw }) => {
+  const appendEventPayloadContracts = (body, eventTypes, spec, addressFor) => {
+    eventTypes.forEach((event) => {
+      body.append(element("h3", "", `${event.event_type} · Payload 字段`));
+      body.append(element("p", "description", `${addressFor(event)}；${event.description || "—"}`));
+      const rows = schemaRows(event.payload_schema || {}, spec);
+      body.append(rows.length
+        ? table(["payload 字段", "类型", "必填", "取值约束", "中文说明"], rows)
+        : element("div", "empty", "该事件尚未声明 Payload 字段"));
+      appendExample(body, `${event.event_type} 完整消息示例`, event.envelope_example);
+    });
+  };
+
+  const operationCard = ({ spec, method, path, summary, description, scope, parameters, requestSchema, requestExample, responses, eventTypes, callbackUrlSource, raw }) => {
     const details = element("details", "operation");
     details.dataset.search = `${method} ${path} ${summary} ${description}`.toLowerCase();
     const head = element("summary", "operation-head");
@@ -127,8 +139,22 @@
     body.append(element("p", "description", description || "—"));
     const info = element("div", "info-row");
     if (scope) info.append(element("span", "chip", `所需权限：${scope}`));
+    if (callbackUrlSource) info.append(element("span", "chip", `回调地址：${callbackUrlSource}`));
     info.append(element("span", "chip ok", "响应格式：JSON"));
     body.append(info);
+
+    if (eventTypes?.length) {
+      body.append(element("h3", "", "可回调事件接口"));
+      body.append(table(["事件类型", "方法", "回调路径", "Payload Profile", "用途", "说明"], eventTypes.map((event) => [
+        event.event_type,
+        event.method || "POST",
+        `{callback_url}${event.http_path_suffix || ""}`,
+        event.payload_profile || "event-envelope-v1",
+        event.summary || "—",
+        event.description || "—",
+      ])));
+      appendEventPayloadContracts(body, eventTypes, spec, (event) => `POST {callback_url}${event.http_path_suffix || ""}`);
+    }
 
     if (parameters.length) {
       body.append(element("h3", "", "请求参数"));
@@ -196,6 +222,27 @@
         }));
       });
     });
+    Object.entries(spec.webhooks || {}).forEach(([name, pathItem]) => {
+      Object.entries(pathItem).forEach(([method, operation]) => {
+        const tag = "Guard 回调第三方";
+        if (!groups.has(tag)) groups.set(tag, []);
+        const requestMedia = operation.requestBody?.content?.["application/json"];
+        groups.get(tag).push(operationCard({
+          spec,
+          method,
+          path: operation["x-gmv-callback-url-source"] || name,
+          summary: operation.summary || "Guard 事件回调",
+          description: operation.description || "",
+          parameters: operation.parameters || [],
+          requestSchema: requestMedia?.schema,
+          requestExample: requestMedia?.example,
+          responses: operation.responses || {},
+          eventTypes: operation["x-gmv-event-types"] || [],
+          callbackUrlSource: operation["x-gmv-callback-url-source"],
+          raw: operation,
+        }));
+      });
+    });
 
     groups.forEach((cards, tag) => {
       const section = element("section", "group");
@@ -235,6 +282,19 @@
       info.append(element("span", "chip ok", "Payload：JSON"));
       body.append(info);
 
+      const eventTypes = channel["x-gmv-event-types"] || [];
+      if (eventTypes.length) {
+        body.append(element("h3", "", "可发布事件列表"));
+        body.append(table(["事件类型", "Topic", "Payload Profile", "用途", "说明"], eventTypes.map((event) => [
+          event.event_type,
+          `gmv/events/{integration_id}/${event.mqtt_topic_suffix}`,
+          event.payload_profile || "event-envelope-v1",
+          event.summary || "—",
+          event.description || "—",
+        ])));
+        appendEventPayloadContracts(body, eventTypes, spec, (event) => `Topic gmv/events/{integration_id}/${event.mqtt_topic_suffix}`);
+      }
+
       Object.entries(channel.parameters || {}).forEach(([parameterName, parameter]) => {
         const resolved = resolveRef(spec, parameter);
         body.append(element("h3", "", `Topic 参数：${parameterName}`));
@@ -248,6 +308,9 @@
         body.append(element("p", "description", message.summary || "JSON 消息体"));
         const rows = schemaRows(payload, spec);
         body.append(rows.length ? table(["字段", "类型", "必填", "取值约束", "中文说明"], rows) : element("div", "empty", "该消息未声明字段"));
+        (payload.examples || []).forEach((example) => {
+          appendExample(body, `${example.name || message.title || messageName} 完整消息示例`, example.payload ?? example);
+        });
       });
       body.append(rawJson(channel));
       details.append(body);

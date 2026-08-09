@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::core::{GuardError, GuardResult};
 use crate::integration::model::{CredentialPurpose, IntegrationTransport};
-use crate::integration::secret::IntegrationSecretCipher;
+use crate::integration::secret::IntegrationSecretManager;
 use crate::outbox::OutboxDelivery;
 use crate::store::model::{OutboxDestinationKind, OutboxRecord};
 use crate::store::persistent::IntegrationRepository;
@@ -13,11 +13,11 @@ use crate::webhook::{WebhookClient, WebhookUrlPolicy};
 #[derive(Debug, Clone)]
 pub struct IntegrationWebhookDelivery {
     integrations: IntegrationRepository,
-    secrets: IntegrationSecretCipher,
+    secrets: IntegrationSecretManager,
 }
 
 impl IntegrationWebhookDelivery {
-    pub fn new(integrations: IntegrationRepository, secrets: IntegrationSecretCipher) -> Self {
+    pub fn new(integrations: IntegrationRepository, secrets: IntegrationSecretManager) -> Self {
         Self {
             integrations,
             secrets,
@@ -31,6 +31,17 @@ impl IntegrationWebhookDelivery {
             ));
         }
         let now_ms = now_ms();
+        if self
+            .integrations
+            .business_integration_id()
+            .await?
+            .as_deref()
+            != Some(record.integration_id.as_str())
+        {
+            return Err(GuardError::InvalidIdentity(
+                "HTTP integration is not the active business integration".to_string(),
+            ));
+        }
         let integration = self
             .integrations
             .get(&record.integration_id)
@@ -65,7 +76,7 @@ impl IntegrationWebhookDelivery {
             .ok_or_else(|| {
                 GuardError::InvalidIdentity("HTTP callback credential missing".to_string())
             })?;
-        let secret = self.secrets.decrypt(&credential.secret_ciphertext)?;
+        let secret = self.secrets.decrypt(&credential.secret_ciphertext).await?;
         WebhookClient::new(
             secret,
             Duration::from_millis(u64::try_from(config.callback_timeout_ms).unwrap_or(5_000)),

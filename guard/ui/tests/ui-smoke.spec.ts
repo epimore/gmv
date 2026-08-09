@@ -32,6 +32,7 @@ async function mockAuth(page: Page, initiallyAuthenticated = false, authSession 
     ['/api/v2/ai/tasks', []],
     ['/api/v2/leases', []],
     ['/api/v2/integrations/outbox', []],
+    ['/api/v2/integrations/master-key', { configured: true, key_version: 1, created_at_ms: 1, updated_by: 'system:init', updated_at_ms: 1 }],
     ['/api/v2/runtime/status', { guard_available: true, streams: 0, running_streams: 0, ai_tasks: 0, running_ai_tasks: 0, ptz_commands: 0 }],
     ['/api/v2/media/transport', { scheme: 'http', http_version: 'http/1.1', multi_view_limit: 6 }],
   ]);
@@ -240,7 +241,416 @@ test('Dashboard 将单次流失败归入业务异常而不是待处理事项', a
   await expect(page.getByText('1 路流失败')).toHaveCount(0);
 });
 
-test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => {
+test('接入应用页面允许 HTTP、MQTT 单选或未集成', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
+  }));
+  await page.route('**/api/v2/integrations/master-key/rotate', async (route) => {
+    expect(route.request().postDataJSON()).toMatchObject({ expected_key_version: 1 });
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ configured: true, key_version: 2, created_at_ms: 1, updated_by: 'admin', updated_at_ms: 2 }),
+    });
+  });
+  await page.goto('/integrations/apps');
+  await expect(page.getByRole('heading', { name: '接入应用', level: 1 })).toBeVisible();
+  await expect(page.getByText('未集成', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('HTTP', { exact: true })).toBeVisible();
+  await expect(page.getByText('MQTT', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '创建应用' })).toBeDisabled();
+  const inboundSwitch = page.locator('.el-form-item').filter({ hasText: '接收入站命令' }).getByRole('switch');
+  const outboundSwitch = page.locator('.el-form-item').filter({ hasText: '发送回调 / 事件' }).getByRole('switch');
+  const scopeSelect = page.locator('.el-form-item').filter({ hasText: '授权范围' }).getByRole('combobox');
+  await expect(inboundSwitch).toBeDisabled();
+  await expect(outboundSwitch).toBeDisabled();
+  await expect(scopeSelect).toBeDisabled();
+  await page.getByPlaceholder('例如：园区业务平台').fill('园区业务平台');
+  await page.getByText('HTTP', { exact: true }).click();
+  await expect(inboundSwitch).toBeEnabled();
+  await expect(outboundSwitch).toBeEnabled();
+  await expect(scopeSelect).toBeEnabled();
+  await expect(page.getByRole('button', { name: '创建应用' })).toBeDisabled();
+  await expect(page.getByRole('heading', { name: '集成主密钥', level: 2 })).toBeVisible();
+  await expect(page.getByText('版本 1')).toBeVisible();
+  await page.getByRole('button', { name: '轮换主密钥' }).click();
+  await page.getByRole('button', { name: '确认轮换' }).click();
+  await expect(page.getByText('版本 2')).toBeVisible();
+});
+
+test('运行中的 MQTT 应用切换为 HTTP 时必须明确启用后才能保存', async ({ page }) => {
+  await mockAuth(page, true);
+  let integration = {
+    integration_id: 'business-app-1', name: '园区业务平台', transport: 'mqtt',
+    inbound_enabled: true, outbound_enabled: true, enabled: true, scopes: ['devices:read'],
+    expires_at_ms: null, config_version: 3, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  const requests: Array<Record<string, unknown>> = [];
+
+  await page.route('**/api/v2/integrations/business', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ state: 'ready', integration }),
+      });
+      return;
+    }
+
+    const payload = route.request().postDataJSON() as Record<string, unknown>;
+    requests.push(payload);
+    if (requests.length === 1) {
+      expect(payload).toMatchObject({ transport: 'mqtt', enabled: false, expected_config_version: 3 });
+      integration = { ...integration, enabled: false, config_version: 4, updated_at_ms: 2 };
+    } else {
+      expect(payload).toMatchObject({ transport: 'http', enabled: true, expected_config_version: 4 });
+      integration = { ...integration, transport: 'http', enabled: true, config_version: 5, updated_at_ms: 3 };
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(integration) });
+  });
+
+  await page.goto('/integrations/apps');
+  const transportMetric = page.locator('.metric-card').filter({ hasText: '配置方式' });
+  const enabledFormItem = page.locator('.el-form-item').filter({ hasText: '启用应用' });
+  const enabledSwitch = enabledFormItem.getByRole('switch');
+  const saveButton = page.getByRole('button', { name: '保存应用' });
+  await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
+  await expect(enabledSwitch).toBeChecked();
+  await page.getByText('HTTP', { exact: true }).click();
+  await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
+  await expect(page.getByText('本次选择：HTTP（尚未保存）')).toBeVisible();
+  await expect(enabledSwitch).not.toBeChecked();
+  await expect(saveButton).toBeDisabled();
+  await enabledFormItem.locator('.el-switch').click();
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+  await expect(page.getByText('当前 MQTT 应用仍在运行。')).toBeVisible();
+  await page.getByRole('button', { name: '确认切换' }).click();
+
+  await expect.poll(() => requests.length).toBe(2);
+  await expect(page.getByText('接入方式已切换为 HTTP 并启用')).toBeVisible();
+  await expect(page.locator('.metric-card').filter({ hasText: '接入状态' }).locator('.metric-value')).toHaveText('已集成');
+  await expect(transportMetric.locator('.metric-value')).toHaveText('HTTP');
+  await expect(page.getByText('已启用', { exact: true }).first()).toBeVisible();
+});
+
+test('已配置 MQTT 应用启用后同步更新已保存状态与顶部卡片', async ({ page }) => {
+  await mockAuth(page, true);
+  let integration = {
+    integration_id: 'business-mqtt-1', name: 'MQTT 业务平台', transport: 'mqtt',
+    inbound_enabled: true, outbound_enabled: true, enabled: false, scopes: ['devices:read'],
+    expires_at_ms: null, config_version: 10, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  let savedPayload: Record<string, unknown> | null = null;
+
+  await page.route('**/api/v2/integrations/business', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration }) });
+      return;
+    }
+    savedPayload = route.request().postDataJSON() as Record<string, unknown>;
+    integration = { ...integration, enabled: true, config_version: 11, updated_at_ms: 2 };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(integration) });
+  });
+
+  await page.goto('/integrations/apps');
+  const statusMetric = page.locator('.metric-card').filter({ hasText: '接入状态' });
+  const transportMetric = page.locator('.metric-card').filter({ hasText: '配置方式' });
+  const appSwitchMetric = page.locator('.metric-card').filter({ hasText: '应用开关' });
+  const enabledFormItem = page.locator('.el-form-item').filter({ hasText: '启用应用' });
+  const enabledSwitch = enabledFormItem.getByRole('switch');
+  const saveButton = page.getByRole('button', { name: '保存应用' });
+  await expect(statusMetric.locator('.metric-value')).toHaveText('未集成');
+  await expect(transportMetric.locator('.metric-value')).toHaveText('未集成');
+  await expect(appSwitchMetric.locator('.metric-value')).toHaveText('未启用');
+  await expect(enabledSwitch).toBeDisabled();
+
+  await page.getByText('MQTT', { exact: true }).click();
+  await expect(enabledSwitch).toBeEnabled();
+  await expect(saveButton).toBeDisabled();
+  await enabledFormItem.locator('.el-switch').click();
+  await expect(page.getByText('本次修改为启用，尚未保存。')).toBeVisible();
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+
+  await expect.poll(() => savedPayload).toMatchObject({ transport: 'mqtt', enabled: true, expected_config_version: 10 });
+  await expect(enabledSwitch).toBeChecked();
+  await expect(statusMetric.locator('.metric-value')).toHaveText('已集成');
+  await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
+  await expect(appSwitchMetric.locator('.metric-value')).toHaveText('已启用');
+});
+
+test('停用已启用应用时只保存停用动作并丢弃未启用草稿', async ({ page }) => {
+  await mockAuth(page, true);
+  const current = {
+    integration_id: 'business-mqtt-stop', name: '当前 MQTT 应用', transport: 'mqtt',
+    inbound_enabled: true, outbound_enabled: true, enabled: true, scopes: ['devices:read'],
+    expires_at_ms: null, config_version: 7, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  let savedPayload: Record<string, unknown> | null = null;
+
+  await page.route('**/api/v2/integrations/business', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration: current }) });
+      return;
+    }
+    savedPayload = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ...current, enabled: false, config_version: 8, updated_at_ms: 2 }),
+    });
+  });
+
+  await page.goto('/integrations/apps');
+  await page.getByPlaceholder('例如：园区业务平台').fill('不应保存的草稿名称');
+  await page.locator('.el-radio-group').getByText('未集成', { exact: true }).click();
+  await expect(page.locator('.el-form-item').filter({ hasText: '接收入站命令' }).getByRole('switch')).toBeDisabled();
+  await expect(page.locator('.el-form-item').filter({ hasText: '发送回调 / 事件' }).getByRole('switch')).toBeDisabled();
+  await expect(page.locator('.el-form-item').filter({ hasText: '授权范围' }).getByRole('combobox')).toBeDisabled();
+  const saveButton = page.getByRole('button', { name: '保存应用' });
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+
+  await expect.poll(() => savedPayload).toMatchObject({
+    name: '当前 MQTT 应用', transport: 'mqtt', enabled: false,
+    inbound_enabled: true, outbound_enabled: true, scopes: ['devices:read'], expected_config_version: 7,
+  });
+  await expect(page.locator('.metric-card').filter({ hasText: '接入状态' }).locator('.metric-value')).toHaveText('未集成');
+  await expect(page.locator('.metric-card').filter({ hasText: '配置方式' }).locator('.metric-value')).toHaveText('未集成');
+  await expect(saveButton).toBeDisabled();
+});
+
+test('HTTP 子页面直接使用唯一业务应用且不重复选择', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
+  }));
+  await page.route('**/api-docs/openapi.json', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ paths: {} }),
+  }));
+  await page.goto('/integrations/http');
+  await expect(page.getByRole('heading', { name: 'HTTP 接入', level: 1 })).toBeVisible();
+  await expect(page.getByText('当前未选择 HTTP 接入')).toBeVisible();
+  await expect(page.getByPlaceholder('请选择 HTTP 应用')).toHaveCount(0);
+});
+
+test('HTTP 凭证首屏隐藏 Secret 且查看需要二次密码鉴权', async ({ page }) => {
+  await mockAuth(page, true);
+  let savedHttpConfig: Record<string, unknown> | null = null;
+  const integration = {
+    integration_id: 'http-app-1', name: '业务 HTTP', transport: 'http', inbound_enabled: true,
+    outbound_enabled: true, enabled: true, scopes: ['*'], expires_at_ms: null,
+    config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration }),
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/http', async (route) => {
+    const baseConfig = {
+      integration_id: 'http-app-1', callback_url: null, callback_timeout_ms: 5000,
+      private_network_policy: 'deny', private_network_allowlist: [], max_attempts: 5,
+      event_ttl_ms: 259200000, max_response_bytes: 65536, updated_at_ms: 1,
+    };
+    if (route.request().method() === 'POST') savedHttpConfig = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(route.request().method() === 'POST'
+        ? { ...baseConfig, ...(savedHttpConfig ?? {}), updated_at_ms: 2 }
+        : baseConfig),
+    });
+  });
+  await page.route('**/api/v2/integrations/http-app-1/mappings', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/credentials', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      credential_id: 'cred-1', access_key: 'ak_http_1', integration_id: 'http-app-1',
+      purpose: 'http_inbound_verify', key_version: 1, status: 'active', not_before_ms: 1,
+      expires_at_ms: null, revoked_at_ms: null, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+    }]),
+  }));
+  await page.route('**/api/v2/integrations/outbox?limit=500', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: '[]',
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/credentials/cred-1/reveal', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ password: 'current-password' });
+    await route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({ secret: 'revealed-hmac-secret' }),
+    });
+  });
+  await page.route('**/api-docs/openapi.json', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ paths: {} }),
+  }));
+
+  await page.goto('/integrations/http');
+  await expect(page.getByRole('heading', { name: 'HMAC 凭证管理' })).toBeVisible();
+  await expect(page.getByText('*******')).toBeVisible();
+  await expect(page.getByText('revealed-hmac-secret')).toHaveCount(0);
+  await page.getByRole('button', { name: '查看', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: '查看 HMAC Secret' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '验证并查看' })).toBeDisabled();
+  await page.getByPlaceholder('请输入当前登录密码').fill('current-password');
+  await page.getByRole('button', { name: '验证并查看' }).click();
+  await expect(page.getByText('revealed-hmac-secret')).toBeVisible();
+  await page.getByRole('button', { name: '关闭' }).click();
+  await expect(page.getByText('revealed-hmac-secret')).toHaveCount(0);
+
+  await page.getByPlaceholder('https://partner.example.com/gmv/events 或 http://192.168.0.8/events').fill('http://192.168.0.8/events');
+  await page.locator('.config-form .el-switch').click();
+  await page.getByPlaceholder(/每行一个 hostname/).fill('192.168.0.8');
+  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect.poll(() => savedHttpConfig).toMatchObject({
+    callback_url: 'http://192.168.0.8/events',
+    private_network_policy: 'allowlist',
+    private_network_allowlist: ['192.168.0.8'],
+  });
+});
+
+test('HTTP 回调映射展示就绪条件并闭环管理投递失败', async ({ page }) => {
+  await mockAuth(page, true);
+  const integration = {
+    integration_id: 'http-app-1', name: '业务 HTTP', transport: 'http', inbound_enabled: true,
+    outbound_enabled: true, enabled: true, scopes: ['*'], expires_at_ms: null,
+    config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+  };
+  let mappingEnabled = true;
+  let outboxState = 'dead';
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration }),
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/http', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      integration_id: 'http-app-1', callback_url: 'https://partner.example.com/gmv/events',
+      callback_timeout_ms: 5000, private_network_policy: 'deny', private_network_allowlist: [],
+      max_attempts: 5, event_ttl_ms: 259200000, max_response_bytes: 65536, updated_at_ms: 1,
+    }),
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/credentials', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      credential_id: 'cred-callback', access_key: 'ak_callback', integration_id: 'http-app-1',
+      purpose: 'http_callback_sign', key_version: 1, status: 'active', not_before_ms: 1,
+      expires_at_ms: null, revoked_at_ms: null, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+    }]),
+  }));
+  await page.route('**/api/v2/integrations/http-app-1/mappings', async (route) => {
+    if (route.request().method() === 'POST') {
+      mappingEnabled = route.request().postDataJSON().enabled;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(route.request().method() === 'POST' ? {
+        mapping_id: 'map-1', integration_id: 'http-app-1', direction: 'OUTBOUND',
+        source_type: 'session.*', schema_version: 'v1', destination_kind: 'HTTP',
+        destination: 'https://partner.example.com/gmv/events', payload_profile: 'event-envelope-v1',
+        enabled: mappingEnabled, created_at_ms: 1, updated_at_ms: 2,
+      } : [{
+        mapping_id: 'map-1', integration_id: 'http-app-1', direction: 'OUTBOUND',
+        source_type: 'session.*', schema_version: 'v1', destination_kind: 'HTTP',
+        destination: 'https://old.example.com/events', payload_profile: 'event-envelope-v1',
+        enabled: mappingEnabled, created_at_ms: 1, updated_at_ms: 1,
+      }]),
+    });
+  });
+  await page.route('**/api/v2/integrations/outbox/outbox-1/retry', async (route) => {
+    outboxState = 'pending';
+    await route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        outbox_id: 'outbox-1', event_id: 'event-1', integration_id: 'http-app-1', mapping_id: 'map-1',
+        destination_kind: 'webhook', destination: 'https://partner.example.com/gmv/events/session/alarm', state: outboxState,
+        attempts: 0, next_attempt_at_ms: 2, last_error: null, created_at_ms: 1, updated_at_ms: 2, expires_at_ms: null,
+      }),
+    });
+  });
+  await page.route('**/api/v2/integrations/outbox?limit=500', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify([{
+      outbox_id: 'outbox-1', event_id: 'event-1', integration_id: 'http-app-1', mapping_id: 'map-1',
+      destination_kind: 'webhook', destination: 'https://partner.example.com/gmv/events/session/alarm', state: outboxState,
+      attempts: outboxState === 'dead' ? 5 : 0, next_attempt_at_ms: 2,
+      last_error: outboxState === 'dead' ? 'webhook returned HTTP 503' : null,
+      created_at_ms: 1, updated_at_ms: 2, expires_at_ms: null,
+    }]),
+  }));
+  await page.route('**/api-docs/openapi.json', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      paths: {},
+      webhooks: {
+        guardEventCallback: {
+          post: {
+            summary: 'Guard 事件回调',
+            'x-gmv-callback-url-source': 'HTTP 接入配置 callback_url',
+            'x-gmv-callback-path': '{callback_url}/{event_type}',
+            'x-gmv-event-types': [
+              {
+                event_type: 'session.alarm', method: 'POST', payload_profile: 'event-envelope-v1',
+                http_path_suffix: '/session/alarm',
+                payload_schema: { properties: { priority: {}, method: {}, alarmType: {}, timeStr: {}, deviceId: {}, channelId: {} } },
+                summary: '设备报警通知', description: '设备上报报警后回调第三方。',
+              },
+              {
+                event_type: 'avai.task.result', method: 'POST', payload_profile: 'event-envelope-v1',
+                http_path_suffix: '/avai/task/result',
+                summary: '智能分析任务结果', description: '智能分析任务产生终态时回调第三方。',
+              },
+            ],
+          },
+        },
+      },
+    }),
+  }));
+
+  await page.goto('/integrations/http');
+  await expect(page.getByText('已就绪')).toHaveCount(3);
+  await expect(page.getByText('可回调事件接口')).toBeVisible();
+  await expect(page.getByText('session.alarm', { exact: true })).toBeVisible();
+  await expect(page.getByText('设备报警通知', { exact: true })).toBeVisible();
+  await expect(page.locator('.callback-contract-table').getByText('https://partner.example.com/gmv/events/session/alarm', { exact: true })).toBeVisible();
+  await expect(page.locator('.callback-contract-table').getByText('priority、method、alarmType、timeStr、deviceId、channelId', { exact: true })).toBeVisible();
+  await expect(page.getByText('已映射')).toBeVisible();
+  await expect(page.locator('.mapping-table').getByText('https://partner.example.com/gmv/events/session/*', { exact: true })).toBeVisible();
+  await expect(page.getByText('https://old.example.com/events')).toHaveCount(0);
+  await expect(page.getByText('webhook returned HTTP 503')).toBeVisible();
+  await page.locator('.mapping-table .el-switch').click();
+  await expect.poll(() => mappingEnabled).toBe(false);
+  await page.getByRole('button', { name: '重试' }).click();
+  await expect(page.getByText('待投递')).toBeVisible();
+  await expect(page.getByText('webhook returned HTTP 503')).toHaveCount(0);
+});
+
+test('未集成业务应用时仍可预配置部署级 MQTT Runtime', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
+  }));
+  await page.route('**/api/v2/integrations/mqtt/runtime', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({ configured: false, broker_connected: false, config: null, connection_scope: 'deployment', qos: 1, retain: false }),
+  }));
+  await page.route('**/api-docs/asyncapi.json', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ channels: {} }),
+  }));
+
+  await page.goto('/integrations/mqtt');
+  await expect(page.getByText('当前未启用 MQTT 业务接入')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'MQTT Runtime 配置' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存 Runtime 配置' })).toBeVisible();
+});
+
+test('MQTT 子页面展示连接状态、Topic 契约、文档与可靠投递', async ({ page }) => {
   await mockAuth(page, true);
   const integration = {
     integration_id: 'mqtt-app-1', name: '边缘 MQTT', transport: 'mqtt', inbound_enabled: true,
@@ -248,89 +658,66 @@ test('MQTT 接入显式展示并保存 V3/V5 协议版本', async ({ page }) => 
     config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
   };
   let savedVersion = '';
-  let savedActions: string[] = [];
 
-  await page.route('**/api/v2/integrations', (route) => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify([integration]),
+  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
+    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration }),
   }));
-  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
-    status: 200, contentType: 'application/json',
-    body: JSON.stringify({
-      enabled: true, protocol_version: 'v5', connection_scope: 'deployment', qos: 1, retain: false,
-      supported_actions: ['stream.stop', 'gb.device.create', 'runtime.status.get'],
-    }),
-  }));
+  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, broker_connected: true, config: { protocol_version: 'v5', broker: 'broker.example.test', port: 1883, client_id: 'guard-test', username: 'guard', password_configured: true, tls: false, publish_event_ttl_sec: 86400, desired_revision: 2, active_revision: 2, config_version: 2, apply_state: 'CONNECTED', last_error_code: null, last_error_summary: null, last_transition_at_ms: 1, updated_by: 'admin', updated_at_ms: 1 }, connection_scope: 'deployment', qos: 1, retain: false }) }));
+  await page.route('**/api/v2/integrations/business/mqtt/runtime', async (route) => {
+    const payload = route.request().postDataJSON() as { protocol_version: string };
+    savedVersion = payload.protocol_version;
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ protocol_version: payload.protocol_version, broker: 'broker.example.test', port: 1883, client_id: 'guard-test', username: 'guard', password_configured: true, tls: false, publish_event_ttl_sec: 86400, desired_revision: 3, active_revision: 2, config_version: 3, apply_state: 'PENDING', last_error_code: null, last_error_summary: null, last_transition_at_ms: 2, updated_by: 'admin', updated_at_ms: 2 }) });
+  });
   await page.route('**/api/v2/integrations/mqtt-app-1/mqtt', async (route) => {
     const config = {
-      integration_id: 'mqtt-app-1', protocol_version: 'v5', allowed_actions: ['stream.stop'],
+      integration_id: 'mqtt-app-1',
       command_topic: 'gmv/commands/mqtt-app-1', result_topic: 'gmv/command-results/mqtt-app-1',
       event_topic_prefix: 'gmv/events/mqtt-app-1', updated_at_ms: 1,
     };
-    if (route.request().method() === 'POST') {
-      const payload = route.request().postDataJSON() as { protocol_version: string; allowed_actions: string[] };
-      savedVersion = payload.protocol_version;
-      savedActions = payload.allowed_actions;
-      config.protocol_version = savedVersion;
-      config.allowed_actions = savedActions;
-    }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(config) });
   });
   await page.route('**/api/v2/integrations/mqtt-app-1/mappings', (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify([]),
   }));
   await page.route('**/api-docs/asyncapi.json', (route) => route.fulfill({
-    status: 200, contentType: 'application/json',
-    body: JSON.stringify({ channels: { commands: { address: 'gmv/commands/{integration_id}', messages: { command: {} } } } }),
+    status: 200, contentType: 'application/json', body: JSON.stringify({ channels: {
+      commands: { address: 'gmv/commands/{integration_id}', messages: { MqttCommand: {} } },
+      commandResults: { address: 'gmv/command-results/{integration_id}', messages: { MqttCommandResult: {} } },
+      events: {
+        address: 'gmv/events/{integration_id}/{event_type}',
+        messages: { EventEnvelope: {} },
+        'x-gmv-event-types': [{
+          event_type: 'session.alarm', mqtt_topic_suffix: 'session/alarm',
+          summary: '设备报警通知', description: '设备上报报警后发布 MQTT 事件。',
+          payload_profile: 'event-envelope-v1',
+          payload_schema: { properties: { priority: {}, method: {}, alarmType: {}, timeStr: {}, deviceId: {}, channelId: {} } },
+        }],
+      },
+    } }),
   }));
-
   await page.goto('/integrations/mqtt');
+  await expect(page).toHaveURL(/\/integrations\/mqtt$/);
   await expect(page.getByRole('heading', { name: 'MQTT 接入', level: 1 })).toBeVisible();
-  await expect(page.getByText('部署级 MQTT runtime 已启用 · V5.0')).toBeVisible();
-  await expect(page.getByText('V5.0', { exact: true }).first()).toBeVisible();
-
-  await expect(page.getByText('gb.device.create', { exact: true })).toBeVisible();
-  await expect(page.getByText('runtime.status.get', { exact: true })).toBeVisible();
-
-  await page.getByRole('button', { name: '全选', exact: true }).click();
-  await expect(page.getByRole('checkbox', { name: 'gb.device.create' })).toBeChecked();
-  await expect(page.getByRole('checkbox', { name: 'runtime.status.get' })).toBeChecked();
-  await page.getByRole('button', { name: '重置', exact: true }).click();
-  await expect(page.getByRole('checkbox', { name: 'stream.stop' })).toBeChecked();
-  await expect(page.getByRole('checkbox', { name: 'gb.device.create' })).not.toBeChecked();
-  await expect(page.getByRole('checkbox', { name: 'runtime.status.get' })).not.toBeChecked();
-
-  await page.getByText('runtime.status.get', { exact: true }).click();
-  await page.getByText('V3.1.1', { exact: true }).last().click();
-  await page.getByRole('button', { name: '保存配置' }).click();
+  await expect(page.getByText('MQTT Runtime 配置')).toBeVisible();
+  await expect(page.getByText('第三方业务应用已启用')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Broker 连接状态' })).toBeVisible();
+  await expect(page.getByText('已连接 Broker')).toBeVisible();
+  await expect(page.getByText('Topic 契约预览')).toBeVisible();
+  await expect(page.getByRole('button', { name: '查看在线文档' })).toBeVisible();
+  await expect(page.getByText('文档随 Guard Server 发布')).toBeVisible();
+  await expect(page.getByText('边端可靠投递')).toBeVisible();
+  await expect(page.getByText('允许动作')).toHaveCount(0);
+  await expect(page.getByText('MQTT 应用策略')).toHaveCount(0);
+  await expect(page.getByText('gmv/commands/{integration_id}', { exact: true })).toBeVisible();
+  await expect(page.getByText('gmv/events/{integration_id}/{event_type} 可发布事件')).toBeVisible();
+  await expect(page.getByText('gmv/events/{integration_id}/session/alarm', { exact: true })).toBeVisible();
+  await expect(page.getByText('priority、method、alarmType、timeStr、deviceId、channelId', { exact: true })).toBeVisible();
+  await expect(page.getByText('设备报警通知', { exact: true })).toBeVisible();
+  await expect(page.locator('.el-loading-mask')).toBeHidden();
+  await page.getByText('MQTT 5.0', { exact: true }).first().click();
+  await page.getByText('MQTT 3.1.1', { exact: true }).click();
+  await page.getByRole('button', { name: '保存 Runtime 配置' }).click();
   await expect.poll(() => savedVersion).toBe('v3');
-  await expect.poll(() => savedActions).toEqual(['stream.stop', 'runtime.status.get']);
-});
-
-test('MQTT Runtime 未启用时应用页禁止启用 MQTT 接入', async ({ page }) => {
-  await mockAuth(page, true);
-  await page.route('**/api/v2/integrations', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify([{
-      integration_id: 'mqtt-disabled-1', name: '待启用 MQTT', transport: 'mqtt',
-      inbound_enabled: true, outbound_enabled: true, enabled: false, scopes: ['*'],
-      expires_at_ms: null, config_version: 1, created_by: 'admin',
-      created_at_ms: 1, updated_at_ms: 1,
-    }]),
-  }));
-  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({
-    status: 200,
-    contentType: 'application/json',
-    body: JSON.stringify({
-      enabled: false, protocol_version: 'v3', connection_scope: 'deployment', qos: 1, retain: false,
-      supported_actions: [],
-    }),
-  }));
-
-  await page.goto('/integrations/apps');
-
-  await expect(page.getByText('先启用 MQTT Runtime')).toBeVisible();
-  await expect(page.getByRole('switch')).toBeDisabled();
 });
 
 test('Dashboard 将持续 Catalog 重建失败归入运维待处理事项', async ({ page }) => {

@@ -49,6 +49,7 @@ use crate::auth::session::{SESSION_COOKIE, cookie_value};
 use crate::auth::{
     AuthState, Role, UiSession, UserAccess, UserProfile, hash_password as hash_ui_password,
 };
+use crate::bus::router::topic_matches;
 use crate::core::{
     ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, HealthState, LeaseState,
     RouteState, SchedulingState,
@@ -57,9 +58,9 @@ use crate::integration::hmac::{HmacNonceCache, SignedRequest, body_sha256, verif
 use crate::integration::model::{
     CredentialPurpose, CredentialStatus, Integration, IntegrationAudit, IntegrationCredential,
     IntegrationCredentialSummary, IntegrationHttpConfig, IntegrationMapping, IntegrationMqttConfig,
-    IntegrationTransport,
+    IntegrationTransport, MqttRuntimeApplyState,
 };
-use crate::integration::secret::IntegrationSecretCipher;
+use crate::integration::secret::{IntegrationSecretCipher, IntegrationSecretManager};
 use crate::integration::{IntegrationPrincipal, principal as integration_principal};
 use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
@@ -97,10 +98,8 @@ pub struct HttpState {
     pub users: Option<UserRepository>,
     pub integrations: Option<IntegrationRepository>,
     pub commands: Option<CommandRepository>,
-    pub integration_secrets: Option<IntegrationSecretCipher>,
+    pub integration_secrets: Option<IntegrationSecretManager>,
     pub integration_nonces: HmacNonceCache,
-    pub mqtt_runtime_protocol_version: String,
-    pub mqtt_runtime_enabled: bool,
     pub event_forwarder: Option<EventForwarder>,
     pub media_https_http2_verified: bool,
 }
@@ -146,6 +145,15 @@ pub fn router(state: HttpState) -> Router {
             get(list_integrations).post(create_integration),
         )
         .route(
+            "/integrations/business",
+            get(get_business_integration).post(save_business_integration),
+        )
+        .route("/integrations/master-key", get(integration_master_key))
+        .route(
+            "/integrations/master-key/rotate",
+            post(rotate_integration_master_key),
+        )
+        .route(
             "/integrations/{integration_id}",
             get(get_integration).post(update_integration),
         )
@@ -158,14 +166,25 @@ pub fn router(state: HttpState) -> Router {
             post(revoke_integration_credential),
         )
         .route(
+            "/integrations/{integration_id}/credentials/{credential_id}/reveal",
+            post(reveal_integration_credential),
+        )
+        .route(
             "/integrations/{integration_id}/http",
             get(get_integration_http).post(update_integration_http),
         )
         .route(
             "/integrations/{integration_id}/mqtt",
-            get(get_integration_mqtt).post(update_integration_mqtt),
+            get(get_integration_mqtt),
         )
-        .route("/integrations/mqtt/runtime", get(integration_mqtt_runtime))
+        .route(
+            "/integrations/mqtt/runtime",
+            get(integration_mqtt_runtime).post(update_integration_mqtt_runtime),
+        )
+        .route(
+            "/integrations/business/mqtt/runtime",
+            get(integration_mqtt_runtime).post(update_integration_mqtt_runtime),
+        )
         .route(
             "/integrations/{integration_id}/mappings",
             get(list_integration_mappings).post(upsert_integration_mapping),
@@ -587,6 +606,7 @@ pub fn openapi_contract() -> base::serde_json::Value {
             {"name": "智能分析", "description": "查询、启动和取消智能分析任务。"}
         ],
         "paths": paths,
+        "webhooks": openapi_webhooks_contract(),
         "components": {
             "securitySchemes": {
                 "GmvAccessKey": {"type": "apiKey", "in": "header", "name": HMAC_ACCESS_KEY_HEADER, "description": "第三方应用的 Access Key。"},
@@ -596,6 +616,28 @@ pub fn openapi_contract() -> base::serde_json::Value {
                 "GmvSignature": {"type": "apiKey", "in": "header", "name": HMAC_SIGNATURE_HEADER, "description": "canonical_request 的 HMAC-SHA256 十六进制签名。"}
             },
             "schemas": {
+                "IntegrationEventEnvelope": {
+                    "type": "object",
+                    "description": "Guard 回调第三方时发送的统一事件信封。payload 的字段由 event_type 对应业务事件决定。",
+                    "properties": {
+                        "event_id": {"type": "string", "description": "全局事件标识，可用于第三方幂等去重。"},
+                        "event_type": {
+                            "type": "string",
+                            "enum": crate::integration::model::INTEGRATION_CALLBACK_EVENTS.iter().map(|event| event.event_type).collect::<Vec<_>>(),
+                            "description": "回调事件类型。"
+                        },
+                        "schema_version": {"type": "string", "const": "v1", "description": "事件信封版本。"},
+                        "occurred_at_ms": {"type": "integer", "format": "int64", "description": "事件发生时间，Unix 毫秒。"},
+                        "payload": {
+                            "description": "事件业务数据；必须与 event_type 对应。",
+                            "oneOf": crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+                                .iter()
+                                .map(|event| integration_callback_payload_schema(event.payload_kind))
+                                .collect::<Vec<_>>()
+                        }
+                    },
+                    "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"]
+                },
                 "ErrorResponse": {
                     "type": "object",
                     "description": "统一 JSON 错误返回。",
@@ -624,6 +666,210 @@ pub fn openapi_contract() -> base::serde_json::Value {
         },
         "x-gmv-http-mqtt-capabilities": integration_capabilities_contract()
     })
+}
+
+fn integration_callback_events_contract() -> base::serde_json::Value {
+    crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+        .iter()
+        .map(integration_callback_event_contract)
+        .collect::<Vec<_>>()
+        .into()
+}
+
+fn integration_callback_event_contract(
+    event: &crate::integration::model::IntegrationCallbackEventContract,
+) -> base::serde_json::Value {
+    let path = event.event_type.replace('.', "/");
+    base::serde_json::json!({
+        "event_type": event.event_type,
+        "summary": event.summary,
+        "description": event.description,
+        "method": "POST",
+        "payload_profile": "event-envelope-v1",
+        "http_path_suffix": format!("/{path}"),
+        "mqtt_topic_suffix": path,
+        "payload_schema": integration_callback_payload_schema(event.payload_kind),
+        "payload_example": integration_callback_payload_example(event.payload_kind),
+        "envelope_example": integration_callback_event_example(event)
+    })
+}
+
+fn integration_callback_payload_schema(
+    kind: crate::integration::model::IntegrationCallbackPayloadKind,
+) -> base::serde_json::Value {
+    use crate::integration::model::IntegrationCallbackPayloadKind;
+
+    match kind {
+        IntegrationCallbackPayloadKind::SessionAlarm => base::serde_json::json!({
+            "type": "object",
+            "title": "GB28181 设备报警 Payload",
+            "additionalProperties": false,
+            "required": ["priority", "method", "alarmType", "timeStr", "deviceId", "channelId"],
+            "properties": {
+                "priority": {"type": "integer", "minimum": 0, "maximum": 255, "description": "GB28181 报警级别。"},
+                "method": {"type": "integer", "minimum": 0, "maximum": 255, "description": "GB28181 报警方式。"},
+                "alarmType": {"type": "integer", "minimum": 0, "maximum": 255, "description": "GB28181 报警类型。"},
+                "timeStr": {"type": "string", "description": "设备上报的报警时间原文。"},
+                "deviceId": {"type": "string", "description": "产生报警的 GB28181 设备标识。"},
+                "channelId": {"type": "string", "description": "产生报警的 GB28181 通道标识。"}
+            }
+        }),
+        IntegrationCallbackPayloadKind::SessionPlaybackPresenceTerminal => {
+            base::serde_json::json!({
+                "type": "object",
+                "title": "回放在线状态终止 Payload",
+                "additionalProperties": false,
+                "required": ["playback_id", "stream_id", "subscription_id", "generation", "stream_stopped", "reason"],
+                "properties": {
+                    "playback_id": {"type": "string", "description": "回放会话标识。"},
+                    "stream_id": {"type": "string", "description": "关联媒体流标识。"},
+                    "subscription_id": {"type": "string", "description": "本次回放订阅标识。"},
+                    "generation": {"type": "integer", "format": "uint64", "minimum": 0, "description": "回放在线状态代次，用于识别过期终态。"},
+                    "stream_stopped": {"type": "boolean", "description": "该订阅结束后媒体流是否已经停止。"},
+                    "reason": {"type": "string", "description": "终止原因，例如 heartbeat_timeout。"}
+                }
+            })
+        }
+        IntegrationCallbackPayloadKind::AvaiTaskResult => base::serde_json::json!({
+            "type": "object",
+            "title": "智能分析任务结果 Payload",
+            "additionalProperties": false,
+            "required": ["task_id", "task_type", "route_id", "state", "result"],
+            "properties": {
+                "task_id": {"type": "string", "description": "智能分析任务标识。"},
+                "task_type": {"type": "string", "description": "分析能力类型，例如 ai.vehicle。"},
+                "route_id": {"type": "string", "description": "任务执行时绑定的 Guard 路由标识。"},
+                "state": {"type": "string", "const": "succeeded", "description": "当前公开结果事件只在任务成功时发布。"},
+                "result": {"description": "分析执行器返回的 JSON 结果；业务字段由 task_type 对应能力定义。"}
+            }
+        }),
+        IntegrationCallbackPayloadKind::PlaybackTicketRenewRequested => base::serde_json::json!({
+            "type": "object",
+            "title": "回放票据续期请求 Payload",
+            "additionalProperties": false,
+            "required": ["token", "playback_id", "stream_id", "output_id", "subscription_id", "expires_at_ms", "response_action"],
+            "properties": {
+                "token": {"type": "string", "description": "即将过期、需要续期的回放访问票据。"},
+                "playback_id": {"type": "string", "description": "回放会话标识。"},
+                "stream_id": {"type": "string", "description": "关联媒体流标识。"},
+                "output_id": {"type": "string", "description": "关联媒体输出标识。"},
+                "subscription_id": {"type": "string", "description": "关联订阅标识。"},
+                "expires_at_ms": {"type": "integer", "format": "int64", "description": "当前票据过期时间，Unix 毫秒。"},
+                "response_action": {"type": "string", "const": "playback.ticket.renew", "description": "第三方提交续期响应时调用的 MQTT action；HTTP 使用对应开放接口。"}
+            }
+        }),
+    }
+}
+
+fn integration_callback_payload_example(
+    kind: crate::integration::model::IntegrationCallbackPayloadKind,
+) -> base::serde_json::Value {
+    use crate::integration::model::IntegrationCallbackPayloadKind;
+
+    match kind {
+        IntegrationCallbackPayloadKind::SessionAlarm => base::serde_json::json!({
+            "priority": 1,
+            "method": 1,
+            "alarmType": 1,
+            "timeStr": "2026-08-09T15:30:00+08:00",
+            "deviceId": "34020000001320000001",
+            "channelId": "34020000001320000001"
+        }),
+        IntegrationCallbackPayloadKind::SessionPlaybackPresenceTerminal => {
+            base::serde_json::json!({
+                "playback_id": "playback-001",
+                "stream_id": "stream-001",
+                "subscription_id": "subscription-001",
+                "generation": 3,
+                "stream_stopped": true,
+                "reason": "heartbeat_timeout"
+            })
+        }
+        IntegrationCallbackPayloadKind::AvaiTaskResult => base::serde_json::json!({
+            "task_id": "task-001",
+            "task_type": "ai.vehicle",
+            "route_id": "route-001",
+            "state": "succeeded",
+            "result": {"detections": [{"label": "car", "score": 0.98}]}
+        }),
+        IntegrationCallbackPayloadKind::PlaybackTicketRenewRequested => base::serde_json::json!({
+            "token": "ticket-REDACTED",
+            "playback_id": "playback-001",
+            "stream_id": "stream-001",
+            "output_id": "output-001",
+            "subscription_id": "subscription-001",
+            "expires_at_ms": 1700000300000_i64,
+            "response_action": "playback.ticket.renew"
+        }),
+    }
+}
+
+fn integration_callback_event_schema(
+    event: &crate::integration::model::IntegrationCallbackEventContract,
+) -> base::serde_json::Value {
+    base::serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"],
+        "properties": {
+            "event_id": {"type": "string", "description": "全局事件标识，可用于第三方幂等去重。"},
+            "event_type": {"type": "string", "const": event.event_type, "description": "点分格式的事件类型。"},
+            "schema_version": {"type": "string", "const": "v1", "description": "事件信封版本。"},
+            "occurred_at_ms": {"type": "integer", "format": "int64", "description": "事件发生时间，Unix 毫秒。"},
+            "payload": integration_callback_payload_schema(event.payload_kind)
+        }
+    })
+}
+
+fn integration_callback_event_example(
+    event: &crate::integration::model::IntegrationCallbackEventContract,
+) -> base::serde_json::Value {
+    base::serde_json::json!({
+        "event_id": format!("event-{}", event.event_type.replace('.', "-")),
+        "event_type": event.event_type,
+        "schema_version": "v1",
+        "occurred_at_ms": 1700000000000_i64,
+        "payload": integration_callback_payload_example(event.payload_kind)
+    })
+}
+
+fn openapi_webhooks_contract() -> base::serde_json::Value {
+    let mut webhooks = base::serde_json::Map::new();
+    for event in crate::integration::model::INTEGRATION_CALLBACK_EVENTS {
+        let path = event.event_type.replace('.', "/");
+        webhooks.insert(event.event_type.replace('.', "_"), base::serde_json::json!({
+            "post": {
+                "tags": ["事件回调"],
+                "summary": event.summary,
+                "description": format!("{} Guard 将事件写入持久化 outbox，并向 callback_url 追加 /{} 后发起签名 POST。第三方返回任意 2xx 即视为接收成功；其他结果按 TTL 重试。", event.description, path),
+                "x-gmv-callback-url-source": "HTTP 接入配置 callback_url（基础地址）",
+                "x-gmv-callback-path": format!("{{callback_url}}/{path}"),
+                "x-gmv-event-types": [integration_callback_event_contract(event)],
+                "parameters": [
+                    {"name": HMAC_ACCESS_KEY_HEADER, "in": "header", "required": true, "description": "回调签名凭证的 Access Key。", "schema": {"type": "string"}},
+                    {"name": HMAC_TIMESTAMP_HEADER, "in": "header", "required": true, "description": "回调发起时间，Unix 毫秒。", "schema": {"type": "integer", "format": "int64"}},
+                    {"name": HMAC_NONCE_HEADER, "in": "header", "required": true, "description": "一次性随机值，用于防止重放。", "schema": {"type": "string"}},
+                    {"name": HMAC_CONTENT_SHA256_HEADER, "in": "header", "required": true, "description": "JSON 请求正文的 SHA-256 十六进制摘要。", "schema": {"type": "string"}},
+                    {"name": HMAC_SIGNATURE_HEADER, "in": "header", "required": true, "description": "canonical_request 的 HMAC-SHA256 十六进制签名；回调签名的 request_id 字段为空字符串。", "schema": {"type": "string"}}
+                ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": integration_callback_event_schema(event),
+                            "example": integration_callback_event_example(event)
+                        }
+                    }
+                },
+                "responses": {
+                    "204": {"description": "第三方已接收回调；任意 2xx 响应均具有相同语义。"},
+                    "400": {"description": "第三方拒绝请求，Guard 将按投递策略重试。"},
+                    "500": {"description": "第三方处理失败，Guard 将按投递策略重试。"}
+                }
+            }
+        }));
+    }
+    base::serde_json::Value::Object(webhooks)
 }
 
 fn integration_capabilities_contract() -> base::serde_json::Value {
@@ -3087,8 +3333,8 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
             "description": "面向第三方业务系统的 MQTT 消息契约。以 Guard 为观察方描述订阅和发布方向，Payload 统一使用 UTF-8 JSON。"
         },
         "servers": {
-            "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "应用配置 protocol_version=v3 时使用 MQTT V3.1.1。"},
-            "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "应用配置 protocol_version=v5 时使用 MQTT V5.0。"}
+            "mqttV3": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "3.1.1", "description": "MQTT Runtime 配置 protocol_version=v3 时使用 MQTT V3.1.1。"},
+            "mqttV5": {"host": "{broker}", "protocol": "mqtt", "protocolVersion": "5.0", "description": "MQTT Runtime 配置 protocol_version=v5 时使用 MQTT V5.0。"}
         },
         "operations": {
             "receiveIntegrationCommand": {
@@ -3125,21 +3371,24 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
             },
             "events": {
                 "address": "gmv/events/{integration_id}/{event_type}",
-                "description": "Guard 发布业务事件或播放票据续期请求，第三方订阅。",
+                "description": "Guard 以 QoS 1、retain=false 发布已配置映射的业务事件，第三方按 event_id 幂等消费。event_type 中的点号在 Topic 中展开为斜杠，例如 session.alarm 发布到 gmv/events/{integration_id}/session/alarm。",
+                "x-gmv-event-types": integration_callback_events_contract(),
                 "parameters": {
                     "integration_id": {"$ref": "#/components/parameters/integrationId"},
                     "event_type": {"$ref": "#/components/parameters/eventType"}
                 },
                 "messages": {
-                    "event": {"$ref": "#/components/messages/EventEnvelope"},
-                    "playbackRenewalRequest": {"$ref": "#/components/messages/PlaybackRenewalRequest"}
+                    "event": {"$ref": "#/components/messages/EventEnvelope"}
                 }
             }
         },
         "components": {
             "parameters": {
                 "integrationId": {"description": "第三方应用唯一标识。"},
-                "eventType": {"description": "事件类型；Topic 中的点号按斜杠展开。"}
+                "eventType": {
+                    "description": "事件类型的 Topic 后缀；契约事件名中的点号按斜杠展开。",
+                    "enum": crate::integration::model::INTEGRATION_CALLBACK_EVENTS.iter().map(|event| event.event_type.replace('.', "/")).collect::<Vec<_>>()
+                }
             },
             "schemas": mqtt_action_payload_schemas(),
             "messages": {
@@ -3197,36 +3446,20 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
                 "EventEnvelope": {
                     "name": "EventEnvelope",
                     "title": "业务事件",
-                    "summary": "Guard 向第三方发布的统一 JSON 事件信封。",
+                    "summary": "Guard 向第三方发布的 JSON 事件信封；payload 由 event_type 决定。",
                     "contentType": "application/json",
                     "payload": {
-                        "type": "object",
-                        "required": ["event_id", "event_type", "schema_version", "occurred_at_ms", "payload"],
-                        "properties": {
-                            "event_id": {"type": "string", "description": "事件唯一标识，消费方据此幂等。"},
-                            "event_type": {"type": "string", "description": "事件类型。"},
-                            "schema_version": {"type": "string", "description": "事件 Payload 的 Schema 版本。"},
-                            "occurred_at_ms": {"type": "integer", "description": "事件发生时间，Unix 毫秒时间戳。"},
-                            "trace_id": {"type": "string", "description": "跨 HTTP、MQTT 和内部操作的追踪标识。"},
-                            "payload": {"type": "object", "description": "与 event_type 对应的 JSON 业务数据。"}
-                        }
-                    }
-                },
-                "PlaybackRenewalRequest": {
-                    "name": "PlaybackRenewalRequest",
-                    "title": "播放票据续期请求",
-                    "summary": "Guard 在第三方播放票据到期前发出的续期询问。",
-                    "contentType": "application/json",
-                    "payload": {
-                        "type": "object",
-                        "required": ["token", "playback_id", "stream_id", "expires_at_ms", "response_action"],
-                        "properties": {
-                            "token": {"type": "string", "description": "待续期播放票据。"},
-                            "playback_id": {"type": "string", "description": "回放会话唯一标识。"},
-                            "stream_id": {"type": "string", "description": "媒体流唯一标识。"},
-                            "expires_at_ms": {"type": "integer", "description": "当前票据过期时间，Unix 毫秒时间戳。"},
-                            "response_action": {"type": "string", "description": "第三方返回续期决定时使用的命令动作。"}
-                        }
+                        "oneOf": crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+                            .iter()
+                            .map(integration_callback_event_schema)
+                            .collect::<Vec<_>>(),
+                        "examples": crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+                            .iter()
+                            .map(|event| base::serde_json::json!({
+                                "name": event.event_type,
+                                "payload": integration_callback_event_example(event)
+                            }))
+                            .collect::<Vec<_>>()
                     }
                 }
             }
@@ -3237,13 +3470,13 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
             "qos": 1,
             "retain": false,
             "payload_compatible": true,
-            "description": "应用选择的协议版本必须与 Guard 部署级 MQTT runtime 一致；两个版本使用相同 JSON Payload。"
+            "description": "协议版本由 Guard 部署级 MQTT Runtime 统一选择；两个版本使用相同 JSON Payload。"
         },
         "x-gmv-mqtt-workflow": {
             "qos": 1,
             "retain": false,
             "steps": [
-                "使用交付的 Broker TLS/账号连接，并确认协议版本与 Guard runtime 一致",
+                "使用交付的 Broker TLS/账号连接，并按 Guard MQTT Runtime 当前 active revision 的协议版本接入",
                 "先订阅应用配置中的精确 result_topic；如需事件，再订阅获授权的 event topic",
                 "生成全局唯一 command_id，issued_at_ms 使用当前 Unix 毫秒，expires_at_ms 与其差值不得超过 300000",
                 "向精确 command_topic 发布 UTF-8 JSON；PUBACK 只表示 Broker 收到",
@@ -3255,6 +3488,7 @@ pub fn asyncapi_contract() -> base::serde_json::Value {
         },
         "x-gmv-action-usage": mqtt_action_usage_contract(),
         "x-gmv-action-examples": mqtt_action_examples_contract(),
+        "x-gmv-event-types": integration_callback_events_contract(),
         "x-gmv-http-mqtt-capabilities": integration_capabilities_contract()
     })
 }
@@ -3523,7 +3757,7 @@ async fn authenticate_open_business_request_inner(
         .integration_secrets
         .as_ref()
         .ok_or_else(|| HttpError::internal("integration secret cipher is not configured"))?;
-    let secret = cipher.decrypt(&credential.secret_ciphertext)?;
+    let secret = cipher.decrypt(&credential.secret_ciphertext).await?;
     let method = request.method().as_str().to_string();
     let request_id = if request.method() == Method::POST {
         let request_id = request
@@ -4644,10 +4878,22 @@ struct CreateIntegrationCredentialRequest {
     expires_at_ms: Option<i64>,
 }
 
-#[derive(Debug, base::serde::Serialize)]
+#[derive(base::serde::Serialize)]
 #[serde(crate = "base::serde")]
 struct CreatedIntegrationCredentialResponse {
     credential: IntegrationCredentialSummary,
+    secret: String,
+}
+
+#[derive(base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct RevealIntegrationCredentialRequest {
+    password: String,
+}
+
+#[derive(base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct RevealedIntegrationCredentialResponse {
     secret: String,
 }
 
@@ -4667,13 +4913,70 @@ struct SaveHttpIntegrationRequest {
 
 #[derive(Debug, base::serde::Deserialize)]
 #[serde(crate = "base::serde")]
-struct SaveMqttIntegrationRequest {
+struct SaveMqttRuntimeRequest {
     protocol_version: String,
+    broker: String,
+    port: u16,
+    client_id: String,
     #[serde(default)]
-    allowed_actions: Vec<String>,
-    command_topic: String,
-    result_topic: String,
-    event_topic_prefix: String,
+    username: Option<String>,
+    #[serde(default)]
+    password: Option<String>,
+    tls: bool,
+    publish_event_ttl_sec: i64,
+    expected_config_version: i64,
+    request_id: String,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct SaveBusinessIntegrationRequest {
+    request_id: String,
+    name: String,
+    transport: String,
+    inbound_enabled: bool,
+    outbound_enabled: bool,
+    enabled: bool,
+    scopes: Vec<String>,
+    #[serde(default)]
+    expires_at_ms: Option<i64>,
+    #[serde(default)]
+    expected_config_version: i64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct BusinessIntegrationResponse {
+    state: &'static str,
+    integration: Option<Integration>,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct IntegrationMasterKeyResponse {
+    configured: bool,
+    key_version: i64,
+    created_at_ms: i64,
+    updated_by: String,
+    updated_at_ms: i64,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct RotateIntegrationMasterKeyRequest {
+    request_id: String,
+    expected_key_version: i64,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct MqttRuntimeResponse {
+    configured: bool,
+    broker_connected: bool,
+    config: Option<crate::integration::model::MqttRuntimeConfig>,
+    connection_scope: &'static str,
+    qos: u8,
+    retain: bool,
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -4691,12 +4994,218 @@ struct SaveIntegrationMappingRequest {
     enabled: bool,
 }
 
+async fn integration_master_key(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<IntegrationMasterKeyResponse>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let value = require_integration_repository(&state)?
+        .master_key()
+        .await?
+        .ok_or_else(|| GuardError::Conflict("integration master key is missing".to_string()))?;
+    Ok(Json(integration_master_key_response(value)))
+}
+
+async fn rotate_integration_master_key(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<RotateIntegrationMasterKeyRequest>,
+) -> Result<Json<IntegrationMasterKeyResponse>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    validate_request_id(&request.request_id)?;
+    let secrets = state
+        .integration_secrets
+        .as_ref()
+        .ok_or_else(|| GuardError::Conflict("integration master key is unavailable".to_string()))?;
+    let repository = require_integration_repository(&state)?;
+    let new_key_material = IntegrationSecretCipher::random_key_material();
+    let new_cipher = IntegrationSecretCipher::from_base64_key_no_pad(&new_key_material)?;
+    let now_ms = http_now_ms()?;
+    let mut current_cipher = secrets.write().await;
+    let value = repository
+        .rotate_master_key(
+            &current_cipher,
+            &new_cipher,
+            &new_key_material,
+            request.expected_key_version,
+            &session.username,
+            &format!("audit_{}", Uuid::new_v4().simple()),
+            now_ms,
+        )
+        .await?;
+    *current_cipher = new_cipher;
+    Ok(Json(integration_master_key_response(value)))
+}
+
+fn integration_master_key_response(
+    value: crate::integration::model::IntegrationMasterKey,
+) -> IntegrationMasterKeyResponse {
+    IntegrationMasterKeyResponse {
+        configured: true,
+        key_version: value.key_version,
+        created_at_ms: value.created_at_ms,
+        updated_by: value.updated_by,
+        updated_at_ms: value.updated_at_ms,
+    }
+}
+
 async fn list_integrations(
     State(state): State<HttpState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<Integration>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    Ok(Json(require_integration_repository(&state)?.list().await?))
+    let repository = require_integration_repository(&state)?;
+    Ok(Json(
+        repository
+            .business_integration()
+            .await?
+            .into_iter()
+            .collect(),
+    ))
+}
+
+async fn get_business_integration(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<BusinessIntegrationResponse>, HttpError> {
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let repository = require_integration_repository(&state)?;
+    if let Some(integration) = repository.business_integration().await? {
+        return Ok(Json(BusinessIntegrationResponse {
+            state: "ready",
+            integration: Some(integration),
+        }));
+    }
+    Ok(Json(BusinessIntegrationResponse {
+        state: "unconfigured",
+        integration: None,
+    }))
+}
+
+async fn save_business_integration(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<SaveBusinessIntegrationRequest>,
+) -> Result<Json<Integration>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    if request.request_id.trim().is_empty() {
+        return Err(GuardError::InvalidConfig("request_id is required".to_string()).into());
+    }
+    let repository = require_integration_repository(&state)?;
+    let now_ms = http_now_ms()?;
+    let transport = IntegrationTransport::parse(&request.transport.to_ascii_uppercase())?;
+    let mut switched_from = None;
+    let mut value = if let Some(mut value) = repository.business_integration().await? {
+        if value.config_version != request.expected_config_version {
+            return Err(GuardError::Conflict(format!(
+                "integration config version changed: expected {}, actual {}",
+                request.expected_config_version, value.config_version
+            ))
+            .into());
+        }
+        if value.transport != transport {
+            if value.enabled {
+                return Err(GuardError::Conflict(
+                    "disable the business integration before switching transport".to_string(),
+                )
+                .into());
+            }
+            let (commands, outbox) = repository
+                .transport_switch_blockers(&value.integration_id)
+                .await?;
+            let active_operations = state
+                .api
+                .list_operations()
+                .into_iter()
+                .filter(|operation| {
+                    operation.requested_by == format!("integration:{}", value.integration_id)
+                        && !operation.status.is_terminal()
+                })
+                .count();
+            if commands > 0 || outbox > 0 || active_operations > 0 {
+                return Err(GuardError::Conflict(format!(
+                    "transport switch blocked: commands={commands}, outbox={outbox}, operations={active_operations}"
+                ))
+                .into());
+            }
+            switched_from = Some(value.transport);
+            value.transport = transport;
+        }
+        value.config_version = value.config_version.saturating_add(1);
+        value
+    } else {
+        Integration {
+            integration_id: format!("int_{}", Uuid::new_v4().simple()),
+            name: String::new(),
+            transport,
+            inbound_enabled: false,
+            outbound_enabled: false,
+            enabled: false,
+            scopes: Vec::new(),
+            expires_at_ms: None,
+            config_version: 1,
+            created_by: session.username.clone(),
+            created_at_ms: now_ms,
+            updated_at_ms: now_ms,
+        }
+    };
+    value.name = request.name.trim().to_string();
+    value.inbound_enabled = request.inbound_enabled;
+    value.outbound_enabled = request.outbound_enabled;
+    value.enabled = request.enabled;
+    value.scopes = request.scopes;
+    value.expires_at_ms = request.expires_at_ms;
+    value.updated_at_ms = now_ms;
+    value.validate(now_ms)?;
+    if value.transport == IntegrationTransport::Mqtt
+        && value.enabled
+        && repository.mqtt_runtime_config().await?.is_none()
+    {
+        return Err(GuardError::InvalidConfig(
+            "configure MQTT runtime before enabling the business integration".to_string(),
+        )
+        .into());
+    }
+    let is_new = repository.get(&value.integration_id).await?.is_none();
+    repository.upsert(&value).await?;
+    if let Some(previous) = switched_from {
+        repository
+            .deactivate_transport(&value.integration_id, previous, now_ms)
+            .await?;
+    }
+    if is_new {
+        repository
+            .bind_business_integration(&value.integration_id, &session.username, now_ms)
+            .await?;
+    }
+    let transport_config_missing = match value.transport {
+        IntegrationTransport::Http => repository
+            .http_config(&value.integration_id)
+            .await?
+            .is_none(),
+        IntegrationTransport::Mqtt => repository
+            .mqtt_config(&value.integration_id)
+            .await?
+            .is_none(),
+    };
+    if transport_config_missing {
+        initialize_transport_config(repository, &value, now_ms).await?;
+    }
+    append_integration_audit(
+        repository,
+        Some(&value.integration_id),
+        &session.username,
+        if is_new {
+            "integration.create"
+        } else {
+            "integration.update"
+        },
+        &value.integration_id,
+        "updated",
+        now_ms,
+    )
+    .await?;
+    Ok(Json(value))
 }
 
 async fn get_integration(
@@ -4705,7 +5214,9 @@ async fn get_integration(
     Path(integration_id): Path<String>,
 ) -> Result<Json<Integration>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let value = require_integration_repository(&state)?
+    let repository = require_integration_repository(&state)?;
+    require_business_integration(repository, &integration_id).await?;
+    let value = repository
         .get(&integration_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
@@ -4736,16 +5247,27 @@ async fn create_integration(
         updated_at_ms: now_ms,
     };
     value.validate(now_ms)?;
-    require_http_integration_master_key(&state, &value)?;
-    if value.transport == IntegrationTransport::Mqtt && value.enabled && !state.mqtt_runtime_enabled
+    let repository = require_integration_repository(&state)?;
+    if value.transport == IntegrationTransport::Mqtt
+        && value.enabled
+        && repository.mqtt_runtime_config().await?.is_none()
     {
         return Err(GuardError::InvalidConfig(
-            "MQTT runtime must be enabled before enabling the integration".to_string(),
+            "configure MQTT runtime before enabling the business integration".to_string(),
         )
         .into());
     }
-    let repository = require_integration_repository(&state)?;
+    if repository.business_integration_id().await?.is_some() || !repository.list().await?.is_empty()
+    {
+        return Err(GuardError::Conflict(
+            "the business integration already exists; edit it instead".to_string(),
+        )
+        .into());
+    }
     repository.upsert(&value).await?;
+    repository
+        .bind_business_integration(&integration_id, &session.username, now_ms)
+        .await?;
     match transport {
         IntegrationTransport::Http => {
             repository
@@ -4766,8 +5288,6 @@ async fn create_integration(
             repository
                 .upsert_mqtt_config(&IntegrationMqttConfig {
                     integration_id: integration_id.clone(),
-                    protocol_version: state.mqtt_runtime_protocol_version.clone(),
-                    allowed_actions: Vec::new(),
                     command_topic: format!("gmv/commands/{integration_id}"),
                     result_topic: format!("gmv/command-results/{integration_id}"),
                     event_topic_prefix: format!("gmv/events/{integration_id}"),
@@ -4818,25 +5338,15 @@ async fn update_integration(
     value.config_version += 1;
     value.updated_at_ms = now_ms;
     value.validate(now_ms)?;
-    require_http_integration_master_key(&state, &value)?;
-    if value.transport == IntegrationTransport::Mqtt && value.enabled {
-        if !state.mqtt_runtime_enabled {
-            return Err(GuardError::InvalidConfig(
-                "MQTT runtime must be enabled before enabling the integration".to_string(),
-            )
-            .into());
-        }
-        let mqtt = repository
-            .mqtt_config(&integration_id)
-            .await?
-            .ok_or_else(|| GuardError::NotFound(format!("MQTT integration {integration_id}")))?;
-        if mqtt.protocol_version != state.mqtt_runtime_protocol_version {
-            return Err(GuardError::InvalidConfig(format!(
-                "MQTT integration protocol_version {} must match running broker connection {}",
-                mqtt.protocol_version, state.mqtt_runtime_protocol_version
-            ))
-            .into());
-        }
+    require_business_integration(repository, &integration_id).await?;
+    if value.transport == IntegrationTransport::Mqtt
+        && value.enabled
+        && repository.mqtt_runtime_config().await?.is_none()
+    {
+        return Err(GuardError::InvalidConfig(
+            "configure MQTT runtime before enabling the business integration".to_string(),
+        )
+        .into());
     }
     repository.upsert(&value).await?;
     append_integration_audit(
@@ -4858,7 +5368,9 @@ async fn list_integration_credentials(
     Path(integration_id): Path<String>,
 ) -> Result<Json<Vec<IntegrationCredentialSummary>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    let values = require_integration_repository(&state)?
+    let repository = require_integration_repository(&state)?;
+    require_business_integration(repository, &integration_id).await?;
+    let values = repository
         .list_credentials(&integration_id)
         .await?
         .into_iter()
@@ -4875,6 +5387,7 @@ async fn create_integration_credential(
 ) -> Result<(StatusCode, Json<CreatedIntegrationCredentialResponse>), HttpError> {
     let session = require_write(&state.auth, &headers, Role::Admin)?;
     let repository = require_integration_repository(&state)?;
+    require_business_integration(repository, &integration_id).await?;
     let integration = repository
         .get(&integration_id)
         .await?
@@ -4885,12 +5398,10 @@ async fn create_integration_credential(
         )
         .into());
     }
-    let cipher = state.integration_secrets.as_ref().ok_or_else(|| {
-        GuardError::InvalidConfig(format!(
-            "{} is required to create integration credentials",
-            crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
-        ))
-    })?;
+    let cipher = state
+        .integration_secrets
+        .as_ref()
+        .ok_or_else(|| GuardError::Conflict("integration master key is unavailable".to_string()))?;
     let now_ms = http_now_ms()?;
     if request
         .expires_at_ms
@@ -4907,7 +5418,7 @@ async fn create_integration_credential(
         access_key: format!("ak_{}", Uuid::new_v4().simple()),
         integration_id: integration_id.clone(),
         purpose: request.purpose,
-        secret_ciphertext: cipher.encrypt(&secret)?,
+        secret_ciphertext: cipher.encrypt(&secret).await?,
         key_version: 1,
         status: CredentialStatus::Active,
         not_before_ms: now_ms,
@@ -4944,6 +5455,7 @@ async fn revoke_integration_credential(
 ) -> Result<StatusCode, HttpError> {
     let session = require_write(&state.auth, &headers, Role::Admin)?;
     let repository = require_integration_repository(&state)?;
+    require_business_integration(repository, &integration_id).await?;
     let now_ms = http_now_ms()?;
     let belongs = repository
         .list_credentials(&integration_id)
@@ -4967,12 +5479,61 @@ async fn revoke_integration_credential(
     Ok(StatusCode::NO_CONTENT)
 }
 
+async fn reveal_integration_credential(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path((integration_id, credential_id)): Path<(String, String)>,
+    Json(request): Json<RevealIntegrationCredentialRequest>,
+) -> Result<Json<RevealedIntegrationCredentialResponse>, HttpError> {
+    let session = require_write(&state.auth, &headers, Role::Admin)?;
+    if request.password.is_empty()
+        || !state
+            .auth
+            .verify_current_password(&session.username, &request.password)
+            .map_err(HttpError::from_auth)?
+    {
+        return Err(HttpError::secondary_auth_failed());
+    }
+    let repository = require_integration_repository(&state)?;
+    require_business_integration(repository, &integration_id).await?;
+    let now_ms = http_now_ms()?;
+    let credential = repository
+        .list_credentials(&integration_id)
+        .await?
+        .into_iter()
+        .find(|credential| credential.credential_id == credential_id)
+        .ok_or_else(|| GuardError::NotFound(format!("credential {credential_id}")))?;
+    if !credential.is_active_at(now_ms) {
+        return Err(GuardError::Conflict(
+            "only active integration credentials can be revealed".to_string(),
+        )
+        .into());
+    }
+    let cipher = state
+        .integration_secrets
+        .as_ref()
+        .ok_or_else(|| GuardError::Conflict("integration master key is unavailable".to_string()))?;
+    let secret = cipher.decrypt(&credential.secret_ciphertext).await?;
+    append_integration_audit(
+        repository,
+        Some(&integration_id),
+        &session.username,
+        "credential.reveal",
+        &credential_id,
+        "revealed after secondary authentication",
+        now_ms,
+    )
+    .await?;
+    Ok(Json(RevealedIntegrationCredentialResponse { secret }))
+}
+
 async fn get_integration_http(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(integration_id): Path<String>,
 ) -> Result<Json<IntegrationHttpConfig>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
+    require_integration_transport(&state, &integration_id, IntegrationTransport::Http).await?;
     let value = require_integration_repository(&state)?
         .http_config(&integration_id)
         .await?
@@ -5022,6 +5583,7 @@ async fn get_integration_mqtt(
     Path(integration_id): Path<String>,
 ) -> Result<Json<IntegrationMqttConfig>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
+    require_integration_transport(&state, &integration_id, IntegrationTransport::Mqtt).await?;
     let value = require_integration_repository(&state)?
         .mqtt_config(&integration_id)
         .await?
@@ -5032,57 +5594,124 @@ async fn get_integration_mqtt(
 async fn integration_mqtt_runtime(
     State(state): State<HttpState>,
     headers: HeaderMap,
-) -> Result<Json<base::serde_json::Value>, HttpError> {
+) -> Result<Json<MqttRuntimeResponse>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
-    Ok(Json(base::serde_json::json!({
-        "enabled": state.mqtt_runtime_enabled,
-        "protocol_version": state.mqtt_runtime_protocol_version,
-        "connection_scope": "deployment",
-        "qos": 1,
-        "retain": false,
-        "supported_actions": crate::integration::model::MQTT_COMMAND_ACTIONS
-    })))
+    let config = require_integration_repository(&state)?
+        .mqtt_runtime_config()
+        .await?;
+    let broker_connected = mqtt_broker_connected(config.as_ref());
+    Ok(Json(MqttRuntimeResponse {
+        configured: config.is_some(),
+        broker_connected,
+        config,
+        connection_scope: "deployment",
+        qos: 1,
+        retain: false,
+    }))
 }
 
-async fn update_integration_mqtt(
+fn mqtt_broker_connected(config: Option<&crate::integration::model::MqttRuntimeConfig>) -> bool {
+    config.is_some_and(|value| {
+        value.apply_state == MqttRuntimeApplyState::Connected
+            && value.active_revision == Some(value.desired_revision)
+    })
+}
+
+async fn update_integration_mqtt_runtime(
     State(state): State<HttpState>,
     headers: HeaderMap,
-    Path(integration_id): Path<String>,
-    Json(request): Json<SaveMqttIntegrationRequest>,
-) -> Result<Json<IntegrationMqttConfig>, HttpError> {
+    Json(request): Json<SaveMqttRuntimeRequest>,
+) -> Result<Json<crate::integration::model::MqttRuntimeConfig>, HttpError> {
     let session = require_write(&state.auth, &headers, Role::Admin)?;
-    require_integration_transport(&state, &integration_id, IntegrationTransport::Mqtt).await?;
-    let now_ms = http_now_ms()?;
-    let value = IntegrationMqttConfig {
-        integration_id: integration_id.clone(),
-        protocol_version: request.protocol_version.to_ascii_lowercase(),
-        allowed_actions: request.allowed_actions,
-        command_topic: request.command_topic,
-        result_topic: request.result_topic,
-        event_topic_prefix: request.event_topic_prefix,
-        updated_at_ms: now_ms,
-    };
-    value.validate()?;
-    if value.protocol_version != state.mqtt_runtime_protocol_version {
-        return Err(GuardError::InvalidConfig(format!(
-            "MQTT protocol_version must match running broker connection {}",
-            state.mqtt_runtime_protocol_version
-        ))
-        .into());
+    if request.request_id.trim().is_empty() {
+        return Err(GuardError::InvalidConfig("request_id is required".to_string()).into());
     }
     let repository = require_integration_repository(&state)?;
-    repository.upsert_mqtt_config(&value).await?;
+    let current = repository.mqtt_runtime_config().await?;
+    let current_revision = if let Some(current) = &current {
+        repository
+            .mqtt_runtime_revision(current.desired_revision)
+            .await?
+    } else {
+        None
+    };
+    let username = request.username.map(|value| value.trim().to_string());
+    let password_ciphertext = match (username.as_ref(), request.password.as_deref()) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return Err(GuardError::InvalidConfig(
+                "MQTT username is required when password is supplied".to_string(),
+            )
+            .into());
+        }
+        (Some(_), Some(password)) if !password.is_empty() => Some(
+            state
+                .integration_secrets
+                .as_ref()
+                .ok_or_else(|| {
+                    GuardError::Conflict("integration master key is unavailable".to_string())
+                })?
+                .encrypt(password)
+                .await?,
+        ),
+        (Some(username), None) => {
+            let ciphertext = current_revision
+                .as_ref()
+                .filter(|current| current.username.as_ref() == Some(username))
+                .and_then(|current| current.password_ciphertext.clone());
+            if let Some(ciphertext) = ciphertext.as_deref()
+                && state
+                    .integration_secrets
+                    .as_ref()
+                    .ok_or_else(|| {
+                        GuardError::Conflict("integration master key is unavailable".to_string())
+                    })?
+                    .decrypt(ciphertext)
+                    .await
+                    .is_err()
+            {
+                return Err(GuardError::user_visible(
+                    "mqtt_password_reentry_required",
+                    "stored MQTT password cannot be decrypted with the current integration master key",
+                    "已存 MQTT 密码无法使用当前主密钥解密，请重新输入密码后保存",
+                    false,
+                    BTreeMap::new(),
+                )
+                .into());
+            }
+            ciphertext
+        }
+        (Some(_), Some(_)) => None,
+    };
+    let now_ms = http_now_ms()?;
+    let value = crate::integration::model::MqttRuntimeRevision {
+        revision: 0,
+        protocol_version: request.protocol_version.to_ascii_lowercase(),
+        broker: request.broker.trim().to_string(),
+        port: request.port,
+        client_id: request.client_id.trim().to_string(),
+        username,
+        password_ciphertext,
+        tls: request.tls,
+        publish_event_ttl_sec: request.publish_event_ttl_sec,
+        created_by: session.username.clone(),
+        created_at_ms: now_ms,
+    };
+    value.validate()?;
+    let saved = repository
+        .save_mqtt_runtime_config(&value, request.expected_config_version)
+        .await?;
     append_integration_audit(
         repository,
-        Some(&integration_id),
+        repository.business_integration_id().await?.as_deref(),
         &session.username,
-        "mqtt.update",
-        &integration_id,
-        &format!("protocol_version={}", value.protocol_version),
+        "mqtt.runtime.update",
+        "business",
+        "pending",
         now_ms,
     )
     .await?;
-    Ok(Json(value))
+    Ok(Json(saved))
 }
 
 async fn list_integration_mappings(
@@ -5091,6 +5720,7 @@ async fn list_integration_mappings(
     Path(integration_id): Path<String>,
 ) -> Result<Json<Vec<IntegrationMapping>>, HttpError> {
     require_role(&state.auth, &headers, Role::Viewer)?;
+    require_business_integration(require_integration_repository(&state)?, &integration_id).await?;
     Ok(Json(
         require_integration_repository(&state)?
             .list_mappings(&integration_id)
@@ -5105,13 +5735,11 @@ async fn upsert_integration_mapping(
     Json(request): Json<SaveIntegrationMappingRequest>,
 ) -> Result<Json<IntegrationMapping>, HttpError> {
     let session = require_write(&state.auth, &headers, Role::Admin)?;
+    require_business_integration(require_integration_repository(&state)?, &integration_id).await?;
     if request.direction != "OUTBOUND"
         || !matches!(request.destination_kind.as_str(), "HTTP" | "MQTT")
-        || request.source_type.trim().is_empty()
-        || request.source_type.len() > 255
-        || !request.source_type.bytes().all(|value| {
-            value.is_ascii_alphanumeric() || matches!(value, b'.' | b'_' | b'-' | b'*')
-        })
+        || !valid_event_mapping_source(&request.source_type)
+        || !mapping_source_matches_callback_contract(&request.source_type)
         || request.destination.trim().is_empty()
         || request.destination.len() > 512
         || request.schema_version != "v1"
@@ -5124,6 +5752,18 @@ async fn upsert_integration_mapping(
         .get(&integration_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
+    let existing_mapping = if let Some(mapping_id) = request.mapping_id.as_deref() {
+        Some(
+            repository
+                .list_mappings(&integration_id)
+                .await?
+                .into_iter()
+                .find(|mapping| mapping.mapping_id == mapping_id)
+                .ok_or_else(|| GuardError::NotFound(format!("mapping {mapping_id}")))?,
+        )
+    } else {
+        None
+    };
     match integration.transport {
         IntegrationTransport::Http => {
             let config = repository
@@ -5133,7 +5773,12 @@ async fn upsert_integration_mapping(
                     GuardError::InvalidConfig("HTTP integration config missing".to_string())
                 })?;
             if request.destination_kind != "HTTP"
-                || config.callback_url.as_deref() != Some(request.destination.as_str())
+                || (request.enabled
+                    && config.callback_url.as_deref() != Some(request.destination.as_str()))
+                || (!request.enabled
+                    && existing_mapping
+                        .as_ref()
+                        .is_none_or(|mapping| mapping.destination_kind != "HTTP"))
             {
                 return Err(GuardError::InvalidConfig(
                     "HTTP mapping destination must match the configured callback URL".to_string(),
@@ -5188,6 +5833,24 @@ async fn upsert_integration_mapping(
     Ok(Json(value))
 }
 
+fn valid_event_mapping_source(source_type: &str) -> bool {
+    !source_type.is_empty()
+        && source_type.len() <= 255
+        && source_type.split('.').all(|segment| {
+            matches!(segment, "*" | "**")
+                || (!segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'_' | b'-')))
+        })
+}
+
+fn mapping_source_matches_callback_contract(source_type: &str) -> bool {
+    crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+        .iter()
+        .any(|event| topic_matches(source_type, event.event_type))
+}
+
 async fn list_integration_audits(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -5207,35 +5870,14 @@ fn require_integration_repository(state: &HttpState) -> Result<&IntegrationRepos
     })
 }
 
-fn require_http_integration_master_key(
-    state: &HttpState,
-    integration: &Integration,
-) -> Result<(), HttpError> {
-    if integration.transport == IntegrationTransport::Http
-        && integration.enabled
-        && state.integration_secrets.is_none()
-    {
-        return Err(HttpError {
-            status: StatusCode::BAD_REQUEST,
-            code: "integration_master_key_missing".to_string(),
-            message: format!(
-                "{} is required before enabling an HTTP integration",
-                crate::integration::secret::INTEGRATION_MASTER_KEY_CONFIG
-            ),
-            user_message: Some("部署未配置 HTTP 集成主密钥，暂不能启用 HTTP 接入".to_string()),
-            retryable: Some(false),
-            details: BTreeMap::new(),
-        });
-    }
-    Ok(())
-}
-
 async fn require_integration_transport(
     state: &HttpState,
     integration_id: &str,
     expected: IntegrationTransport,
 ) -> Result<(), HttpError> {
-    let value = require_integration_repository(state)?
+    let repository = require_integration_repository(state)?;
+    require_business_integration(repository, integration_id).await?;
+    let value = repository
         .get(integration_id)
         .await?
         .ok_or_else(|| GuardError::NotFound(format!("integration {integration_id}")))?;
@@ -5246,6 +5888,54 @@ async fn require_integration_transport(
         .into());
     }
     Ok(())
+}
+
+async fn require_business_integration(
+    repository: &IntegrationRepository,
+    integration_id: &str,
+) -> Result<(), HttpError> {
+    if repository.business_integration_id().await?.as_deref() != Some(integration_id) {
+        return Err(GuardError::InvalidIdentity(
+            "integration is not the active business integration".to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+async fn initialize_transport_config(
+    repository: &IntegrationRepository,
+    integration: &Integration,
+    now_ms: i64,
+) -> GuardResult<()> {
+    match integration.transport {
+        IntegrationTransport::Http => {
+            repository
+                .upsert_http_config(&IntegrationHttpConfig {
+                    integration_id: integration.integration_id.clone(),
+                    callback_url: None,
+                    callback_timeout_ms: 5_000,
+                    private_network_policy: "deny".to_string(),
+                    private_network_allowlist: Vec::new(),
+                    max_attempts: 5,
+                    event_ttl_ms: 259_200_000,
+                    max_response_bytes: 65_536,
+                    updated_at_ms: now_ms,
+                })
+                .await
+        }
+        IntegrationTransport::Mqtt => {
+            repository
+                .upsert_mqtt_config(&IntegrationMqttConfig {
+                    integration_id: integration.integration_id.clone(),
+                    command_topic: format!("gmv/commands/{}", integration.integration_id),
+                    result_topic: format!("gmv/command-results/{}", integration.integration_id),
+                    event_topic_prefix: format!("gmv/events/{}", integration.integration_id),
+                    updated_at_ms: now_ms,
+                })
+                .await
+        }
+    }
 }
 
 async fn append_integration_audit(
@@ -9536,6 +10226,17 @@ impl HttpError {
         }
     }
 
+    fn secondary_auth_failed() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "secondary_auth_failed".to_string(),
+            message: "secondary authentication failed".to_string(),
+            user_message: Some("当前密码验证失败".to_string()),
+            retryable: Some(false),
+            details: BTreeMap::new(),
+        }
+    }
+
     fn internal(message: impl Into<String>) -> Self {
         let code = GmvGuardErrorCode::Internal;
         Self {
@@ -9762,16 +10463,47 @@ mod tests {
     use super::{
         GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS, api_docs_contract_page,
         asyncapi_contract, endpoint_with_playback_token, gb_preview_request,
-        media_startup_timeout_ms, mqtt_action_payload_schemas, node_connection_label,
+        mapping_source_matches_callback_contract, media_startup_timeout_ms,
+        mqtt_action_payload_schemas, mqtt_broker_connected, node_connection_label,
         node_health_label, node_scheduling_label, open_business_scope, openapi_contract,
         openapi_operation_parameters, openapi_operation_summary, openapi_request_body,
         openapi_responses, openapi_success_schema, playback_control_owner_matches,
-        playback_token_from_endpoint,
+        playback_token_from_endpoint, valid_event_mapping_source,
     };
     use crate::auth::Role;
     use crate::core::{ConnectionState, HealthState, SchedulingState};
+    use crate::integration::model::{MqttRuntimeApplyState, MqttRuntimeConfig};
     use crate::store::model::PlaybackTicketRecord;
     use axum::http::Method;
+
+    #[test]
+    fn mqtt_broker_connection_requires_connack_for_desired_revision() {
+        let mut config = MqttRuntimeConfig {
+            protocol_version: "v5".to_string(),
+            broker: "broker.example.test".to_string(),
+            port: 1883,
+            client_id: "guard-test".to_string(),
+            username: None,
+            password_configured: false,
+            tls: false,
+            publish_event_ttl_sec: 86_400,
+            desired_revision: 2,
+            active_revision: Some(1),
+            config_version: 2,
+            apply_state: MqttRuntimeApplyState::Connected,
+            last_error_code: None,
+            last_error_summary: None,
+            last_transition_at_ms: 1,
+            updated_by: "test".to_string(),
+            updated_at_ms: 1,
+        };
+        assert!(!mqtt_broker_connected(Some(&config)));
+        config.active_revision = Some(2);
+        assert!(mqtt_broker_connected(Some(&config)));
+        config.apply_state = MqttRuntimeApplyState::Degraded;
+        assert!(!mqtt_broker_connected(Some(&config)));
+        assert!(!mqtt_broker_connected(None));
+    }
 
     #[test]
     fn playback_control_ownership_does_not_expire_with_media_url_ticket() {
@@ -10224,5 +10956,113 @@ mod tests {
         assert!(include_str!("api_docs.js").contains("取值约束"));
         assert!(include_str!("api_docs.js").contains("成功响应字段"));
         assert!(include_str!("api_docs.js").contains("失败响应示例"));
+        assert!(include_str!("api_docs.js").contains("可回调事件接口"));
+        assert!(include_str!("api_docs.js").contains("可发布事件列表"));
+    }
+
+    #[test]
+    fn callback_event_contract_is_shared_by_openapi_and_asyncapi() {
+        let expected = crate::integration::model::INTEGRATION_CALLBACK_EVENTS
+            .iter()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        let openapi = openapi_contract();
+        let asyncapi = asyncapi_contract();
+
+        let mut webhook_events = openapi["webhooks"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|path| path["post"]["x-gmv-event-types"].as_array().unwrap())
+            .map(|event| event["event_type"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        webhook_events.sort_unstable();
+        let mut expected_webhook_events = expected.clone();
+        expected_webhook_events.sort_unstable();
+        assert_eq!(webhook_events, expected_webhook_events);
+        for event in crate::integration::model::INTEGRATION_CALLBACK_EVENTS {
+            let operation = &openapi["webhooks"][event.event_type.replace('.', "_")]["post"];
+            assert_eq!(
+                operation["x-gmv-callback-path"],
+                format!("{{callback_url}}/{}", event.event_type.replace('.', "/"))
+            );
+            assert_eq!(
+                operation["requestBody"]["content"]["application/json"]["schema"]["properties"]["event_type"]
+                    ["const"],
+                event.event_type
+            );
+            assert!(
+                operation["x-gmv-event-types"][0]["payload_schema"]["properties"]
+                    .as_object()
+                    .is_some_and(|properties| !properties.is_empty())
+            );
+            assert!(operation["x-gmv-event-types"][0]["envelope_example"]["payload"].is_object());
+        }
+        assert_eq!(
+            openapi["components"]["schemas"]["IntegrationEventEnvelope"]["properties"]["event_type"]
+                ["enum"],
+            base::serde_json::json!(expected)
+        );
+        assert_eq!(
+            asyncapi["channels"]["events"]["address"],
+            "gmv/events/{integration_id}/{event_type}"
+        );
+        assert_eq!(
+            asyncapi["channels"]["events"]["x-gmv-event-types"],
+            asyncapi["x-gmv-event-types"]
+        );
+        assert_eq!(
+            asyncapi["components"]["messages"]["EventEnvelope"]["payload"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|schema| schema["properties"]["event_type"]["const"]
+                    .as_str()
+                    .unwrap())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert!(
+            asyncapi["components"]["messages"]
+                .get("PlaybackRenewalRequest")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn callback_mapping_patterns_use_segment_wildcards() {
+        for valid in [
+            "session.alarm",
+            "session.*",
+            "stream.**",
+            "node-health.changed",
+        ] {
+            assert!(valid_event_mapping_source(valid), "valid pattern: {valid}");
+        }
+        for invalid in [
+            "",
+            "session.",
+            ".session",
+            "session.***",
+            "session.*suffix",
+            "session/#",
+        ] {
+            assert!(
+                !valid_event_mapping_source(invalid),
+                "invalid pattern: {invalid}"
+            );
+        }
+        for matching in ["session.alarm", "session.*", "integration.**", "**"] {
+            assert!(
+                mapping_source_matches_callback_contract(matching),
+                "contract pattern: {matching}"
+            );
+        }
+        for unsupported in ["stream.**", "node-health.changed"] {
+            assert!(
+                !mapping_source_matches_callback_contract(unsupported),
+                "unsupported callback pattern: {unsupported}"
+            );
+        }
     }
 }

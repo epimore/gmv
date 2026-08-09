@@ -105,7 +105,11 @@ guard:
                     "guard_integration_delivery",
                     "guard_integration_http",
                     "guard_integration_mapping",
+                    "guard_integration_master_key",
                     "guard_integration_mqtt",
+                    "guard_integration_slot",
+                    "guard_mqtt_runtime_revision",
+                    "guard_mqtt_runtime_state",
                     "guard_outbox",
                     "guard_user"
                 ]
@@ -121,9 +125,19 @@ guard:
                 [
                     (1, "guard_preview_baseline".to_string()),
                     (3, "guard_integrations".to_string()),
-                    (4, "guard_command_idempotency".to_string())
+                    (4, "guard_command_idempotency".to_string()),
+                    (5, "guard_singleton_mqtt_runtime".to_string()),
+                    (6, "guard_mqtt_action_policy_removal".to_string()),
+                    (7, "guard_integration_master_key".to_string())
                 ]
             );
+            let master_key = base_db::sqlx::query_as::<_, (i64, i64)>(
+                "SELECT key_version,LENGTH(key_material) FROM guard_integration_master_key WHERE slot='business'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(master_key, (1, 43));
             let user_columns = base_db::sqlx::query_scalar::<_, String>(
                 "SELECT name FROM pragma_table_info('guard_user') ORDER BY cid",
             )
@@ -131,6 +145,13 @@ guard:
             .await
             .unwrap();
             assert!(user_columns.iter().any(|column| column == "expires_at_ms"));
+            let mqtt_columns = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT name FROM pragma_table_info('guard_integration_mqtt') ORDER BY cid",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert!(!mqtt_columns.iter().any(|column| column == "allowed_actions"));
             pool.close().await;
             drop(store);
             let _ = std::fs::remove_dir_all(root);
@@ -183,7 +204,10 @@ fn sqlite_preserves_reserved_user_expiration_v2_and_applies_integrations_v3() {
                     (1, "guard_preview_baseline".to_string()),
                     (2, "guard_user_expiration".to_string()),
                     (3, "guard_integrations".to_string()),
-                    (4, "guard_command_idempotency".to_string())
+                    (4, "guard_command_idempotency".to_string()),
+                    (5, "guard_singleton_mqtt_runtime".to_string()),
+                    (6, "guard_mqtt_action_policy_removal".to_string()),
+                    (7, "guard_integration_master_key".to_string())
                 ]
             );
             let integration_table = base_db::sqlx::query_scalar::<_, String>(

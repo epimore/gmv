@@ -1,446 +1,288 @@
 <template>
   <div class="page-grid">
-    <MetricCard class="span-3" label="接入应用" :value="applications.length" trend="HTTP / MQTT" hint="方式单选" />
-    <MetricCard class="span-3" label="有效凭证" :value="activeCredentialCount" trend="分方向授权" hint="HMAC / Broker" />
-    <MetricCard class="span-3" label="MQTT 应用" :value="mqttCount" trend="V3 / V5 可选" hint="配置页明确版本" />
-    <MetricCard class="span-3" label="停用应用" :value="disabledCount" trend="即时生效" hint="保留审计" />
+    <MetricCard class="span-3" label="接入状态" :value="app?.enabled ? '已集成' : '未集成'" trend="业务应用" :hint="app ? '配置已保留' : '尚未配置'" />
+    <MetricCard class="span-3" label="配置方式" :value="transportLabel" trend="HTTP / MQTT" :hint="app ? '已保存' : '未配置'" />
+    <MetricCard class="span-3" label="应用开关" :value="app?.enabled ? '已启用' : '未启用'" trend="服务端状态" :hint="app?.integration_id ?? '尚未创建'" />
+    <MetricCard class="span-3" label="配置方向" :value="directionLabel" trend="Inbound / Outbound" hint="保存值" />
 
-    <GlassPanel
-      class="span-12"
-      title="接入应用"
-      subtitle="每个应用在 HTTP 与 MQTT 之间单选 · 协议内按需启用入站和出站"
-    >
-      <template #action>
-        <el-button v-if="auth.isAdmin" type="primary" @click="createDialogVisible = true">新建接入</el-button>
-      </template>
-      <el-table :data="applications" height="286">
-        <el-table-column prop="name" label="应用名称" min-width="170">
-          <template #default="{ row }">
-            <div class="app-name">
-              <b>{{ row.name }}</b
-              ><small class="code">{{ row.integration_id }}</small>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="接入方式" width="120">
-          <template #default="{ row }"
-            ><el-tag effect="plain">{{ row.transport.toUpperCase() }}</el-tag></template
-          >
-        </el-table-column>
-        <el-table-column label="调用方向" min-width="190">
-          <template #default="{ row }">
-            <div class="direction-tags">
-              <el-tag v-for="direction in directions(row)" :key="direction" effect="plain">{{
-                direction
-              }}</el-tag>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="鉴权方式" min-width="180">
-          <template #default="{ row }">{{ row.transport === "http" ? "Access Key + HMAC" : "Broker ACL" }}</template>
-        </el-table-column>
-        <el-table-column label="状态" width="168">
-          <template #default="{ row }">
-            <div class="runtime-toggle">
-              <el-switch
-                :model-value="row.enabled"
-                :disabled="!auth.isAdmin || mqttRuntimeUnavailable(row)"
-                @change="toggleIntegration(row, Boolean($event))"
-              />
-              <small v-if="mqttRuntimeUnavailable(row)">先启用 MQTT Runtime</small>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="应用有效期" width="150">
-          <template #default="{ row }">{{ expiration(row.expires_at_ms) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
-          <template #default="{ row }">
-            <el-button link @click="openConfig(row)">配置</el-button>
-            <el-button v-if="auth.isAdmin" link @click="openCredential(row)">凭证</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </GlassPanel>
-
-    <GlassPanel
-      class="span-8"
-      title="凭证管理"
-      subtitle="secret 仅在创建或轮换时显示一次 · 查询始终脱敏"
-    >
-      <el-table :data="credentials" height="236">
-        <el-table-column prop="integrationName" label="接入应用" min-width="150" />
-        <el-table-column label="用途" min-width="190">
-          <template #default="{ row }">{{ purposeLabel(row.purpose) }}</template>
-        </el-table-column>
-        <el-table-column label="Access Key" min-width="180">
-          <template #default="{ row }"
-            ><span class="code">{{ maskAccessKey(row.access_key) }}</span></template
-          >
-        </el-table-column>
-        <el-table-column label="状态" width="96">
-          <template #default="{ row }"
-            ><StatusPill :label="row.status === 'active' ? '有效' : '已吊销'" :tone="row.status === 'active' ? 'ready' : 'warning'"
-          /></template>
-        </el-table-column>
-        <el-table-column label="操作" width="90">
-          <template #default="{ row }"
-            ><el-button link :disabled="!auth.isAdmin || row.status !== 'active'" @click="revokeCredential(row)">吊销</el-button></template
-          >
-        </el-table-column>
-      </el-table>
-    </GlassPanel>
-
-    <GlassPanel class="span-4" title="接入原则" subtitle="面向边端部署的最小可靠闭环">
-      <div class="principle-list">
-        <div>
-          <span>01</span>
-          <p><b>协议单选</b><small>同一应用选择 HTTP 或 MQTT</small></p>
-        </div>
-        <div>
-          <span>02</span>
-          <p><b>双向隔离</b><small>入站验证与出站签名凭证分离</small></p>
-        </div>
-        <div>
-          <span>03</span>
-          <p><b>有限持久化</b><small>只保留恢复、幂等和短期追踪所需数据</small></p>
-        </div>
-        <div>
-          <span>04</span>
-          <p><b>契约随服务发布</b><small>OpenAPI / AsyncAPI 由 Guard Server 提供</small></p>
-        </div>
-      </div>
-    </GlassPanel>
-
-    <GlassPanel class="span-12" title="投递队列" subtitle="成功记录及时清理；重试与 DEAD 仅保留短期失败摘要">
-      <template #action><el-button @click="loadData">刷新</el-button></template>
-      <el-table :data="outbox" height="230" empty-text="当前没有待处理或失败投递">
-        <el-table-column prop="integration_id" label="应用 ID" min-width="210" />
-        <el-table-column prop="destination_kind" label="通道" width="110" />
-        <el-table-column label="状态" width="120">
-          <template #default="{ row }"><StatusPill :label="outboxState(row.state)" :tone="row.state === 'dead' ? 'warning' : 'info'" /></template>
-        </el-table-column>
-        <el-table-column prop="attempts" label="尝试" width="80" />
-        <el-table-column prop="last_error" label="失败摘要" min-width="260" show-overflow-tooltip />
-        <el-table-column label="更新时间" width="180">
-          <template #default="{ row }">{{ new Date(row.updated_at_ms).toLocaleString() }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="100">
-          <template #default="{ row }">
-            <el-button link :disabled="row.state !== 'dead' || auth.session?.role === 'viewer'" @click="retryDelivery(row)">重试</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
-    </GlassPanel>
-
-    <el-dialog v-model="createDialogVisible" title="新建三方接入" width="560px">
-      <el-form label-position="top">
-        <el-form-item label="应用名称"><el-input v-model="createForm.name" maxlength="255" /></el-form-item>
+    <GlassPanel class="span-8" title="接入应用" subtitle="只维护一个第三方业务应用；HTTP 与 MQTT 单选，也可以保持未集成。">
+      <el-form label-position="top" class="app-form" :disabled="!canManage">
+        <el-form-item label="应用名称">
+          <el-input v-model="form.name" placeholder="例如：园区业务平台" maxlength="128" />
+        </el-form-item>
         <el-form-item label="接入方式">
-          <el-radio-group v-model="createForm.transport">
+          <el-radio-group v-model="transportChoice" @change="handleTransportChange">
+            <el-radio-button value="">未集成</el-radio-button>
             <el-radio-button value="http">HTTP</el-radio-button>
             <el-radio-button value="mqtt">MQTT</el-radio-button>
           </el-radio-group>
+          <div class="field-help">
+            当前接入：{{ transportLabel }}。
+            <template v-if="hasTransportDraft">
+              本次选择：{{ selectedTransportLabel }}（尚未保存）。
+              <template v-if="!form.enabled">未启用应用，当前修改不会保存。</template>
+              <template v-else>保存后启用该接入方式。</template>
+            </template>
+            <template v-else-if="!app?.enabled">选择 HTTP 或 MQTT，并打开“启用应用”后才能保存。</template>
+          </div>
         </el-form-item>
-        <el-form-item label="调用方向">
-          <el-checkbox v-model="createForm.inbound_enabled">第三方调用 Guard</el-checkbox>
-          <el-checkbox v-model="createForm.outbound_enabled">Guard 推送第三方</el-checkbox>
+        <div class="form-grid">
+          <el-form-item label="接收入站命令">
+            <el-switch v-model="form.inbound_enabled" :disabled="!transportChoice" />
+          </el-form-item>
+          <el-form-item label="发送回调 / 事件">
+            <el-switch v-model="form.outbound_enabled" :disabled="!transportChoice" />
+          </el-form-item>
+          <el-form-item label="启用应用">
+            <el-switch v-model="form.enabled" :disabled="!transportChoice" />
+            <div class="field-help">
+              当前已保存：{{ app?.enabled ? '已启用' : '未启用' }}。
+              <template v-if="form.enabled !== (app?.enabled ?? false)">本次修改为{{ form.enabled ? '启用' : '停用' }}，尚未保存。</template>
+              <template v-else-if="transportChoice === 'mqtt'">选择 MQTT 或保存 Runtime 配置不会自动启用业务应用。</template>
+            </div>
+          </el-form-item>
+        </div>
+        <el-form-item label="授权范围">
+          <el-select v-model="form.scopes" multiple filterable collapse-tags placeholder="选择业务权限" :disabled="!transportChoice">
+            <el-option v-for="scope in scopeOptions" :key="scope" :label="scope" :value="scope" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="业务权限 Scope（逗号分隔）">
-          <el-input v-model="scopeText" placeholder="devices:read, streams:write, events:read" />
-        </el-form-item>
+        <div class="form-actions">
+          <el-button type="primary" :loading="saving" :disabled="!canSave" @click="save">
+            {{ app ? '保存应用' : '创建应用' }}
+          </el-button>
+        </div>
       </el-form>
-      <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitIntegration">创建</el-button>
-      </template>
-    </el-dialog>
+    </GlassPanel>
 
-    <el-dialog v-model="credentialDialogVisible" title="创建 HMAC 凭证" width="520px">
-      <el-form label-position="top">
-        <el-form-item label="凭证用途">
-          <el-radio-group v-model="credentialPurpose">
-            <el-radio value="http_inbound_verify">调用 Guard API 验签</el-radio>
-            <el-radio value="http_callback_sign">Guard 回调签名</el-radio>
-          </el-radio-group>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="credentialDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitCredential">创建凭证</el-button>
-      </template>
-    </el-dialog>
+    <GlassPanel class="span-4" title="后续配置" subtitle="接入参数在对应子页面维护。">
+      <div class="next-steps">
+        <el-alert v-if="!transportChoice" title="尚未选择接入方式" description="选择 HTTP 或 MQTT 并保存后，再进入对应配置页面。" type="info" :closable="false" show-icon />
+        <template v-else-if="transportChoice === 'http'">
+          <p>HTTP 接入页面维护 HMAC 凭证、回调策略和事件映射。</p>
+          <el-button type="primary" plain @click="$router.push('/integrations/http')">进入 HTTP 接入</el-button>
+        </template>
+        <template v-else>
+          <p>MQTT 接入页面维护 Broker Runtime、协议版本、账号、Topic 和动作授权。</p>
+          <el-button type="primary" plain @click="$router.push('/integrations/mqtt')">进入 MQTT 接入</el-button>
+        </template>
+        <el-divider />
+        <div class="identity-row"><span>Integration ID</span><code>{{ app?.integration_id ?? '保存后生成' }}</code></div>
+        <div class="identity-row"><span>配置版本</span><strong>{{ app?.config_version ?? 0 }}</strong></div>
+      </div>
+    </GlassPanel>
 
-    <el-dialog v-model="secretDialogVisible" title="请立即保存 Secret" width="600px" :close-on-click-modal="false">
-      <el-alert type="warning" :closable="false" title="Secret 只显示这一次，关闭后无法再次查询。" />
-      <div class="secret-result"><span>Access Key</span><code>{{ createdAccessKey }}</code><span>Secret</span><code>{{ createdSecret }}</code></div>
-      <template #footer><el-button type="primary" @click="secretDialogVisible = false">我已安全保存</el-button></template>
-    </el-dialog>
+    <GlassPanel class="span-12" title="集成主密钥" subtitle="由 Guard 首次启动时随机生成并保存在数据库中；页面不会显示或接收密钥明文。">
+      <div class="master-key-row">
+        <div class="master-key-status">
+          <el-tag :type="masterKey?.configured ? 'success' : 'danger'">
+            {{ masterKey?.configured ? '已初始化' : '不可用' }}
+          </el-tag>
+          <span>版本 {{ masterKey?.key_version ?? '-' }}</span>
+          <span>最近更新 {{ formatTime(masterKey?.updated_at_ms) }}</span>
+          <span>操作人 {{ masterKey?.updated_by ?? '-' }}</span>
+        </div>
+        <el-button type="warning" plain :loading="rotatingKey" :disabled="!canManage || !masterKey?.configured" @click="rotateMasterKey">
+          轮换主密钥
+        </el-button>
+      </div>
+      <el-alert class="master-key-alert" type="warning" :closable="false" show-icon title="轮换会在一个数据库事务内重新加密全部 HTTP 凭证与 MQTT 密码；操作期间相关密钥读写会短暂等待。" />
+    </GlassPanel>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
-import { useRouter } from "vue-router";
-import { useAuthStore } from "@/stores/auth";
-import { ElMessage, ElMessageBox } from "element-plus";
-import GlassPanel from "@/components/GlassPanel.vue";
-import MetricCard from "@/components/MetricCard.vue";
-import StatusPill from "@/components/StatusPill.vue";
-import {
-  createIntegration,
-  createIntegrationCredential,
-  errorMessage,
-  getIntegrationMqttRuntime,
-  listIntegrationCredentials,
-  listIntegrations,
-  listOutbox,
-  revokeIntegrationCredential,
-  retryOutbox,
-  updateIntegration,
-  type IntegrationCredentialInfo,
-  type IntegrationInfo,
-  type IntegrationMqttRuntime,
-  type OutboxInfo,
-} from "@/api/client";
+import { computed, onMounted, reactive, ref } from 'vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
+import GlassPanel from '@/components/GlassPanel.vue';
+import MetricCard from '@/components/MetricCard.vue';
+import { errorMessage, getBusinessIntegration, getIntegrationMasterKey, rotateIntegrationMasterKey, saveBusinessIntegration, type IntegrationInfo, type IntegrationMasterKeyState, type IntegrationTransport } from '@/api/client';
+import { useAuthStore } from '@/stores/auth';
 
-type CredentialRow = IntegrationCredentialInfo & { integrationName: string };
-const router = useRouter();
 const auth = useAuthStore();
-const applications = ref<IntegrationInfo[]>([]);
-const credentials = ref<CredentialRow[]>([]);
-const outbox = ref<OutboxInfo[]>([]);
-const mqttRuntime = ref<IntegrationMqttRuntime | null>(null);
-const createDialogVisible = ref(false);
-const credentialDialogVisible = ref(false);
-const secretDialogVisible = ref(false);
-const submitting = ref(false);
-const selectedIntegration = ref<IntegrationInfo | null>(null);
-const credentialPurpose = ref<IntegrationCredentialInfo["purpose"]>("http_inbound_verify");
-const createdAccessKey = ref("");
-const createdSecret = ref("");
-const scopeText = ref("*");
-const createForm = reactive({ name: "", transport: "http" as "http" | "mqtt", inbound_enabled: true, outbound_enabled: true });
-const activeCredentialCount = computed(() => credentials.value.filter((item) => item.status === "active").length);
-const mqttCount = computed(() => applications.value.filter((item) => item.transport === "mqtt").length);
-const disabledCount = computed(() => applications.value.filter((item) => !item.enabled).length);
+const app = ref<IntegrationInfo | null>(null);
+const transportChoice = ref<IntegrationTransport | ''>('');
+const saving = ref(false);
+const rotatingKey = ref(false);
+const masterKey = ref<IntegrationMasterKeyState | null>(null);
+const form = reactive({ name: '', inbound_enabled: true, outbound_enabled: true, enabled: false, scopes: [] as string[] });
+const scopeOptions = ['devices:read', 'devices:write', 'streams:read', 'streams:write', 'records:read', 'events:read', 'ai:read', 'ai:write'];
+const canManage = computed(() => auth.session?.role === 'admin');
+const transportLabel = computed(() => !app.value?.enabled ? '未集成' : app.value.transport === 'http' ? 'HTTP' : 'MQTT');
+const selectedTransportLabel = computed(() => transportChoice.value === 'http' ? 'HTTP' : transportChoice.value === 'mqtt' ? 'MQTT' : '未集成');
+const hasTransportDraft = computed(() => transportChoice.value !== (app.value?.enabled ? app.value.transport : ''));
+const directionLabel = computed(() => !app.value?.enabled ? '未集成' : app.value.inbound_enabled && app.value.outbound_enabled ? '双向' : app.value.inbound_enabled ? '入站' : app.value.outbound_enabled ? '出站' : '未开启');
+const canSave = computed(() => {
+  if (!form.name.trim()) return false;
+  if (form.enabled) return Boolean(transportChoice.value);
+  if (!app.value?.enabled) return false;
+  return !transportChoice.value || transportChoice.value === app.value.transport;
+});
 
-async function loadData() {
+function requestId(): string { return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`; }
+
+function fill(value: IntegrationInfo | null): void {
+  app.value = value;
+  transportChoice.value = value?.enabled ? value.transport : '';
+  form.name = value?.name ?? '';
+  form.inbound_enabled = value?.inbound_enabled ?? true;
+  form.outbound_enabled = value?.outbound_enabled ?? true;
+  form.enabled = value?.enabled ?? false;
+  form.scopes = [...(value?.scopes ?? [])];
+}
+
+function handleTransportChange(): void {
+  form.enabled = Boolean(
+    transportChoice.value
+    && app.value?.enabled
+    && transportChoice.value === app.value.transport,
+  );
+}
+
+async function load(): Promise<void> {
   try {
-    const [integrations, runtime, records] = await Promise.all([
-      listIntegrations(),
-      getIntegrationMqttRuntime(),
-      listOutbox(100),
-    ]);
-    applications.value = integrations;
-    mqttRuntime.value = runtime;
-    outbox.value = records;
-    const httpApps = applications.value.filter((item) => item.transport === "http");
-    const groups = await Promise.all(httpApps.map(async (item) => (await listIntegrationCredentials(item.integration_id)).map((credential) => ({ ...credential, integrationName: item.name }))));
-    credentials.value = groups.flat();
+    const [response, key] = await Promise.all([getBusinessIntegration(), getIntegrationMasterKey()]);
+    fill(response.integration);
+    masterKey.value = key;
   } catch (error) {
-    ElMessage.error(errorMessage(error, "加载三方接入失败"));
+    ElMessage.error(errorMessage(error, '加载接入应用失败'));
   }
 }
 
-function mqttRuntimeUnavailable(row: IntegrationInfo) {
-  return row.transport === "mqtt" && !mqttRuntime.value?.enabled;
+function formatTime(value?: number): string {
+  return value ? new Date(value).toLocaleString() : '-';
 }
 
-function outboxState(value: OutboxInfo["state"]) {
-  return { pending: "待投递", sending: "投递中", retry_wait: "等待重试", dead: "失败", delivered: "已完成" }[value];
-}
-
-async function retryDelivery(row: OutboxInfo) {
+async function rotateMasterKey(): Promise<void> {
+  if (!masterKey.value) return;
   try {
-    await retryOutbox(row.outbox_id);
-    await loadData();
-    ElMessage.success("投递任务已重新入队");
-  } catch (error) {
-    ElMessage.error(errorMessage(error, "重新投递失败"));
-  }
-}
-
-function directions(row: IntegrationInfo) {
-  return [row.inbound_enabled ? "第三方调用" : "", row.outbound_enabled ? "事件推送" : ""].filter(Boolean);
-}
-
-function expiration(value: number | null) {
-  return value ? new Date(value).toLocaleDateString() : "长期有效";
-}
-
-function purposeLabel(value: IntegrationCredentialInfo["purpose"]) {
-  return value === "http_inbound_verify" ? "HTTP 请求验签" : "HTTP 回调签名";
-}
-
-function maskAccessKey(value: string) {
-  return value.length > 10 ? `${value.slice(0, 7)}••••${value.slice(-4)}` : value;
-}
-
-function openConfig(row: IntegrationInfo) {
-  void router.push(row.transport === "mqtt" ? "/integrations/mqtt" : "/integrations/http");
-}
-
-function openCredential(row: IntegrationInfo) {
-  if (row.transport !== "http") {
-    ElMessage.info("MQTT 使用 Broker TLS、账号与 Topic ACL，不创建 HMAC 凭证");
+    await ElMessageBox.confirm(
+      '确认轮换集成主密钥？Guard 会重新加密现有 HTTP 凭证和 MQTT 密码，密钥明文不会返回页面。',
+      '轮换集成主密钥',
+      { confirmButtonText: '确认轮换', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
     return;
   }
-  selectedIntegration.value = row;
-  credentialDialogVisible.value = true;
-}
-
-async function submitIntegration() {
-  if (!createForm.name.trim() || (!createForm.inbound_enabled && !createForm.outbound_enabled)) {
-    ElMessage.warning("请填写应用名称并至少选择一个调用方向");
-    return;
-  }
-  submitting.value = true;
+  rotatingKey.value = true;
   try {
-    await createIntegration({ ...createForm, name: createForm.name.trim(), enabled: createForm.transport === "http", scopes: scopeText.value.split(",").map((item) => item.trim()).filter(Boolean), expires_at_ms: null });
-    createDialogVisible.value = false;
-    createForm.name = "";
-    await loadData();
-    ElMessage.success("三方接入已创建");
+    masterKey.value = await rotateIntegrationMasterKey(requestId(), masterKey.value.key_version);
+    ElMessage.success('集成主密钥已轮换');
   } catch (error) {
-    ElMessage.error(errorMessage(error, "创建三方接入失败"));
+    ElMessage.error(errorMessage(error, '轮换集成主密钥失败'));
+    masterKey.value = await getIntegrationMasterKey().catch(() => masterKey.value);
   } finally {
-    submitting.value = false;
+    rotatingKey.value = false;
   }
 }
 
-async function submitCredential() {
-  if (!selectedIntegration.value) return;
-  submitting.value = true;
-  try {
-    const result = await createIntegrationCredential(selectedIntegration.value.integration_id, credentialPurpose.value, null);
-    createdAccessKey.value = result.credential.access_key;
-    createdSecret.value = result.secret;
-    credentialDialogVisible.value = false;
-    secretDialogVisible.value = true;
-    await loadData();
-  } catch (error) {
-    ElMessage.error(errorMessage(error, "创建 HMAC 凭证失败"));
-  } finally {
-    submitting.value = false;
-  }
-}
-
-async function revokeCredential(row: CredentialRow) {
-  try {
-    await ElMessageBox.confirm(`确认吊销 ${row.integrationName} 的这条凭证？`, "吊销凭证", { type: "warning" });
-    await revokeIntegrationCredential(row.integration_id, row.credential_id);
-    await loadData();
-    ElMessage.success("凭证已吊销");
-  } catch (error) {
-    if (error !== "cancel" && error !== "close") ElMessage.error(errorMessage(error, "吊销凭证失败"));
-  }
-}
-
-async function toggleIntegration(row: IntegrationInfo, enabled: boolean) {
-  if (enabled && mqttRuntimeUnavailable(row)) {
-    ElMessage.warning("请先在 Guard 配置中启用 MQTT Runtime 并重启服务");
+async function save(): Promise<void> {
+  const current = app.value;
+  if (!form.enabled) {
+    if (!current?.enabled || (transportChoice.value && transportChoice.value !== current.transport)) return;
+    saving.value = true;
+    try {
+      const saved = await saveBusinessIntegration({
+        request_id: requestId(),
+        name: current.name,
+        transport: current.transport,
+        inbound_enabled: current.inbound_enabled,
+        outbound_enabled: current.outbound_enabled,
+        enabled: false,
+        scopes: [...current.scopes],
+        expires_at_ms: current.expires_at_ms,
+        expected_config_version: current.config_version,
+      });
+      fill(saved);
+      ElMessage.success('第三方业务应用已停用');
+    } catch (error) {
+      fill(app.value);
+      ElMessage.error(errorMessage(error, '停用第三方业务应用失败'));
+    } finally {
+      saving.value = false;
+    }
     return;
   }
+  if (!transportChoice.value) return;
+  const targetTransport = transportChoice.value;
+  const switchingTransport = current !== null && current.transport !== targetTransport;
+  const draft = {
+    name: form.name.trim(),
+    inbound_enabled: form.inbound_enabled,
+    outbound_enabled: form.outbound_enabled,
+    scopes: [...form.scopes],
+  };
+
+  if (switchingTransport && current.enabled) {
+    const currentLabel = current.transport === 'http' ? 'HTTP' : 'MQTT';
+    const targetLabel = targetTransport === 'http' ? 'HTTP' : 'MQTT';
+    try {
+      await ElMessageBox.confirm(
+        `当前 ${currentLabel} 应用仍在运行。切换会先停用 ${currentLabel}，再切换并启用 ${targetLabel}。`,
+        '切换接入方式',
+        { confirmButtonText: '确认切换', cancelButtonText: '取消', type: 'warning' },
+      );
+    } catch {
+      return;
+    }
+  }
+
+  saving.value = true;
   try {
-    await updateIntegration(row.integration_id, {
-      name: row.name,
-      inbound_enabled: row.inbound_enabled,
-      outbound_enabled: row.outbound_enabled,
-      enabled,
-      scopes: row.scopes,
-      expires_at_ms: row.expires_at_ms,
-      expected_config_version: row.config_version,
+    let expectedConfigVersion = current?.config_version ?? 0;
+    if (switchingTransport && current.enabled) {
+      const disabled = await saveBusinessIntegration({
+        request_id: requestId(),
+        name: current.name,
+        transport: current.transport,
+        inbound_enabled: current.inbound_enabled,
+        outbound_enabled: current.outbound_enabled,
+        enabled: false,
+        scopes: [...current.scopes],
+        expires_at_ms: current.expires_at_ms,
+        expected_config_version: expectedConfigVersion,
+      });
+      fill(disabled);
+      expectedConfigVersion = disabled.config_version;
+    }
+
+    const saved = await saveBusinessIntegration({
+      request_id: requestId(),
+      name: draft.name,
+      transport: targetTransport,
+      inbound_enabled: draft.inbound_enabled,
+      outbound_enabled: draft.outbound_enabled,
+      enabled: true,
+      scopes: draft.scopes,
+      expires_at_ms: null,
+      expected_config_version: expectedConfigVersion,
     });
-    await loadData();
-    ElMessage.success(enabled ? "接入应用已启用" : "接入应用已停用");
+    fill(saved);
+    ElMessage.success(switchingTransport
+      ? `接入方式已切换为 ${targetTransport === 'http' ? 'HTTP' : 'MQTT'} 并启用`
+      : '接入应用已保存');
   } catch (error) {
-    ElMessage.error(errorMessage(error, "更新接入应用状态失败"));
+    fill(app.value);
+    ElMessage.error(errorMessage(error, '保存接入应用失败'));
+  } finally {
+    saving.value = false;
   }
 }
 
-onMounted(loadData);
+onMounted(load);
 </script>
 
 <style scoped>
-.app-name {
-  display: grid;
-  gap: 5px;
-}
-
-.app-name small {
-  color: var(--faint);
-  font-size: 11px;
-}
-
-.direction-tags {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.runtime-toggle {
-  display: grid;
-  gap: 3px;
-  justify-items: start;
-}
-
-.runtime-toggle small {
-  color: var(--yellow);
-  white-space: nowrap;
-}
-
-.principle-list {
-  display: grid;
-  gap: 10px;
-}
-
-.principle-list > div {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
-  padding: 11px 12px;
-  border: 1px solid rgba(37, 146, 255, 0.24);
-  border-radius: 13px;
-  background: rgba(4, 16, 47, 0.48);
-}
-
-.principle-list > div > span {
-  color: var(--cyan);
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.principle-list p {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-}
-
-.principle-list small {
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.secret-result {
-  display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
-  gap: 12px;
-  margin-top: 18px;
-  align-items: center;
-}
-
-.secret-result span {
-  color: var(--muted);
-}
-
-.secret-result code {
-  padding: 10px 12px;
-  border: 1px solid rgba(37, 146, 255, 0.28);
-  border-radius: 9px;
-  color: #c8f3ff;
-  overflow-wrap: anywhere;
-}
+.app-form { max-width: 760px; }
+.form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.field-help { margin-top: 8px; color: var(--text-muted); font-size: 12px; }
+.form-actions { display: flex; justify-content: flex-end; }
+.next-steps { display: grid; gap: 14px; color: var(--text-secondary); }
+.next-steps p { margin: 0; line-height: 1.7; }
+.identity-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.identity-row code { overflow-wrap: anywhere; color: var(--accent-cyan); }
+.master-key-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.master-key-status { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; color: var(--text-secondary); }
+.master-key-alert { margin-top: 16px; }
+@media (max-width: 760px) { .form-grid { grid-template-columns: 1fr; gap: 0; } }
 </style>

@@ -1,7 +1,9 @@
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use base_rpc::RetryPolicy;
+use parking_lot::RwLock;
 use rumqttc::v5::AsyncClient as AsyncClientV5;
 use rumqttc::v5::mqttbytes::QoS as QoSV5;
 use rumqttc::{AsyncClient, QoS};
@@ -12,7 +14,7 @@ use crate::store::model::{OutboxDestinationKind, OutboxRecord};
 
 #[derive(Clone)]
 pub struct MqttPublisher {
-    client: MqttPublishClient,
+    client: Arc<RwLock<Option<MqttPublishClient>>>,
     retry: RetryPolicy,
 }
 
@@ -24,7 +26,29 @@ pub enum MqttPublishClient {
 
 impl MqttPublisher {
     pub fn new(client: MqttPublishClient, retry: RetryPolicy) -> Self {
-        Self { client, retry }
+        Self {
+            client: Arc::new(RwLock::new(Some(client))),
+            retry,
+        }
+    }
+
+    pub fn disconnected(retry: RetryPolicy) -> Self {
+        Self {
+            client: Arc::new(RwLock::new(None)),
+            retry,
+        }
+    }
+
+    pub fn replace_from(&self, publisher: &Self) {
+        *self.client.write() = publisher.client.read().clone();
+    }
+
+    pub fn disconnect(&self) {
+        *self.client.write() = None;
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.client.read().is_some()
     }
 
     pub fn retry_policy(&self) -> &RetryPolicy {
@@ -37,7 +61,12 @@ impl MqttPublisher {
                 "MQTT publish topic must be concrete".to_string(),
             ));
         }
-        match &self.client {
+        let client = self
+            .client
+            .read()
+            .clone()
+            .ok_or_else(|| GuardError::Conflict("MQTT runtime is not connected".to_string()))?;
+        match client {
             MqttPublishClient::V3(client) => client
                 .publish(topic, QoS::AtLeastOnce, false, payload)
                 .await
