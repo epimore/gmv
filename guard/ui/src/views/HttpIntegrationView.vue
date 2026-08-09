@@ -25,7 +25,7 @@
       :closable="false"
       show-icon
     >
-      请先到 <RouterLink to="/integrations/apps">接入应用</RouterLink> 页面选择并保存 HTTP。
+      请先到 <RouterLink to="/integrations/apps">接入应用</RouterLink> 页面选择 HTTP、启用并保存应用，页面随后会自动进入这里。
     </el-alert>
 
     <GlassPanel class="span-6" title="HTTP 双向接入" subtitle="第三方调用 Guard · Guard 回调第三方">
@@ -514,7 +514,7 @@ const canRetryOutbox = computed(() => auth.session?.role === "operator" || auth.
 async function loadIntegration() {
   try {
     const state = await getBusinessIntegration();
-    currentIntegration.value = state.integration?.transport === "http" ? state.integration : null;
+    currentIntegration.value = state.integration?.enabled && state.integration.transport === "http" ? state.integration : null;
     selectedIntegrationId.value = currentIntegration.value?.integration_id ?? "";
     await loadConfig();
   } catch (error) {

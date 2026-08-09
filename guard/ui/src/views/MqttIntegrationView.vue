@@ -5,22 +5,22 @@
     <MetricCard class="span-3" label="消息质量" :value="`QoS ${runtime.qos}`" trend="At least once" :hint="runtime.retain ? 'Retain 开启' : 'Retain 关闭'" />
     <MetricCard class="span-3" label="文档规格" value="AsyncAPI" trend="随服务生成" hint="Guard 暴露" />
 
-    <GlassPanel v-if="!business || business.transport !== 'mqtt'" class="span-12" title="当前未启用 MQTT 业务接入" subtitle="可以先配置部署级 MQTT Runtime；完成后返回“接入应用”，选择 MQTT、打开“启用应用”并保存。">
+    <GlassPanel v-if="!business?.enabled || business.transport !== 'mqtt'" class="span-12" title="当前未启用 MQTT 业务接入" subtitle="请先在“接入应用”选择 MQTT、打开“启用应用”并保存，页面随后会自动进入这里维护详细配置。">
       <el-button type="primary" @click="$router.push('/integrations/apps')">前往接入应用</el-button>
     </GlassPanel>
 
     <el-alert
-        v-if="business?.transport === 'mqtt'"
+        v-if="business?.enabled && business.transport === 'mqtt'"
         class="span-12"
-        :type="business.enabled ? 'success' : 'warning'"
-        :title="business.enabled ? '第三方业务应用已启用' : 'MQTT 已配置，但第三方业务应用未启用'"
-        :description="business.enabled ? 'Broker 连接状态由下方 Runtime 独立确认。' : '选择 MQTT 或保存 Runtime 只完成配置；请返回“接入应用”打开“启用应用”并保存。'"
+        type="success"
+        title="第三方业务应用已启用"
+        description="Broker Runtime 保存后自动应用；连接状态由下方真实 CONNACK 独立确认，无需返回再次启用。"
         :closable="false"
         show-icon
       />
     <GlassPanel class="span-7" title="MQTT Runtime 配置" subtitle="协议版本、Broker 和凭据保存在 Guard 数据库，保存后由受管 Runtime 动态应用。">
         <el-alert :title="runtimeAlertTitle" :type="runtimeAlertType" :description="runtime.config?.last_error_summary ?? undefined" :closable="false" show-icon />
-        <el-form label-position="top" class="runtime-form" :disabled="!canManage">
+        <el-form label-position="top" class="runtime-form" :disabled="!canManageRuntime">
           <div class="form-grid">
             <el-form-item label="协议版本">
               <el-select v-model="runtimeForm.protocol_version">
@@ -190,6 +190,9 @@ const runtimePassword = ref('');
 const savingRuntime = ref(false);
 const refreshingRuntime = ref(false);
 const canManage = computed(() => auth.session?.role === 'admin');
+const canManageRuntime = computed(() => Boolean(
+  canManage.value && business.value?.enabled && business.value.transport === 'mqtt',
+));
 const protocolLabel = computed(() => runtime.config?.protocol_version === 'v3' ? 'V3.1.1' : runtime.config?.protocol_version === 'v5' ? 'V5.0' : '—');
 const revisionHint = computed(() => runtime.config ? `Desired ${runtime.config.desired_revision} / Active ${runtime.config.active_revision ?? '—'}` : 'Desired / Active');
 const runtimeAlertTitle = computed(() => !runtime.config ? 'MQTT Runtime 尚未配置' : runtime.broker_connected ? '当前配置已成功连接 Broker' : `尚未连接 Broker · ${runtime.config.apply_state}`);
@@ -267,6 +270,7 @@ async function refreshRuntime(): Promise<void> {
 }
 
 async function saveRuntime(): Promise<void> {
+  if (!canManageRuntime.value) return;
   if (!runtimeForm.broker.trim() || !runtimeForm.client_id.trim()) {
     ElMessage.warning('请填写 Broker 和 Client ID');
     return;

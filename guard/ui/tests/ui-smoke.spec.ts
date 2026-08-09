@@ -33,6 +33,7 @@ async function mockAuth(page: Page, initiallyAuthenticated = false, authSession 
     ['/api/v2/leases', []],
     ['/api/v2/integrations/outbox', []],
     ['/api/v2/integrations/master-key', { configured: true, key_version: 1, created_at_ms: 1, updated_by: 'system:init', updated_at_ms: 1 }],
+    ['/api/v2/integrations/mqtt/runtime', { configured: false, broker_connected: false, config: null, connection_scope: 'deployment', qos: 1, retain: false }],
     ['/api/v2/runtime/status', { guard_available: true, streams: 0, running_streams: 0, ai_tasks: 0, running_ai_tasks: 0, ptz_commands: 0 }],
     ['/api/v2/media/transport', { scheme: 'http', http_version: 'http/1.1', multi_view_limit: 6 }],
   ]);
@@ -86,6 +87,12 @@ async function mockAuth(page: Page, initiallyAuthenticated = false, authSession 
   });
   await page.route('**/api/v2/gb28181/devices**', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], total: 0, page: 1, page_size: 20 }) });
+  });
+  await page.route('**/api-docs/openapi.json', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ paths: {}, webhooks: {} }) });
+  });
+  await page.route('**/api-docs/asyncapi.json', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ channels: {} }) });
   });
 }
 
@@ -241,11 +248,27 @@ test('Dashboard 将单次流失败归入业务异常而不是待处理事项', a
   await expect(page.getByText('1 路流失败')).toHaveCount(0);
 });
 
-test('接入应用页面允许 HTTP、MQTT 单选或未集成', async ({ page }) => {
+test('接入应用页面选择并启用 MQTT 后直接进入详细配置', async ({ page }) => {
   await mockAuth(page, true);
-  await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
-    status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
-  }));
+  let integration: Record<string, unknown> | null = null;
+  let savedPayload: Record<string, unknown> | null = null;
+  await page.route('**/api/v2/integrations/business', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ state: integration ? 'ready' : 'unconfigured', integration }),
+      });
+      return;
+    }
+    savedPayload = route.request().postDataJSON() as Record<string, unknown>;
+    integration = {
+      integration_id: 'business-mqtt-1', name: '园区业务平台', transport: 'mqtt',
+      inbound_enabled: true, outbound_enabled: true, enabled: true, scopes: [],
+      expires_at_ms: null, config_version: 1, created_by: 'admin', created_at_ms: 1, updated_at_ms: 1,
+    };
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(integration) });
+  });
   await page.route('**/api/v2/integrations/master-key/rotate', async (route) => {
     expect(route.request().postDataJSON()).toMatchObject({ expected_key_version: 1 });
     await route.fulfill({
@@ -259,27 +282,39 @@ test('接入应用页面允许 HTTP、MQTT 单选或未集成', async ({ page })
   await expect(page.getByText('未集成', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('HTTP', { exact: true })).toBeVisible();
   await expect(page.getByText('MQTT', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: '创建应用' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '保存应用' })).toBeDisabled();
   const inboundSwitch = page.locator('.el-form-item').filter({ hasText: '接收入站命令' }).getByRole('switch');
   const outboundSwitch = page.locator('.el-form-item').filter({ hasText: '发送回调 / 事件' }).getByRole('switch');
+  const enabledSwitch = page.locator('.el-form-item').filter({ hasText: '启用应用' }).getByRole('switch');
   const scopeSelect = page.locator('.el-form-item').filter({ hasText: '授权范围' }).getByRole('combobox');
   await expect(inboundSwitch).toBeDisabled();
   await expect(outboundSwitch).toBeDisabled();
   await expect(scopeSelect).toBeDisabled();
   await page.getByPlaceholder('例如：园区业务平台').fill('园区业务平台');
-  await page.getByText('HTTP', { exact: true }).click();
+  await page.getByText('MQTT', { exact: true }).click();
   await expect(inboundSwitch).toBeEnabled();
   await expect(outboundSwitch).toBeEnabled();
   await expect(scopeSelect).toBeEnabled();
-  await expect(page.getByRole('button', { name: '创建应用' })).toBeDisabled();
+  await expect(enabledSwitch).toBeEnabled();
+  await expect(page.getByText('应用保存后将进入 MQTT 接入页面维护 Broker Runtime。')).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存应用' })).toBeDisabled();
   await expect(page.getByRole('heading', { name: '集成主密钥', level: 2 })).toBeVisible();
   await expect(page.getByText('版本 1')).toBeVisible();
   await page.getByRole('button', { name: '轮换主密钥' }).click();
   await page.getByRole('button', { name: '确认轮换' }).click();
   await expect(page.getByText('版本 2')).toBeVisible();
+  await page.locator('.el-form-item').filter({ hasText: '启用应用' }).locator('.el-switch').click();
+  const saveButton = page.getByRole('button', { name: '保存并进入 MQTT 接入' });
+  await expect(saveButton).toBeEnabled();
+  await saveButton.click();
+
+  await expect.poll(() => savedPayload).toMatchObject({
+    name: '园区业务平台', transport: 'mqtt', enabled: true, expected_config_version: 0,
+  });
+  await expect(page).toHaveURL((url) => url.pathname === '/integrations/mqtt');
 });
 
-test('运行中的 MQTT 应用切换为 HTTP 时必须明确启用后才能保存', async ({ page }) => {
+test('运行中的 MQTT 应用切换为 HTTP 后直接进入详细配置', async ({ page }) => {
   await mockAuth(page, true);
   let integration = {
     integration_id: 'business-app-1', name: '园区业务平台', transport: 'mqtt',
@@ -312,31 +347,48 @@ test('运行中的 MQTT 应用切换为 HTTP 时必须明确启用后才能保�
 
   await page.goto('/integrations/apps');
   const transportMetric = page.locator('.metric-card').filter({ hasText: '配置方式' });
+  const statusMetric = page.locator('.metric-card').filter({ hasText: '接入状态' });
   const enabledFormItem = page.locator('.el-form-item').filter({ hasText: '启用应用' });
   const enabledSwitch = enabledFormItem.getByRole('switch');
-  const saveButton = page.getByRole('button', { name: '保存应用' });
   await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
+  await expect(statusMetric.locator('.metric-value')).toHaveText('待配置');
   await expect(enabledSwitch).toBeChecked();
+  await expect(page.getByRole('button', { name: '保存并进入 MQTT 接入' })).toBeDisabled();
   await page.getByText('HTTP', { exact: true }).click();
   await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
   await expect(page.getByText('本次选择：HTTP（尚未保存）')).toBeVisible();
   await expect(enabledSwitch).not.toBeChecked();
-  await expect(saveButton).toBeDisabled();
+  await expect(page.getByRole('button', { name: '保存应用' })).toBeDisabled();
   await enabledFormItem.locator('.el-switch').click();
+  const saveButton = page.getByRole('button', { name: '保存并进入 HTTP 接入' });
   await expect(saveButton).toBeEnabled();
   await saveButton.click();
-  await expect(page.getByText('当前 MQTT 应用仍在运行。')).toBeVisible();
+  await expect(page.getByText('当前 MQTT 应用仍在运行。切换会先停用 MQTT，再启用 HTTP。')).toBeVisible();
   await page.getByRole('button', { name: '确认切换' }).click();
 
   await expect.poll(() => requests.length).toBe(2);
-  await expect(page.getByText('接入方式已切换为 HTTP 并启用')).toBeVisible();
-  await expect(page.locator('.metric-card').filter({ hasText: '接入状态' }).locator('.metric-value')).toHaveText('已集成');
-  await expect(transportMetric.locator('.metric-value')).toHaveText('HTTP');
-  await expect(page.getByText('已启用', { exact: true }).first()).toBeVisible();
+  await expect(page).toHaveURL((url) => url.pathname === '/integrations/http');
 });
 
-test('已配置 MQTT 应用启用后同步更新已保存状态与顶部卡片', async ({ page }) => {
+test('已停用的 MQTT 应用可重新启用并直接进入详细配置', async ({ page }) => {
   await mockAuth(page, true);
+  await page.route('**/api/v2/integrations/mqtt/runtime', async (route) => route.fulfill({
+    status: 200,
+    contentType: 'application/json',
+    body: JSON.stringify({
+      configured: true,
+      broker_connected: false,
+      config: {
+        protocol_version: 'v5', broker: 'broker.example.test', port: 1883,
+        client_id: 'guard-business', username: null, password_configured: false, tls: false,
+        publish_event_ttl_sec: 86400, desired_revision: 1, active_revision: null,
+        config_version: 1, apply_state: 'DEGRADED', last_error_code: 'connection_failed',
+        last_error_summary: 'connection failed', last_transition_at_ms: 1,
+        updated_by: 'admin', updated_at_ms: 1,
+      },
+      connection_scope: 'deployment', qos: 1, retain: false,
+    }),
+  }));
   let integration = {
     integration_id: 'business-mqtt-1', name: 'MQTT 业务平台', transport: 'mqtt',
     inbound_enabled: true, outbound_enabled: true, enabled: false, scopes: ['devices:read'],
@@ -360,7 +412,7 @@ test('已配置 MQTT 应用启用后同步更新已保存状态与顶部卡片',
   const appSwitchMetric = page.locator('.metric-card').filter({ hasText: '应用开关' });
   const enabledFormItem = page.locator('.el-form-item').filter({ hasText: '启用应用' });
   const enabledSwitch = enabledFormItem.getByRole('switch');
-  const saveButton = page.getByRole('button', { name: '保存应用' });
+  const initialSaveButton = page.getByRole('button', { name: '保存应用' });
   await expect(statusMetric.locator('.metric-value')).toHaveText('未集成');
   await expect(transportMetric.locator('.metric-value')).toHaveText('未集成');
   await expect(appSwitchMetric.locator('.metric-value')).toHaveText('未启用');
@@ -368,17 +420,15 @@ test('已配置 MQTT 应用启用后同步更新已保存状态与顶部卡片',
 
   await page.getByText('MQTT', { exact: true }).click();
   await expect(enabledSwitch).toBeEnabled();
-  await expect(saveButton).toBeDisabled();
+  await expect(initialSaveButton).toBeDisabled();
   await enabledFormItem.locator('.el-switch').click();
   await expect(page.getByText('本次修改为启用，尚未保存。')).toBeVisible();
+  const saveButton = page.getByRole('button', { name: '保存并进入 MQTT 接入' });
   await expect(saveButton).toBeEnabled();
   await saveButton.click();
 
   await expect.poll(() => savedPayload).toMatchObject({ transport: 'mqtt', enabled: true, expected_config_version: 10 });
-  await expect(enabledSwitch).toBeChecked();
-  await expect(statusMetric.locator('.metric-value')).toHaveText('已集成');
-  await expect(transportMetric.locator('.metric-value')).toHaveText('MQTT');
-  await expect(appSwitchMetric.locator('.metric-value')).toHaveText('已启用');
+  await expect(page).toHaveURL((url) => url.pathname === '/integrations/mqtt');
 });
 
 test('停用已启用应用时只保存停用动作并丢弃未启用草稿', async ({ page }) => {
@@ -409,7 +459,7 @@ test('停用已启用应用时只保存停用动作并丢弃未启用草稿', as
   await expect(page.locator('.el-form-item').filter({ hasText: '接收入站命令' }).getByRole('switch')).toBeDisabled();
   await expect(page.locator('.el-form-item').filter({ hasText: '发送回调 / 事件' }).getByRole('switch')).toBeDisabled();
   await expect(page.locator('.el-form-item').filter({ hasText: '授权范围' }).getByRole('combobox')).toBeDisabled();
-  const saveButton = page.getByRole('button', { name: '保存应用' });
+  const saveButton = page.getByRole('button', { name: '停用应用' });
   await expect(saveButton).toBeEnabled();
   await saveButton.click();
 
@@ -419,7 +469,7 @@ test('停用已启用应用时只保存停用动作并丢弃未启用草稿', as
   });
   await expect(page.locator('.metric-card').filter({ hasText: '接入状态' }).locator('.metric-value')).toHaveText('未集成');
   await expect(page.locator('.metric-card').filter({ hasText: '配置方式' }).locator('.metric-value')).toHaveText('未集成');
-  await expect(saveButton).toBeDisabled();
+  await expect(page.getByRole('button', { name: '保存应用' })).toBeDisabled();
 });
 
 test('HTTP 子页面直接使用唯一业务应用且不重复选择', async ({ page }) => {
@@ -630,7 +680,7 @@ test('HTTP 回调映射展示就绪条件并闭环管理投递失败', async ({ 
   await expect(page.getByText('webhook returned HTTP 503')).toHaveCount(0);
 });
 
-test('未集成业务应用时仍可预配置部署级 MQTT Runtime', async ({ page }) => {
+test('未启用 MQTT 应用时详细配置保持只读并引导先选择接入方式', async ({ page }) => {
   await mockAuth(page, true);
   await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
@@ -646,8 +696,9 @@ test('未集成业务应用时仍可预配置部署级 MQTT Runtime', async ({ p
 
   await page.goto('/integrations/mqtt');
   await expect(page.getByText('当前未启用 MQTT 业务接入')).toBeVisible();
+  await expect(page.getByText('请先在“接入应用”选择 MQTT、打开“启用应用”并保存')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'MQTT Runtime 配置' })).toBeVisible();
-  await expect(page.getByRole('button', { name: '保存 Runtime 配置' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '保存 Runtime 配置' })).toBeDisabled();
 });
 
 test('MQTT 子页面展示连接状态、Topic 契约、文档与可靠投递', async ({ page }) => {

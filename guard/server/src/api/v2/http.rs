@@ -5157,15 +5157,6 @@ async fn save_business_integration(
     value.expires_at_ms = request.expires_at_ms;
     value.updated_at_ms = now_ms;
     value.validate(now_ms)?;
-    if value.transport == IntegrationTransport::Mqtt
-        && value.enabled
-        && repository.mqtt_runtime_config().await?.is_none()
-    {
-        return Err(GuardError::InvalidConfig(
-            "configure MQTT runtime before enabling the business integration".to_string(),
-        )
-        .into());
-    }
     let is_new = repository.get(&value.integration_id).await?.is_none();
     repository.upsert(&value).await?;
     if let Some(previous) = switched_from {
@@ -5248,15 +5239,6 @@ async fn create_integration(
     };
     value.validate(now_ms)?;
     let repository = require_integration_repository(&state)?;
-    if value.transport == IntegrationTransport::Mqtt
-        && value.enabled
-        && repository.mqtt_runtime_config().await?.is_none()
-    {
-        return Err(GuardError::InvalidConfig(
-            "configure MQTT runtime before enabling the business integration".to_string(),
-        )
-        .into());
-    }
     if repository.business_integration_id().await?.is_some() || !repository.list().await?.is_empty()
     {
         return Err(GuardError::Conflict(
@@ -5339,15 +5321,6 @@ async fn update_integration(
     value.updated_at_ms = now_ms;
     value.validate(now_ms)?;
     require_business_integration(repository, &integration_id).await?;
-    if value.transport == IntegrationTransport::Mqtt
-        && value.enabled
-        && repository.mqtt_runtime_config().await?.is_none()
-    {
-        return Err(GuardError::InvalidConfig(
-            "configure MQTT runtime before enabling the business integration".to_string(),
-        )
-        .into());
-    }
     repository.upsert(&value).await?;
     append_integration_audit(
         repository,
@@ -5627,6 +5600,17 @@ async fn update_integration_mqtt_runtime(
         return Err(GuardError::InvalidConfig("request_id is required".to_string()).into());
     }
     let repository = require_integration_repository(&state)?;
+    let business = repository.business_integration().await?.ok_or_else(|| {
+        GuardError::Conflict(
+            "enable the MQTT business integration before configuring MQTT runtime".to_string(),
+        )
+    })?;
+    if !business.enabled || business.transport != IntegrationTransport::Mqtt {
+        return Err(GuardError::Conflict(
+            "enable the MQTT business integration before configuring MQTT runtime".to_string(),
+        )
+        .into());
+    }
     let current = repository.mqtt_runtime_config().await?;
     let current_revision = if let Some(current) = &current {
         repository
