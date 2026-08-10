@@ -18,6 +18,17 @@ pub enum MuxerEvent {
     Close(MuxerEnum),
 }
 impl MuxerEvent {
+    pub fn muxer(&self) -> MuxerEnum {
+        match self {
+            Self::Open(kind) => kind.muxer(),
+            Self::Close(muxer) => *muxer,
+        }
+    }
+
+    pub fn is_open(&self) -> bool {
+        matches!(self, Self::Open(_))
+    }
+
     pub fn handle_event(
         self,
         muxer_context: &mut MuxerContext,
@@ -107,4 +118,21 @@ pub enum MuxerKind {
     RtpFrame(RtpFrameLayer),
     RtpPs(RtpPsLayer),
     RtpEnc(RtpEncLayer),
+}
+
+impl MuxerKind {
+    fn muxer(&self) -> MuxerEnum {
+        match self {
+            Self::Flv(_) => MuxerEnum::Flv,
+            Self::Mp4(_) => MuxerEnum::Mp4,
+            Self::DashMp4(_) => MuxerEnum::DashMp4,
+            Self::Ts(_) => MuxerEnum::Ts,
+            Self::FMp4(_) => MuxerEnum::FMp4,
+            Self::HlsMp4(_) => MuxerEnum::HlsMp4,
+            Self::HlsTs(_) => MuxerEnum::HlsTs,
+            Self::RtpFrame(_) => MuxerEnum::RtpFrame,
+            Self::RtpPs(_) => MuxerEnum::RtpPs,
+            Self::RtpEnc(_) => MuxerEnum::RtpEnc,
+        }
+    }
 }

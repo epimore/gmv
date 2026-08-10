@@ -58,6 +58,57 @@ pub fn parse_media_param(ctx: &DemuxerContext) -> MediaParam {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hevc_codec_keeps_hevc_identity_and_decimal_level() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            assert!(!fmt_ctx.is_null());
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            assert!(!stream.is_null());
+            (*stream).avg_frame_rate = AVRational { num: 25, den: 1 };
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_VIDEO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_HEVC;
+            (*codecpar).profile = 1;
+            (*codecpar).level = 63;
+            (*codecpar).width = 640;
+            (*codecpar).height = 360;
+
+            let video = parse_video(codecpar, stream).unwrap();
+
+            assert_eq!(video.codec, "hev1.1.6.L63");
+            avformat_free_context(fmt_ctx);
+        }
+    }
+
+    #[test]
+    fn aac_codec_is_reported_from_asc_when_demuxer_fields_are_missing() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            assert!(!fmt_ctx.is_null());
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+            (*codecpar).extradata = av_malloc(2) as *mut u8;
+            (*codecpar).extradata_size = 2;
+            ptr::copy_nonoverlapping([0x15, 0x88].as_ptr(), (*codecpar).extradata, 2);
+
+            let audio = parse_audio(codecpar).unwrap();
+
+            assert_eq!(audio.codec, "mp4a.40.2");
+            assert_eq!(audio.sample_rate, 8_000);
+            assert_eq!(audio.channels, 1);
+            avformat_free_context(fmt_ctx);
+        }
+    }
+}
+
 unsafe fn parse_video(
     codecpar: *mut AVCodecParameters,
     st: *mut AVStream,
@@ -79,7 +130,11 @@ unsafe fn parse_video(
     let codec = get_video_codec_string(codecpar)?;
 
     // === 4. 验证并修正 codec 字符串 ===
-    let codec = normalize_h264_codec(&codec);
+    let codec = if (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_H264 {
+        normalize_h264_codec(&codec)
+    } else {
+        codec
+    };
 
     // === 5. 估算带宽 ===
     let bandwidth = estimate_video_bandwidth(width, height, frame_rate);
@@ -100,15 +155,36 @@ unsafe fn parse_video(
 }
 
 unsafe fn parse_audio(codecpar: *mut AVCodecParameters) -> Result<Audio, String> {
+    let aac_config = if (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
+        && !(*codecpar).extradata.is_null()
+        && (*codecpar).extradata_size >= 2
+    {
+        let asc =
+            std::slice::from_raw_parts((*codecpar).extradata, (*codecpar).extradata_size as usize);
+        super::codecpar::parse_aac_audio_specific_config(asc)
+    } else {
+        None
+    };
+
     // === 1. 获取采样率 ===
-    let sample_rate = (*codecpar).sample_rate;
+    let sample_rate = if (*codecpar).sample_rate > 0 {
+        (*codecpar).sample_rate
+    } else {
+        aac_config.map(|(sample_rate, _)| sample_rate).unwrap_or(0)
+    };
     if sample_rate <= 0 {
         return Err(format!("Invalid sample rate: {}", sample_rate));
     }
     let sample_rate = sample_rate as u32;
 
     // === 2. 获取声道数 ===
-    let channels = (*codecpar).channels;
+    let channels = if (*codecpar).channels > 0 {
+        (*codecpar).channels
+    } else if (*codecpar).ch_layout.nb_channels > 0 {
+        (*codecpar).ch_layout.nb_channels
+    } else {
+        aac_config.map(|(_, channels)| channels).unwrap_or(0)
+    };
     if channels <= 0 {
         return Err(format!("Invalid channels: {}", channels));
     }
@@ -357,7 +433,7 @@ unsafe fn get_hevc_codec_string(codecpar: *mut AVCodecParameters) -> Result<Stri
         };
 
         let tier = if (*codecpar).profile == 2 { "H" } else { "L" };
-        let codec = format!("hev1.{}.6.{}{:02X}", profile_space, tier, level);
+        let codec = format!("hev1.{}.6.{}{}", profile_space, tier, level);
         debug!("HEVC codec from profile/level: {}", codec);
         Ok(codec)
     } else {

@@ -370,7 +370,7 @@ const videoInfoText = computed(() => [formatVideoCodec(currentSource.value?.code
 const audioInfoText = computed(() => {
   if (currentSource.value?.hasAudio === false) return '无音频';
   if (props.audioCodec) return props.audioCodec.toUpperCase();
-  return currentSource.value?.hasAudio ? '有音频' : '-';
+  return currentSource.value?.hasAudio ? '有音频' : '自动探测';
 });
 const statusViewersText = computed(() => props.viewers === undefined ? statusLabel.value : `${statusLabel.value} · ${props.viewers} 人观看`);
 const playbackRangeText = computed(() => {

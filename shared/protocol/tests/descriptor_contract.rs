@@ -537,6 +537,7 @@ fn stream_output_lifecycle_contract_is_stable() {
         Some(6)
     );
     assert_eq!(field_number("CreateOutputResponse", "output"), Some(4));
+    assert_eq!(field_number("OutputInfo", "failure"), Some(10));
     assert_eq!(field_number("CloseOutputRequest", "stream_id"), Some(3));
     assert_eq!(field_number("StopReceiveRequest", "phase"), Some(4));
     assert_eq!(field_number("StopReceiveRequest", "expected_ssrc"), Some(5));

@@ -55,6 +55,8 @@ use crate::store::model::{
 
 static BROADCAST_OPERATION_SETUP: LazyLock<base::tokio::sync::Mutex<()>> =
     LazyLock::new(|| base::tokio::sync::Mutex::new(()));
+const STREAM_OUTPUT_READY_TIMEOUT: Duration = Duration::from_secs(12);
+const STREAM_OUTPUT_READY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone)]
 pub struct BusinessControl {
@@ -2398,12 +2400,90 @@ impl BusinessControl {
                 true,
             ));
         }
-        let output = response.output.ok_or_else(|| {
+        let mut output = response.output.ok_or_else(|| {
             edge.invalid_response("output_missing");
             GuardError::Conflict("stream create_output returned no output".to_string())
         })?;
-        edge.success();
-        Ok(stream_output_summary(output))
+        let output_id = output.output_id.clone();
+        let deadline = Instant::now() + STREAM_OUTPUT_READY_TIMEOUT;
+        loop {
+            match OutputState::try_from(output.state).unwrap_or(OutputState::Failed) {
+                OutputState::Ready => {
+                    edge.success();
+                    return Ok(stream_output_summary(output));
+                }
+                OutputState::Failed | OutputState::Closed | OutputState::Unspecified => {
+                    let failure = output.failure.take().unwrap_or_else(|| ErrorDetail {
+                        code: "stream_output_create_failed".to_string(),
+                        message: "stream output did not become ready".to_string(),
+                        metadata: HashMap::new(),
+                    });
+                    edge.business_rejection(&failure);
+                    let error = remote_error(
+                        "stream",
+                        "create_output",
+                        failure,
+                        "stream_output_create_failed",
+                        "媒体输出创建失败，已保持原播放",
+                        false,
+                    );
+                    close_failed_stream_output(&mut client, operation_id, stream_id, &output_id)
+                        .await;
+                    return Err(error);
+                }
+                OutputState::Preparing => {}
+            }
+            if Instant::now() >= deadline {
+                close_failed_stream_output(&mut client, operation_id, stream_id, &output_id).await;
+                return Err(user_error(
+                    "stream_output_startup_timeout",
+                    "stream output did not become ready before timeout".to_string(),
+                    "媒体输出启动超时，已保持原播放".to_string(),
+                    true,
+                    detail_pairs([("stream_id", stream_id), ("output_id", output_id.as_str())]),
+                ));
+            }
+            base::tokio::time::sleep(STREAM_OUTPUT_READY_POLL).await;
+            let query_edge = RpcEdge::new(
+                "stream",
+                "get_playback_endpoints",
+                &stream.identity.node_id,
+                operation_id,
+                stream_id,
+            );
+            let response = query_edge.response(
+                client
+                    .get_playback_endpoints(GetPlaybackEndpointsRequest {
+                        stream_id: stream_id.to_string(),
+                    })
+                    .await,
+            );
+            let response = match response {
+                Ok(response) => response,
+                Err(error) => {
+                    close_failed_stream_output(&mut client, operation_id, stream_id, &output_id)
+                        .await;
+                    return Err(error);
+                }
+            };
+            let Some(next) = response
+                .outputs
+                .into_iter()
+                .find(|candidate| candidate.output_id == output_id)
+            else {
+                query_edge.invalid_response("output_missing");
+                close_failed_stream_output(&mut client, operation_id, stream_id, &output_id).await;
+                return Err(user_error(
+                    "stream_output_disappeared",
+                    "stream output disappeared while preparing".to_string(),
+                    "媒体输出创建失败，已保持原播放".to_string(),
+                    false,
+                    detail_pairs([("stream_id", stream_id), ("output_id", output_id.as_str())]),
+                ));
+            };
+            query_edge.success();
+            output = next;
+        }
     }
 
     pub async fn list_stream_outputs(
@@ -3250,6 +3330,30 @@ fn broadcast_operation_summary(operation: BroadcastOperationRecord) -> Broadcast
     }
 }
 
+async fn close_failed_stream_output(
+    client: &mut StreamControlClient<tonic::transport::Channel>,
+    operation_id: &str,
+    stream_id: &str,
+    output_id: &str,
+) {
+    let cleanup_operation_id = format!("cleanup-{operation_id}");
+    let result = client
+        .close_output(CloseOutputRequest {
+            operation: Some(OperationRef {
+                operation_id: cleanup_operation_id.clone(),
+                idempotency_key: cleanup_operation_id,
+            }),
+            output_id: output_id.to_string(),
+            stream_id: stream_id.to_string(),
+        })
+        .await;
+    if let Err(error) = result {
+        base::log::warn!(
+            "stream output cleanup failed: action=close_failed_output, outcome=failed, stream_id={stream_id}, output_id={output_id}, error={error}"
+        );
+    }
+}
+
 async fn connect_rpc(uri: &str, name: &str) -> GuardResult<tonic::transport::Channel> {
     let mut config = base_rpc::RpcChannelConfig::new(uri.to_string());
     if uri.starts_with("https://") {
@@ -3479,6 +3583,15 @@ fn remote_user_message(code: &str, message: &str, fallback: &str) -> String {
     if let Some(error_code) = GmvGuardErrorCode::from_api_code(code) {
         return error_code.out_msg().to_string();
     }
+    match code {
+        "output_format_unsupported" => {
+            return "当前编码不支持所选播放格式，已保持原播放".to_string();
+        }
+        "output_muxer_failed" => {
+            return "所选播放格式生成失败，已保持原播放".to_string();
+        }
+        _ => {}
+    }
     if message.trim().is_empty() {
         fallback.to_string()
     } else {
@@ -3647,6 +3760,7 @@ mod tests {
             video_codec: "hvc1.1.6.L123.B0".to_string(),
             audio_codec: "mp4a.40.2".to_string(),
             mime_codec: "video/mp4; codecs=\"hvc1.1.6.L123.B0, mp4a.40.2\"".to_string(),
+            failure: None,
         });
 
         assert_eq!(summary.state, StreamOutputState::Ready);
@@ -3764,6 +3878,43 @@ mod tests {
             details.get("remote_code").map(String::as_str),
             Some("session_business_failed")
         );
+    }
+
+    #[test]
+    fn remote_error_preserves_stream_profile_mismatch() {
+        let error = ErrorDetail {
+            code: "session_business_failed".to_string(),
+            message: "BizError: [code = 4003, msg = \"STREAM_PROFILE_MISMATCH\"]".to_string(),
+            metadata: HashMap::from([(
+                META_GLOBAL_CODE.to_string(),
+                (GmvGuardErrorCode::StreamProfileMismatch as u16).to_string(),
+            )]),
+        };
+
+        let error = remote_error(
+            "session",
+            "start_live",
+            error,
+            "stream_start_failed",
+            "视频流创建失败，请检查设备在线状态和媒体服务",
+            false,
+        );
+
+        let GuardError::UserVisible {
+            code,
+            user_message,
+            retryable,
+            ..
+        } = error
+        else {
+            panic!("expected user-visible error");
+        };
+        assert_eq!(code, "stream_profile_mismatch");
+        assert_eq!(
+            user_message,
+            GmvGuardErrorCode::StreamProfileMismatch.out_msg()
+        );
+        assert!(!retryable);
     }
 
     #[test]

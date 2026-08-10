@@ -10,10 +10,10 @@ use rsmpeg::ffi::{
     AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat,
     AVPixelFormat_AV_PIX_FMT_NV12, AVPixelFormat_AV_PIX_FMT_YUV420P,
     AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational, AVSampleFormat,
-    AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream, av_free,
-    av_malloc, av_rescale_q, avcodec_alloc_context3, avcodec_close, avcodec_find_decoder,
-    avcodec_free_context, avcodec_open2, avcodec_parameters_from_context,
-    avcodec_parameters_to_context,
+    AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream,
+    av_channel_layout_default, av_free, av_malloc, av_rescale_q, avcodec_alloc_context3,
+    avcodec_close, avcodec_find_decoder, avcodec_free_context, avcodec_open2,
+    avcodec_parameters_from_context, avcodec_parameters_to_context,
 };
 use std::ptr;
 
@@ -326,6 +326,67 @@ fn parse_aac_asc_from_adts(adts: &[u8]) -> Option<[u8; 2]> {
 
     Some([asc0, asc1])
 }
+
+pub(super) fn parse_aac_audio_specific_config(asc: &[u8]) -> Option<(i32, i32)> {
+    const SAMPLE_RATES: [i32; 13] = [
+        96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000, 22_050, 16_000, 12_000, 11_025,
+        8_000, 7_350,
+    ];
+
+    if asc.len() < 2 {
+        return None;
+    }
+    let sample_rate_index = (((asc[0] & 0x07) << 1) | (asc[1] >> 7)) as usize;
+    let sample_rate = *SAMPLE_RATES.get(sample_rate_index)?;
+    let channel_config = (asc[1] >> 3) & 0x0f;
+    let channels = match channel_config {
+        1..=6 => i32::from(channel_config),
+        7 => 8,
+        _ => return None,
+    };
+    Some((sample_rate, channels))
+}
+
+#[cfg(test)]
+mod aac_audio_specific_config_tests {
+    use super::*;
+
+    #[test]
+    fn parses_sample_rate_and_channels() {
+        assert_eq!(
+            parse_aac_audio_specific_config(&[0x11, 0x90]),
+            Some((48_000, 2))
+        );
+        assert_eq!(
+            parse_aac_audio_specific_config(&[0x15, 0x88]),
+            Some((8_000, 1))
+        );
+    }
+
+    #[test]
+    fn repairs_aac_parameters_from_extradata() {
+        unsafe {
+            let format = rsmpeg::ffi::avformat_alloc_context();
+            assert!(!format.is_null());
+            let stream = rsmpeg::ffi::avformat_new_stream(format, ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+            (*codecpar).extradata = av_malloc(2) as *mut u8;
+            (*codecpar).extradata_size = 2;
+            ptr::copy_nonoverlapping([0x15, 0x88].as_ptr(), (*codecpar).extradata, 2);
+
+            repair_audio_stream_info(stream, &MediaExt::default());
+
+            assert_eq!((*codecpar).sample_rate, 8_000);
+            assert_eq!((*codecpar).channels, 1);
+            assert_eq!((*codecpar).ch_layout.nb_channels, 1);
+            rsmpeg::ffi::avformat_free_context(format);
+        }
+    }
+}
+
 fn extract_aac_asc(pkt: &AVPacket) -> Option<[u8; 2]> {
     unsafe {
         let data = std::slice::from_raw_parts(pkt.data, pkt.size as usize);
@@ -503,9 +564,25 @@ unsafe fn repair_audio_stream_info(stream: *mut AVStream, media_ext: &MediaExt) 
         (*par).codec_id
     );
 
+    let aac_config = if (*par).codec_id == AVCodecID_AV_CODEC_ID_AAC
+        && !(*par).extradata.is_null()
+        && (*par).extradata_size >= 2
+    {
+        let asc = std::slice::from_raw_parts((*par).extradata, (*par).extradata_size as usize);
+        parse_aac_audio_specific_config(asc)
+    } else {
+        None
+    };
+
     // === 1. 修复采样率 ===
     if (*par).sample_rate <= 0 {
-        if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
+        if let Some((sample_rate, _)) = aac_config {
+            (*par).sample_rate = sample_rate;
+            debug!(
+                "Set AAC sample_rate from AudioSpecificConfig: {} Hz",
+                sample_rate
+            );
+        } else if let Some(ref sr_str) = media_ext.audio_params.sample_rate {
             if let Ok(mut sr) = sr_str.parse::<i32>() {
                 if sr > 0 && sr < 1000 {
                     sr *= 1000;
@@ -523,12 +600,22 @@ unsafe fn repair_audio_stream_info(stream: *mut AVStream, media_ext: &MediaExt) 
     // === 2. 修复声道数 ===
     if (*par).channels <= 0 {
         //设置默认值
-        (*par).channels = 1;
+        (*par).channels = aac_config
+            .map(|(_, channels)| channels)
+            .filter(|channels| *channels > 0)
+            .or_else(|| {
+                (media_ext.audio_params.channel_count > 0)
+                    .then_some(media_ext.audio_params.channel_count as i32)
+            })
+            .unwrap_or(1);
     }
 
     // === 3. 修复声道布局 ===
     if (*par).channel_layout == 0 {
-        (*par).channel_layout = 4;
+        (*par).channel_layout = rsmpeg::ffi::av_get_default_channel_layout((*par).channels) as u64;
+    }
+    if (*par).ch_layout.nb_channels <= 0 {
+        av_channel_layout_default(&mut (*par).ch_layout, (*par).channels);
     }
 
     // === 4. 修复采样格式 ===

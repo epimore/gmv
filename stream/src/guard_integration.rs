@@ -710,8 +710,10 @@ impl OutputRuntime {
                 .map(|metadata| metadata.audio_codec.clone())
                 .unwrap_or_default(),
             mime_codec: metadata
-                .map(|metadata| metadata.mime_codec)
+                .as_ref()
+                .map(|metadata| metadata.mime_codec.clone())
                 .unwrap_or_default(),
+            failure: metadata.and_then(|metadata| metadata.failure),
         }
     }
 }
@@ -1753,6 +1755,8 @@ impl StreamControlAdapter {
                 .filter(|output| {
                     self.media_tx.is_none()
                         || Register::is_live_output_open(&output.stream_id, &output.output_type)
+                        || Register::output_media_metadata(&output.stream_id, &output.output_type)
+                            .is_some_and(|metadata| metadata.state == OutputRuntimeState::Failed)
                 })
                 .map(|output| output.info(self.media_tx.is_some()))
                 .collect(),

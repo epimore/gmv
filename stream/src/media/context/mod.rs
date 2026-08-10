@@ -7,7 +7,7 @@ use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
-use crate::media::context::format::muxer::MuxerContext;
+use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
 use crate::media::context::utils::codecpar::repair_basic_stream_info;
 use crate::media::context::utils::extradata::{self, dump_stream_info};
 use crate::media::context::utils::time_scale::{
@@ -27,6 +27,7 @@ use base::err::BaseErrorCode;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{GlobalError, GlobalResult};
 use gmv_domain::info::media_info_ext::MediaExt;
+use gmv_protocol::common::v1::ErrorDetail;
 use log::{debug, error, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
@@ -635,59 +636,85 @@ impl MediaContext {
         pkt: &AVPacket,
         ts: u64,
     ) -> GlobalResult<()> {
-        let muxer = &mut self.muxer_context;
-        if let Some(context) = &mut muxer.flv {
+        let flv_error = if let Some(context) = &mut self.muxer_context.flv {
             match context {
-                FlvSupperCtx::FlvCtx(context) => {
-                    context.write_packet(pkt, ts)?;
-                }
-                FlvSupperCtx::H265FlvCtx(context) => {
-                    context.write_packet(pkt, ts)?;
-                }
+                FlvSupperCtx::FlvCtx(context) => context.write_packet(pkt, ts).err(),
+                FlvSupperCtx::H265FlvCtx(context) => context.write_packet(pkt, ts).err(),
             }
+        } else {
+            None
+        };
+        if let Some(error) = flv_error {
+            self.fail_muxer(MuxerEnum::Flv, "output_muxer_failed", error)?;
         }
-        if let Some(context) = &mut muxer.mp4 {
-            context.write_packet(pkt, ts)?;
+        let mp4_error = self
+            .muxer_context
+            .mp4
+            .as_mut()
+            .and_then(|context| context.write_packet(pkt, ts).err());
+        if let Some(error) = mp4_error {
+            self.fail_muxer(MuxerEnum::Mp4, "output_muxer_failed", error)?;
         }
-        if muxer.ts.is_some() {
+        if self.muxer_context.ts.is_some() {
             warn!("stream packet mux ignored unsupported ts output");
         }
-        if muxer.rtp_frame.is_some() {
+        if self.muxer_context.rtp_frame.is_some() {
             warn!("stream packet mux ignored unsupported rtp-frame output");
         }
-        if muxer.rtp_ps.is_some() {
+        if self.muxer_context.rtp_ps.is_some() {
             warn!("stream packet mux ignored unsupported rtp-ps output");
         }
-        if muxer.rtp_enc.is_some() {
+        if self.muxer_context.rtp_enc.is_some() {
             warn!("stream packet mux ignored unsupported rtp-enc output");
         }
-        if muxer.hls_ts.is_some() {
+        if self.muxer_context.hls_ts.is_some() {
             warn!("stream packet mux ignored unsupported hls-ts output");
         }
-        if let Some(context) = &mut muxer.fmp4 {
+        let fmp4_error = if let Some(context) = &mut self.muxer_context.fmp4 {
             if epoch == ProcessResult::Discontinuity {
                 context.epoch = Instant::now();
             }
-            context.write_packet(pkt, ts)?;
+            context.write_packet(pkt, ts).err()
+        } else {
+            None
+        };
+        if let Some(error) = fmp4_error {
+            self.fail_muxer(MuxerEnum::FMp4, "output_muxer_failed", error)?;
         }
-        if let Some(context) = &mut muxer.dash_mp4 {
+        let dash_error = if let Some(context) = &mut self.muxer_context.dash_mp4 {
             if epoch == ProcessResult::Discontinuity {
                 context.epoch = Instant::now();
             }
-            context.write_packet(pkt, ts)?;
+            context.write_packet(pkt, ts).err()
+        } else {
+            None
+        };
+        if let Some(error) = dash_error {
+            self.fail_muxer(MuxerEnum::DashMp4, "output_muxer_failed", error)?;
         }
         if epoch == ProcessResult::Discontinuity {
-            if let Some(mut context) = muxer.hls_mp4.take() {
+            if let Some(mut context) = self.muxer_context.hls_mp4.take() {
                 let pkt_tx = context.pkt_tx.clone();
                 context.flush();
                 let next_segment_seq = context.next_segment_seq();
-                let mut context = HlsFmp4Context::init_context(&self.demuxer_context, pkt_tx)?;
-                context.set_segment_seq(next_segment_seq);
-                muxer.hls_mp4 = Some(context);
+                match HlsFmp4Context::init_context(&self.demuxer_context, pkt_tx) {
+                    Ok(mut context) => {
+                        context.set_segment_seq(next_segment_seq);
+                        self.muxer_context.hls_mp4 = Some(context);
+                    }
+                    Err(error) => {
+                        self.fail_muxer(MuxerEnum::HlsMp4, "output_muxer_failed", error)?;
+                    }
+                }
             }
         }
-        if let Some(context) = &mut muxer.hls_mp4 {
-            context.write_packet(pkt, ts)?;
+        let hls_error = self
+            .muxer_context
+            .hls_mp4
+            .as_mut()
+            .and_then(|context| context.write_packet(pkt, ts).err());
+        if let Some(error) = hls_error {
+            self.fail_muxer(MuxerEnum::HlsMp4, "output_muxer_failed", error)?;
         }
         self.sync_output_readiness()?;
         Ok(())
@@ -775,7 +802,26 @@ impl MediaContext {
                 warn!("stream context ignored unsupported codec event");
             }
             ContextEvent::Muxer(m_event) => {
-                m_event.handle_event(&mut self.muxer_context, &self.demuxer_context)?;
+                let muxer = m_event.muxer();
+                let refresh_result = if m_event.is_open() {
+                    match self.codec_context.as_ref() {
+                        Some(codec) => unsafe {
+                            codec.refresh_output_parameters(&mut self.demuxer_context)
+                        },
+                        None => Ok(()),
+                    }
+                } else {
+                    Ok(())
+                };
+                if let Err(error) = refresh_result {
+                    self.fail_muxer(muxer, "output_format_unsupported", error)?;
+                    return Ok(());
+                }
+                if let Err(error) =
+                    m_event.handle_event(&mut self.muxer_context, &self.demuxer_context)
+                {
+                    self.fail_muxer(muxer, "output_format_unsupported", error)?;
+                }
             }
             ContextEvent::Filter(_) => {
                 warn!("stream context ignored unsupported filter event");
@@ -785,6 +831,49 @@ impl MediaContext {
             }
         }
         Ok(())
+    }
+
+    fn fail_muxer(
+        &mut self,
+        muxer: MuxerEnum,
+        code: &str,
+        error_value: GlobalError,
+    ) -> GlobalResult<()> {
+        match muxer {
+            MuxerEnum::Flv => self.muxer_context.flv = None,
+            MuxerEnum::Mp4 => self.muxer_context.mp4 = None,
+            MuxerEnum::Ts => self.muxer_context.ts = None,
+            MuxerEnum::FMp4 => self.muxer_context.fmp4 = None,
+            MuxerEnum::HlsMp4 => self.muxer_context.hls_mp4 = None,
+            MuxerEnum::DashMp4 => self.muxer_context.dash_mp4 = None,
+            MuxerEnum::HlsTs => self.muxer_context.hls_ts = None,
+            MuxerEnum::RtpFrame => self.muxer_context.rtp_frame = None,
+            MuxerEnum::RtpPs => self.muxer_context.rtp_ps = None,
+            MuxerEnum::RtpEnc => self.muxer_context.rtp_enc = None,
+        }
+        let Some(stream_id) = self.stream_id.as_deref() else {
+            warn!(
+                "stream output failed without stream identity: muxer={muxer:?}, error={error_value}"
+            );
+            return Ok(());
+        };
+        let mut metadata = std::collections::HashMap::new();
+        if let Some(profile) = self.actual_media_profile.as_ref() {
+            metadata.insert("video_codec".to_string(), profile.video_codec.clone());
+            metadata.insert("audio_codec".to_string(), profile.audio_codec.clone());
+        }
+        warn!(
+            "stream output failed: action=output_mux, outcome=failed, stream_id={stream_id}, muxer={muxer:?}, code={code}, error={error_value}"
+        );
+        Register::mark_muxer_failed(
+            stream_id,
+            muxer,
+            ErrorDetail {
+                code: code.to_string(),
+                message: error_value.to_string(),
+                metadata,
+            },
+        )
     }
 }
 
@@ -806,6 +895,7 @@ fn set_output_ready(
             video_codec: profile.video_codec.clone(),
             audio_codec: profile.audio_codec.clone(),
             mime_codec: output_mime_codec(output_type, profile),
+            failure: None,
         },
     )?;
     if !updated {

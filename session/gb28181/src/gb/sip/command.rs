@@ -13,6 +13,7 @@ use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
 use base::log::{debug, error, warn};
 use base::net::state::Protocol;
 use gmv_domain::info::media_info_ext::MediaExt;
+use gmv_nodec::error_code::GmvErrorCode;
 use gmv_pjsip::gb28181::sdp::build_play_sdp;
 use gmv_pjsip::gb28181::xml::{
     CONTENT_TYPE_MANSRTSP, build_mansrtsp_seek_body, build_mansrtsp_speed_body,
@@ -1356,7 +1357,7 @@ where
         )
         .await;
         return Err(GlobalError::new_biz_error(
-            BaseErrorCode::InvalidState.code(),
+            GmvErrorCode::StreamProfileMismatch as u16,
             "STREAM_PROFILE_MISMATCH",
             |msg| {
                 error!(

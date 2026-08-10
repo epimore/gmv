@@ -102,6 +102,21 @@ describe("GmvPlayerView make-before-break", () => {
     wrapper.unmount();
   });
 
+  it("shows runtime detection when audio metadata is not yet known", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{ protocol: "flv", url: "http://127.0.0.1/live.flv", codec: "h264" }],
+        capabilities: { audio: true },
+        controls: { items: ["audio", "info"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+
+    expect(wrapper.get(".media-info-panel").text()).toContain("音频自动探测");
+    wrapper.unmount();
+  });
+
   it("reconnects when audio metadata changes on the same URL", async () => {
     const url = "http://127.0.0.1/live.flv";
     const wrapper = mount(GmvPlayerView, {

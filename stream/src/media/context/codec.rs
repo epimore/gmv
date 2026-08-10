@@ -86,6 +86,20 @@ impl CodecContext {
         }
     }
 
+    pub unsafe fn refresh_output_parameters(
+        &self,
+        demuxer: &mut DemuxerContext,
+    ) -> GlobalResult<()> {
+        let Some(audio) = self.audio.as_ref() else {
+            return Ok(());
+        };
+        unsafe {
+            let fmt_ctx = demuxer.avio.fmt_ctx;
+            let stream = *(*fmt_ctx).streams.add(audio.stream_index as usize);
+            export_aac_parameters(stream, &audio.encoder)
+        }
+    }
+
     pub fn handles(&self, packet: &AVPacket) -> bool {
         self.audio
             .as_ref()
@@ -216,18 +230,7 @@ impl AacTranscoder {
                 )
             })?;
 
-            let ret = avcodec_parameters_from_context(codecpar, encoder.as_ptr());
-            if ret < 0 {
-                return Err(transcode_error(
-                    "AUDIO_TRANSCODE_INIT_FAILED",
-                    format!("export AAC parameters failed: {ret}"),
-                ));
-            }
-            (*codecpar).codec_tag = 0;
-            (*stream).time_base = AVRational {
-                num: 1,
-                den: AAC_SAMPLE_RATE,
-            };
+            export_aac_parameters(stream, &encoder)?;
 
             Ok(Self {
                 stream_index,
@@ -443,6 +446,28 @@ impl AacTranscoder {
     }
 }
 
+unsafe fn export_aac_parameters(
+    stream: *mut rsmpeg::ffi::AVStream,
+    encoder: &AVCodecContext,
+) -> GlobalResult<()> {
+    unsafe {
+        let codecpar = (*stream).codecpar;
+        let ret = avcodec_parameters_from_context(codecpar, encoder.as_ptr());
+        if ret < 0 {
+            return Err(transcode_error(
+                "AUDIO_TRANSCODE_INIT_FAILED",
+                format!("export AAC parameters failed: {ret}"),
+            ));
+        }
+        (*codecpar).codec_tag = 0;
+        (*stream).time_base = AVRational {
+            num: 1,
+            den: AAC_SAMPLE_RATE,
+        };
+        Ok(())
+    }
+}
+
 fn unsupported(code: &str, detail: String) -> GlobalError {
     GlobalError::new_biz_error(
         BaseErrorCode::Unsupported.code(),
@@ -457,4 +482,60 @@ fn transcode_error(code: &str, detail: String) -> GlobalError {
         &format!("{code}: {detail}"),
         |message| error!("{message}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ptr;
+
+    use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
+    use rsmpeg::ffi::{
+        AVMediaType_AVMEDIA_TYPE_AUDIO, avformat_alloc_context, avformat_new_stream,
+    };
+
+    use super::*;
+    use crate::media::context::format::demuxer::{AvioResource, ParamRepairState};
+
+    #[test]
+    fn refresh_output_parameters_restores_aac_after_demuxer_codec_update() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            assert!(!fmt_ctx.is_null());
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_PCM_ALAW;
+            (*codecpar).sample_rate = 8_000;
+            (*codecpar).channels = 1;
+            (*codecpar).channel_layout = 4;
+            (*codecpar).bits_per_coded_sample = 8;
+            (*codecpar).block_align = 1;
+            (*stream).time_base = AVRational { num: 1, den: 8_000 };
+
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx,
+                    io_buf: ptr::null_mut(),
+                    avio_ctx: ptr::null_mut(),
+                },
+                params: Vec::<ParamRepairState>::new(),
+            };
+            let mut codec = CodecContext::init(
+                None,
+                Some(TranscodeConfig {
+                    audio_codec: Some(OutputAudioCodec::Aac),
+                }),
+            )
+            .unwrap();
+            codec.prepare(&mut demuxer).unwrap();
+            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_AAC);
+
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_PCM_ALAW;
+            codec.refresh_output_parameters(&mut demuxer).unwrap();
+
+            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_AAC);
+            assert_eq!((*stream).time_base.den, AAC_SAMPLE_RATE);
+        }
+    }
 }

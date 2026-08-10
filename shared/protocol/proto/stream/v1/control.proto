@@ -222,6 +222,7 @@ message OutputInfo {
   string video_codec = 7;
   string audio_codec = 8;
   string mime_codec = 9;
+  gmv.common.v1.ErrorDetail failure = 10;
 }
 
 enum OutputState {

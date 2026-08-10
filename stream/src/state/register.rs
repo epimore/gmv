@@ -40,6 +40,7 @@ use gmv_domain::info::obj::{
 use gmv_domain::info::output::{
     DashFmp4Output, HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, OutputEnum, OutputKind,
 };
+use gmv_protocol::common::v1::ErrorDetail;
 use log::{error, info, warn};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -445,12 +446,13 @@ pub enum OutputRuntimeState {
     Closed,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct OutputMediaMetadata {
     pub state: OutputRuntimeState,
     pub video_codec: String,
     pub audio_codec: String,
     pub mime_codec: String,
+    pub failure: Option<ErrorDetail>,
 }
 
 fn output_media_metadata_is_valid(metadata: &OutputMediaMetadata) -> bool {
@@ -1829,6 +1831,30 @@ impl Register {
             .and_then(|meta| meta.output_media_metadata.get(output_type).cloned())
     }
 
+    pub fn mark_muxer_failed(
+        stream_id: &str,
+        muxer: MuxerEnum,
+        failure: ErrorDetail,
+    ) -> GlobalResult<()> {
+        let (output_enum, output_types): (OutputEnum, &[&str]) = match muxer {
+            MuxerEnum::Flv => (OutputEnum::HttpFlv, &["flv"]),
+            MuxerEnum::FMp4 => (OutputEnum::DashFmp4, &["fmp4"]),
+            MuxerEnum::HlsMp4 => (OutputEnum::HlsFmp4, &["hls", "ll_hls"]),
+            _ => return Ok(()),
+        };
+        let arc = Self::get().inner.clone();
+        let stream_id: Arc<str> = Arc::from(stream_id);
+        let Some(mut meta) = arc.stream_metadata_map.get_mut(&stream_id) else {
+            return Ok(());
+        };
+        let meta = &mut *meta;
+        if close_output_layers(&mut meta.output, &mut meta.converter.muxer, output_enum) {
+            Self::cancel_first_subscriber(&arc, stream_id, output_enum, meta.lifecycle_generation);
+        }
+        mark_output_media_metadata_failed(&mut meta.output_media_metadata, output_types, &failure);
+        Ok(())
+    }
+
     pub fn set_output_media_metadata_by_ssrc(
         ssrc: u32,
         output_type: &str,
@@ -1898,7 +1924,8 @@ impl Register {
                 |msg| error!("{msg}: stream_id={stream_id}, output_type={output_type}"),
             ));
         }
-        if meta.output.put_if_absent(output_kind.clone()) {
+        let opened = meta.output.put_if_absent(output_kind.clone());
+        if opened {
             meta.converter.muxer.put_if_absent(&output_kind);
             let open = match output_kind {
                 OutputKind::HttpFlv(_) => meta.converter.muxer.flv.clone().map(MuxerKind::Flv),
@@ -1920,9 +1947,14 @@ impl Register {
                 meta.out_idle_timeout,
             );
         }
-        meta.output_media_metadata
-            .entry(output_type.to_string())
-            .or_default();
+        if opened {
+            meta.output_media_metadata
+                .insert(output_type.to_string(), OutputMediaMetadata::default());
+        } else {
+            meta.output_media_metadata
+                .entry(output_type.to_string())
+                .or_default();
+        }
         let base = Self::build_base_stream_info(
             &meta,
             arc.server_conf.name.clone(),
@@ -2401,6 +2433,24 @@ fn update_output_media_metadata_if_present(
     true
 }
 
+fn mark_output_media_metadata_failed(
+    metadata_by_type: &mut HashMap<String, OutputMediaMetadata>,
+    output_types: &[&str],
+    failure: &ErrorDetail,
+) {
+    for output_type in output_types {
+        let Some(metadata) = metadata_by_type.get_mut(*output_type) else {
+            continue;
+        };
+        let mut output_failure = failure.clone();
+        output_failure
+            .metadata
+            .insert("output_type".to_string(), (*output_type).to_string());
+        metadata.state = OutputRuntimeState::Failed;
+        metadata.failure = Some(output_failure);
+    }
+}
+
 fn update_actual_media_profile_if_present(
     stream_metadata_map: &DashMap<Arc<str>, StreamMetadata>,
     stream_id: &str,
@@ -2419,8 +2469,8 @@ mod unknown_stream_tests {
         ActualMediaProfile, ContextEvent, MuxerEnum, MuxerEvent, OutputMediaMetadata,
         OutputRuntimeState, RtpChannel, StreamMetadata, UNKNOWN_STREAM_COOLDOWN_MS,
         UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, close_output_layers,
-        live_output_contract, output_media_metadata_is_valid, publish_muxer_event,
-        stream_config_ready, update_actual_media_profile_if_present,
+        live_output_contract, mark_output_media_metadata_failed, output_media_metadata_is_valid,
+        publish_muxer_event, stream_config_ready, update_actual_media_profile_if_present,
         update_output_media_metadata_if_present,
     };
     use crate::state::layer::muxer_layer::MuxerLayer;
@@ -2430,6 +2480,8 @@ mod unknown_stream_tests {
     use base::net::state::Protocol;
     use gmv_domain::info::media_info_ext::MediaExt;
     use gmv_domain::info::output::{HlsFmp4Output, HlsPlaylistProfile, OutputKind};
+    use gmv_protocol::common::v1::ErrorDetail;
+    use std::collections::HashMap;
     use std::net::SocketAddr;
     use std::sync::Arc;
     use std::sync::atomic::Ordering;
@@ -2495,6 +2547,31 @@ mod unknown_stream_tests {
         assert!(output_media_metadata_is_valid(
             &OutputMediaMetadata::default()
         ));
+    }
+
+    #[test]
+    fn shared_hls_muxer_failure_marks_each_logical_output() {
+        let mut metadata = HashMap::from([
+            ("hls".to_string(), OutputMediaMetadata::default()),
+            ("ll_hls".to_string(), OutputMediaMetadata::default()),
+        ]);
+        mark_output_media_metadata_failed(
+            &mut metadata,
+            &["hls", "ll_hls"],
+            &ErrorDetail {
+                code: "output_format_unsupported".to_string(),
+                message: "unsupported codec".to_string(),
+                metadata: HashMap::new(),
+            },
+        );
+
+        for output_type in ["hls", "ll_hls"] {
+            let output = &metadata[output_type];
+            assert_eq!(output.state, OutputRuntimeState::Failed);
+            let failure = output.failure.as_ref().unwrap();
+            assert_eq!(failure.code, "output_format_unsupported");
+            assert_eq!(failure.metadata["output_type"], output_type);
+        }
     }
 
     #[test]

@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use gmv_guard_server::api::v2::control::{
     BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
 };
 use gmv_guard_server::api::v2::model::StreamSummaryState;
 use gmv_guard_server::core::{
-    ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState,
+    ConnectionState, GuardError, HealthState, LeaseState, NodeIdentity, NodeKind, RouteState,
+    SchedulingState,
 };
 use gmv_guard_server::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
 use gmv_guard_server::operation::{OperationService, OperationStatus};
@@ -14,14 +17,14 @@ use gmv_guard_server::outbox::OutboxRepository;
 use gmv_guard_server::registry::{RegisterRequest, RegistryService};
 use gmv_guard_server::store::InMemoryGuardStore;
 use gmv_guard_server::store::model::{
-    EndpointModeRecord, EndpointRecord, HostMetricsRecord, NodeRecord,
+    EndpointModeRecord, EndpointRecord, HostMetricsRecord, LeaseRecord, NodeRecord, RouteRecord,
 };
 use gmv_protocol::avai::v1::avai_control_server::{AvaiControl, AvaiControlServer};
 use gmv_protocol::avai::v1::{
     AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
     QueryCapabilitiesRequest, QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
 };
-use gmv_protocol::common::v1::PageResponse;
+use gmv_protocol::common::v1::{ErrorDetail, PageResponse};
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
 use gmv_protocol::session::v1::{
     CloudRecordingResponse, ControlPtzRequest, ControlPtzResponse, CreateCloudRecordingRequest,
@@ -50,8 +53,8 @@ use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamContr
 use gmv_protocol::stream::v1::{
     CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
     ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
-    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransportState,
-    QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransportState, OutputInfo,
+    OutputState, QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
     ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
     StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
     StreamJsonResponse, StreamState, StreamUnitResponse,
@@ -387,7 +390,7 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             });
             let _stream = base::tokio::spawn(async move {
                 tonic::transport::Server::builder()
-                    .add_service(StreamControlServer::new(FakeStream))
+                    .add_service(StreamControlServer::new(FakeStream::default()))
                     .serve(stream_addr)
                     .await
                     .unwrap();
@@ -589,6 +592,65 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
             assert_eq!(stream.stream_id, "live-op-live-rpc");
             assert_eq!(stream.node_id, "session-rpc");
             assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000/live-op-live-rpc");
+            store
+                .insert_lease(LeaseRecord {
+                    lease_id: "lease-output-test".to_string(),
+                    route_id: "route-output-test".to_string(),
+                    resource_id: stream.stream_id.clone(),
+                    stream_type: "live".to_string(),
+                    node_id: "stream-rpc".to_string(),
+                    instance_id: "stream-inst".to_string(),
+                    idempotency_key: "lease-output-test".to_string(),
+                    constraints: HashMap::new(),
+                    endpoints: vec![],
+                    state: LeaseState::Confirmed,
+                    expires_at_ms: 10_000,
+                })
+                .unwrap();
+            store.upsert_route(RouteRecord {
+                route_id: "route-output-test".to_string(),
+                resource_id: stream.stream_id.clone(),
+                node_id: "stream-rpc".to_string(),
+                instance_id: "stream-inst".to_string(),
+                state: RouteState::Running,
+                desired_generation: 1,
+                observed_generation: 1,
+                observed_sequence: 1,
+            });
+            let output = control
+                .create_stream_output(
+                    "op-output-ready",
+                    &stream.stream_id,
+                    "fmp4",
+                    "aac",
+                    "viewer-output-ready",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                output.state,
+                gmv_guard_server::api::v2::model::StreamOutputState::Ready
+            );
+
+            let error = control
+                .create_stream_output(
+                    "op-output-failed",
+                    &stream.stream_id,
+                    "fmp4",
+                    "fail",
+                    "viewer-output-failed",
+                )
+                .await
+                .unwrap_err();
+            match error {
+                GuardError::UserVisible {
+                    code, user_message, ..
+                } => {
+                    assert_eq!(code, "output_format_unsupported");
+                    assert_eq!(user_message, "当前编码不支持所选播放格式，已保持原播放");
+                }
+                other => panic!("unexpected output failure: {other:?}"),
+            }
             let second_viewer = control
                 .start_live("op-live-rpc-viewer-2", "device-1", "channel-1")
                 .await
@@ -1422,8 +1484,11 @@ impl SessionControl for FakeSession {
     }
 }
 
-#[derive(Debug, Clone)]
-struct FakeStream;
+#[derive(Debug, Clone, Default)]
+struct FakeStream {
+    output_queries: Arc<AtomicUsize>,
+    fail_output: Arc<AtomicBool>,
+}
 
 #[tonic::async_trait]
 impl StreamControl for FakeStream {
@@ -1484,13 +1549,55 @@ impl StreamControl for FakeStream {
 
     async fn create_output(
         &self,
-        _request: tonic::Request<CreateOutputRequest>,
+        request: tonic::Request<CreateOutputRequest>,
     ) -> Result<tonic::Response<CreateOutputResponse>, tonic::Status> {
+        let request = request.into_inner();
+        self.output_queries.store(0, Ordering::Release);
+        self.fail_output
+            .store(request.audio_codec == "fail", Ordering::Release);
         Ok(tonic::Response::new(CreateOutputResponse {
             output_id: "out".to_string(),
             endpoints: vec![],
             error: None,
-            output: None,
+            output: Some(OutputInfo {
+                output_id: "out".to_string(),
+                stream_id: request.stream_id,
+                output_type: request.output_type,
+                endpoint: "http://127.0.0.1/out.fmp4".to_string(),
+                state: OutputState::Preparing as i32,
+                subscription_id: request.subscription_id,
+                ..Default::default()
+            }),
+        }))
+    }
+
+    async fn get_playback_endpoints(
+        &self,
+        request: tonic::Request<GetPlaybackEndpointsRequest>,
+    ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        self.output_queries.fetch_add(1, Ordering::AcqRel);
+        let failed = self.fail_output.load(Ordering::Acquire);
+        Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
+            endpoints: vec![],
+            outputs: vec![OutputInfo {
+                output_id: "out".to_string(),
+                stream_id: request.stream_id,
+                output_type: "fmp4".to_string(),
+                endpoint: "http://127.0.0.1/out.fmp4".to_string(),
+                state: if failed {
+                    OutputState::Failed as i32
+                } else {
+                    OutputState::Ready as i32
+                },
+                subscription_id: "viewer-output".to_string(),
+                failure: failed.then(|| ErrorDetail {
+                    code: "output_format_unsupported".to_string(),
+                    message: "pcm_alaw is not supported in MP4".to_string(),
+                    metadata: HashMap::new(),
+                }),
+                ..Default::default()
+            }],
         }))
     }
 
@@ -1512,16 +1619,6 @@ impl StreamControl for FakeStream {
         Ok(tonic::Response::new(ReleaseSubscriptionOutputsResponse {
             closed_output_ids: vec![],
             error: None,
-        }))
-    }
-
-    async fn get_playback_endpoints(
-        &self,
-        _request: tonic::Request<GetPlaybackEndpointsRequest>,
-    ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
-        Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
-            endpoints: vec![],
-            outputs: vec![],
         }))
     }
 

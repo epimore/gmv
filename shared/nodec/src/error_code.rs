@@ -23,6 +23,7 @@ base::define_errors! {
         StreamInputTimeout => (4000, "设备未在限定时间内推流，请检查设备网络和编码配置", retryable = true),
         PtzRejected => (4001, "云台控制未被设备接受，请确认通道支持云台"),
         SnapshotRejected => (4002, "抓拍请求未被设备接受，请确认设备在线且支持抓拍"),
+        StreamProfileMismatch => (4003, "设备未切换到所选码流，请确认设备支持该主/辅码流档位"),
     }
 }
 
@@ -52,6 +53,7 @@ impl GmvErrorCode {
             Self::StreamInputTimeout => "stream_input_timeout",
             Self::PtzRejected => "ptz_rejected",
             Self::SnapshotRejected => "snapshot_rejected",
+            Self::StreamProfileMismatch => "stream_profile_mismatch",
         }
     }
 
@@ -80,7 +82,26 @@ impl GmvErrorCode {
             "stream_input_timeout" => Some(Self::StreamInputTimeout),
             "ptz_failed" | "ptz_rejected" => Some(Self::PtzRejected),
             "snapshot_failed" | "snapshot_rejected" => Some(Self::SnapshotRejected),
+            "stream_profile_mismatch" => Some(Self::StreamProfileMismatch),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GmvErrorCode;
+
+    #[test]
+    fn stream_profile_mismatch_has_stable_api_contract() {
+        let code = GmvErrorCode::StreamProfileMismatch;
+
+        assert_eq!(code as u16, 4003);
+        assert_eq!(code.api_code(), "stream_profile_mismatch");
+        assert_eq!(
+            GmvErrorCode::from_api_code(code.api_code()).map(|code| code as u16),
+            Some(4003)
+        );
+        assert!(!code.retryable());
     }
 }

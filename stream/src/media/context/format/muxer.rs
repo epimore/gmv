@@ -16,7 +16,7 @@ use base::serde::{Deserialize, Serialize};
 use gmv_domain::info::output::OutputEnum;
 use rsmpeg::ffi::{AVCodecID_AV_CODEC_ID_HEVC, AVMediaType_AVMEDIA_TYPE_VIDEO};
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone, Eq, PartialEq)]
 #[serde(crate = "base::serde")]
 pub enum MuxerEnum {
     Flv,

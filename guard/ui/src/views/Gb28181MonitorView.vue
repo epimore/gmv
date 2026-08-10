@@ -1241,14 +1241,14 @@ watch(pausedPlaybackPresenceKey, (key) => {
 });
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
-  const hasAudio = streamHasAudio(lastStream.value);
+  const audioState = streamAudioState(lastStream.value);
   return {
     ptz: channel ? canPtz(channel) : false,
     presets: false,
     snapshot: true,
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
-    audio: !!channel && hasAudio,
+    audio: !!channel && audioState !== false,
     streamSwitch: false,
     streamProfile: !!channel && lastAction.value !== '历史回放',
     aiOverlay: false,
@@ -1258,7 +1258,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const channel = selectedChannel.value;
   const playback = lastAction.value === '历史回放';
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
-  if (streamHasAudio(lastStream.value)) items.splice(1, 0, 'audio');
+  if (streamAudioState(lastStream.value) !== false) items.splice(1, 0, 'audio');
   if (playback && channel && canPlayback(channel)) {
     items.splice(1, 0, 'playbackClip');
     items.push('timeline');
@@ -1290,15 +1290,15 @@ const playerSources = computed<GmvSource[]>(() => {
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
   const codec = streamCodec(lastStream.value);
-  const hasAudio = streamHasAudio(lastStream.value);
+  const audioState = streamAudioState(lastStream.value);
   return [{
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: streamMimeCodec(lastStream.value, codec, hasAudio),
-    hasAudio,
+    mimeCodec: streamMimeCodec(lastStream.value, codec, audioState === true),
+    hasAudio: audioState,
     rateMode: protocol === 'mp4' ? 'local-file' : lastAction.value === '历史回放' ? 'remote-stream' : 'disabled',
-    label: streamSourceLabel(codec, hasAudio),
+    label: streamSourceLabel(codec, audioState),
     priority: 1,
   }];
 });
@@ -1406,14 +1406,14 @@ function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && 
 function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
 function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
 function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
-  const hasAudio = cell.sources.some((source) => source.hasAudio);
+  const mayHaveAudio = cell.sources.some((source) => source.hasAudio !== false);
   return {
     ptz: cell.mode === 'live' && canPtz(cell.channel),
     presets: false,
     snapshot: true,
     record: false,
     playback: cell.mode === 'playback' && canPlayback(cell.channel),
-    audio: hasAudio,
+    audio: mayHaveAudio,
     streamSwitch: cell.sources.length > 1,
     streamProfile: cell.mode === 'live',
     aiOverlay: false,
@@ -1455,7 +1455,11 @@ function streamAudioCodec(stream?: StreamSummary) {
   const codec = (stream?.audio_codec || '').trim().toLowerCase();
   return codec && !['none', 'unknown', 'null'].includes(codec) ? codec : undefined;
 }
-function streamHasAudio(stream?: StreamSummary) { return !!streamAudioCodec(stream); }
+function streamAudioState(stream?: StreamSummary): boolean | undefined {
+  const codec = (stream?.audio_codec || '').trim().toLowerCase();
+  if (!codec || ['unknown', 'null'].includes(codec)) return undefined;
+  return codec !== 'none';
+}
 function fmp4MimeCodec(codec?: GmvCodec, hasAudio = false) {
   const audioCodec = hasAudio ? ', mp4a.40.2' : '';
   if (codec === 'h264') return `video/mp4; codecs="avc1.42E01E${audioCodec}"`;
@@ -1466,8 +1470,9 @@ function streamMimeCodec(stream: StreamSummary | undefined, codec?: GmvCodec, ha
   const actual = stream?.mime_codec?.trim();
   return actual || fmp4MimeCodec(codec, hasAudio);
 }
-function streamSourceLabel(codec: GmvCodec | undefined, hasAudio: boolean) {
-  return `默认${hasAudio ? '音视频' : '静音'} · ${codec?.toUpperCase() || 'AUTO'}`;
+function streamSourceLabel(codec: GmvCodec | undefined, hasAudio?: boolean) {
+  const audioLabel = hasAudio === undefined ? '音频自动探测' : hasAudio ? '音视频' : '纯视频';
+  return `${audioLabel} · ${codec?.toUpperCase() || 'AUTO'}`;
 }
 function formatTime(value: number) {
   return formatDateTime(value);
@@ -1518,15 +1523,15 @@ function streamSources(stream?: StreamSummary, mode: MultiMode = 'live'): GmvSou
   if (!endpoint) return [];
   const protocol = streamProtocol(endpoint);
   const codec = streamCodec(stream);
-  const hasAudio = streamHasAudio(stream);
+  const audioState = streamAudioState(stream);
   return [{
     protocol,
     codec,
     url: endpoint,
-    mimeCodec: streamMimeCodec(stream, codec, hasAudio),
-    hasAudio,
+    mimeCodec: streamMimeCodec(stream, codec, audioState === true),
+    hasAudio: audioState,
     rateMode: protocol === 'mp4' ? 'local-file' : mode === 'playback' ? 'remote-stream' : 'disabled',
-    label: streamSourceLabel(codec, hasAudio),
+    label: streamSourceLabel(codec, audioState),
     priority: 1,
   }];
 }
@@ -2604,9 +2609,9 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       output_type: previousType,
       output_switching: false,
       status: cell.sources.length ? 'playing' : 'error',
-      error: cell.sources.length ? undefined : errorMessage(error, '切换播放方式失败'),
+      error: cell.sources.length ? undefined : errorMessage(error, '切换播放方式失败，已保持原播放'),
     });
-    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败'));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败，已保持原播放'));
   } finally {
     if (multiOutputAborts.get(cell.key) === controller) multiOutputAborts.delete(cell.key);
   }
@@ -2672,9 +2677,9 @@ async function handleMultiStreamProfileChange(event: { index: number; payload: {
   } catch (error) {
     const current = multiCells.value.find((item) => item.key === cell.key);
     if (current?.profile_generation === generation) {
-      upsertMultiCell({ ...current, profile_switching: false, error: errorMessage(error, '切换主辅码流失败') });
+      upsertMultiCell({ ...current, profile_switching: false, error: errorMessage(error, '切换主辅码流失败，已保持原播放') });
     }
-    if (!isAbortError(error)) ElMessage.error(errorMessage(error, `${cell.title} 切换主辅码流失败`));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, `${cell.title} 切换主辅码流失败，已保持原播放`));
   }
 }
 
@@ -2710,7 +2715,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
       error: undefined,
     });
     await releaseViewerStream(profilePending.target).catch(() => undefined);
-    ElMessage.error(`切换主辅码流失败：${event.payload.message}`);
+    ElMessage.error(`切换主辅码流失败，已恢复原播放：${event.payload.message}`);
     return;
   }
   const pending = cell?.pending_switch;
@@ -2734,7 +2739,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
     status: 'reconnecting',
     error: undefined,
   });
-  ElMessage.error(`切换播放方式失败：${event.payload.message}`);
+  ElMessage.error(`切换播放方式失败，已恢复原播放：${event.payload.message}`);
 }
 
 async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
@@ -3004,7 +3009,7 @@ async function handleSingleOutputTypeChange(value: string) {
   } catch (error) {
     singleMediaOperation.value = undefined;
     singleOutputSwitching.value = false;
-    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败'));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换播放方式失败，已保持原播放'));
   } finally {
     if (singleOutputAbort === controller) singleOutputAbort = undefined;
   }
@@ -3064,7 +3069,7 @@ async function handleSingleStreamProfileChange(event: { profile: StreamProfile }
     lastStream.value = target;
   } catch (error) {
     if (generation === singleProfileGeneration) singleProfileSwitching.value = false;
-    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换主辅码流失败'));
+    if (!isAbortError(error)) ElMessage.error(errorMessage(error, '切换主辅码流失败，已保持原播放'));
   } finally {
     if (singleProfileAbort === controller) singleProfileAbort = undefined;
   }
@@ -3094,7 +3099,7 @@ async function handleSinglePlaybackError(event: { message: string }) {
     singleProfileSwitching.value = false;
     lastStream.value = profilePending.source;
     await releaseViewerStream(profilePending.target).catch(() => undefined);
-    ElMessage.error(`切换主辅码流失败：${event.message}`);
+    ElMessage.error(`切换主辅码流失败，已恢复原播放：${event.message}`);
     return;
   }
   const pending = singlePendingSwitch.value;
@@ -3107,7 +3112,7 @@ async function handleSinglePlaybackError(event: { message: string }) {
   singlePendingSwitch.value = undefined;
   singleOutputSwitching.value = false;
   lastStream.value = { ...stream, endpoint: pending.previous_endpoint };
-  ElMessage.error(`切换播放方式失败：${event.message}`);
+  ElMessage.error(`切换播放方式失败，已恢复原播放：${event.message}`);
 }
 
 async function handleSinglePlaybackSwitchCancel() {
