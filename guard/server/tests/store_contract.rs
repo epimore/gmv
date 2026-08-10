@@ -2,7 +2,8 @@ use gmv_guard_server::auth::{Role, Secret};
 use gmv_guard_server::core::GuardConfig;
 use gmv_guard_server::store::migration::{
     MYSQL_0003, MYSQL_0003_COLUMNS, MYSQL_0003_INDEXES, MYSQL_0004_COLUMNS, MYSQL_0004_INDEXES,
-    MYSQL_0007, SQLITE_0003, SQLITE_0004, SQLITE_0007, migration_pairs,
+    MYSQL_0007, MYSQL_0008, MYSQL_0009, SQLITE_0003, SQLITE_0004, SQLITE_0007, SQLITE_0008,
+    SQLITE_0009, migration_pairs,
 };
 
 #[test]
@@ -19,6 +20,26 @@ fn master_key_migration_drops_unsupported_legacy_ciphertext() {
         assert!(migration.contains("DELETE FROM guard_mqtt_runtime_state"));
         assert!(migration.contains("DELETE FROM guard_mqtt_runtime_revision"));
         assert!(migration.contains("DELETE FROM guard_integration_credential"));
+    }
+}
+
+#[test]
+fn mqtt_runtime_schema_cleanup_removes_duplicate_protocol_source() {
+    for migration in [MYSQL_0008, SQLITE_0008] {
+        assert!(
+            migration.contains("ALTER TABLE guard_integration_mqtt DROP COLUMN protocol_version")
+        );
+    }
+}
+
+#[test]
+fn integration_schema_consolidation_removes_derived_tables() {
+    for migration in [MYSQL_0009, SQLITE_0009] {
+        assert!(migration.contains("ADD COLUMN slot VARCHAR(32) NULL"));
+        assert!(migration.contains("integration_slot.integration_id"));
+        assert!(migration.contains("DROP TABLE guard_integration_mqtt"));
+        assert!(migration.contains("DROP TABLE guard_integration_slot"));
+        assert!(migration.contains("REFERENCES guard_integration(slot)"));
     }
 }
 
@@ -68,11 +89,9 @@ fn mysql_and_sqlite_migrations_stay_compatible() {
         "guard_integration",
         "guard_integration_credential",
         "guard_integration_http",
-        "guard_integration_mqtt",
         "guard_integration_mapping",
         "guard_integration_audit",
         "guard_integration_delivery",
-        "guard_integration_slot",
         "guard_integration_master_key",
         "guard_mqtt_runtime_revision",
         "guard_mqtt_runtime_state",

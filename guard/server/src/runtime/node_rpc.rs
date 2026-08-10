@@ -420,8 +420,8 @@ fn finish_control_stream(
         }
         ControlStreamEnd::RemoteEof => {
             let disconnected = registry.disconnect_if_current(&owner.identity, owner.generation);
-            base::log::warn!(
-                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=remote_eof, reason=unexpected_remote_eof, disconnected={}",
+            base::log::info!(
+                "guard control stream ended: node_id={}, instance_id={}, generation={}, outcome=remote_eof, reason=peer_closed, disconnected={}",
                 owner.identity.node_id,
                 owner.identity.instance_id,
                 owner.generation,

@@ -75,7 +75,6 @@ export interface MediaOperationSummary<T = unknown> {
 }
 export interface MediaTransportCapability { scheme: 'http' | 'https'; http_version: 'http/1.1' | 'h2'; multi_view_limit: number }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
-export interface RuntimeStatus { guard_available: boolean; streams: number; running_streams: number; ai_tasks: number; running_ai_tasks: number; ptz_commands: number }
 export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean; expires_at_ms: number | null }
 export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean; expires_at_ms: number | null }
 export interface UpdateProfilePayload { nickname?: string; password?: string }
@@ -114,7 +113,6 @@ async function requestAt<T>(url: string, init: RequestInit = {}, redirectOnUnaut
 const request = <T>(path: string, init: RequestInit = {}, redirectOnUnauthorized = true, timeoutMs = 0) => requestAt<T>('/api/v2' + path, init, redirectOnUnauthorized, timeoutMs);
 export const getOpenApiDocument = () => requestAt<Record<string, unknown>>('/api-docs/openapi.json');
 export const getAsyncApiDocument = () => requestAt<Record<string, unknown>>('/api-docs/asyncapi.json');
-export const getIntegrationManifest = () => requestAt<Record<string, unknown>>('/api-docs/manifest.json');
 
 export function errorMessage(error: unknown, fallback: string): string {
   if (error instanceof ApiError) return error.userMessage || fallback;
@@ -152,27 +150,24 @@ export const getBusinessIntegration = () => request<BusinessIntegrationState>('/
 export const saveBusinessIntegration = (payload: SaveBusinessIntegrationPayload) => request<IntegrationInfo>('/integrations/business', { method: 'POST', body: JSON.stringify(payload) });
 export const getIntegrationMasterKey = () => request<IntegrationMasterKeyState>('/integrations/master-key');
 export const rotateIntegrationMasterKey = (requestId: string, expectedKeyVersion: number) => request<IntegrationMasterKeyState>('/integrations/master-key/rotate', { method: 'POST', body: JSON.stringify({ request_id: requestId, expected_key_version: expectedKeyVersion }) });
-export const updateIntegration = (integrationId: string, payload: Omit<IntegrationInfo, 'integration_id' | 'transport' | 'created_by' | 'created_at_ms' | 'updated_at_ms' | 'config_version'> & { expected_config_version: number }) => request<IntegrationInfo>('/integrations/' + encodeURIComponent(integrationId), { method: 'POST', body: JSON.stringify(payload) });
 export const listIntegrationCredentials = (integrationId: string) => request<IntegrationCredentialInfo[]>('/integrations/' + encodeURIComponent(integrationId) + '/credentials');
 export const createIntegrationCredential = (integrationId: string, purpose: IntegrationCredentialInfo['purpose'], expiresAtMs: number | null) => request<CreatedIntegrationCredential>('/integrations/' + encodeURIComponent(integrationId) + '/credentials', { method: 'POST', body: JSON.stringify({ purpose, expires_at_ms: expiresAtMs }) });
 export const revokeIntegrationCredential = (integrationId: string, credentialId: string) => request<void>('/integrations/' + encodeURIComponent(integrationId) + '/credentials/' + encodeURIComponent(credentialId) + '/revoke', { method: 'POST', body: '{}' });
 export const revealIntegrationCredential = (integrationId: string, credentialId: string, password: string) => request<RevealedIntegrationCredential>('/integrations/' + encodeURIComponent(integrationId) + '/credentials/' + encodeURIComponent(credentialId) + '/reveal', { method: 'POST', body: JSON.stringify({ password }) });
 export const getIntegrationMqttConfig = (integrationId: string) => request<IntegrationMqttConfig>('/integrations/' + encodeURIComponent(integrationId) + '/mqtt');
-export const getIntegrationMqttRuntime = () => request<IntegrationMqttRuntime>('/integrations/mqtt/runtime');
+export const getIntegrationMqttRuntime = () => request<IntegrationMqttRuntime>('/integrations/business/mqtt/runtime');
 export const saveIntegrationMqttRuntime = (payload: SaveMqttRuntimePayload) => request<MqttRuntimeConfig>('/integrations/business/mqtt/runtime', { method: 'POST', body: JSON.stringify(payload) });
 export const getIntegrationHttpConfig = (integrationId: string) => request<IntegrationHttpConfig>('/integrations/' + encodeURIComponent(integrationId) + '/http');
 export const saveIntegrationHttpConfig = (integrationId: string, payload: Omit<IntegrationHttpConfig, 'integration_id' | 'updated_at_ms'>) => request<IntegrationHttpConfig>('/integrations/' + encodeURIComponent(integrationId) + '/http', { method: 'POST', body: JSON.stringify(payload) });
 export const listIntegrationMappings = (integrationId: string) => request<IntegrationMappingInfo[]>('/integrations/' + encodeURIComponent(integrationId) + '/mappings');
 export const saveIntegrationMapping = (integrationId: string, payload: Omit<IntegrationMappingInfo, 'mapping_id' | 'integration_id' | 'created_at_ms' | 'updated_at_ms'> & { mapping_id?: string }) => request<IntegrationMappingInfo>('/integrations/' + encodeURIComponent(integrationId) + '/mappings', { method: 'POST', body: JSON.stringify(payload) });
 export const listStreams = () => request<StreamSummary[]>('/streams');
-export const stopStream = (streamId: string) => request<StreamSummary>('/streams/' + streamId + '/stop', { method: 'POST', body: '{}' });
 function streamMonitorParams(sessionNodeId: string, query: StreamMonitorQuery): URLSearchParams { const params = new URLSearchParams({ session_node_id: sessionNodeId }); for (const [key, value] of Object.entries(query)) if (value?.trim()) params.set(key, value.trim()); return params; }
 export function listActiveStreamMonitor(sessionNodeId: string, query: StreamMonitorQuery, page = 1, pageSize = 20): Promise<ActiveStreamDialogPage> { const params = streamMonitorParams(sessionNodeId, query); const state = params.get('state'); params.delete('state'); if (state) params.set('dialog_state', state); params.set('page', String(page)); params.set('page_size', String(pageSize)); return request<ActiveStreamDialogPage>('/gb28181/streams?' + params); }
 export function listStreamHistoryMonitor(sessionNodeId: string, query: StreamMonitorQuery, page = 1, pageSize = 20): Promise<StreamHistoryMonitorPage> { const params = streamMonitorParams(sessionNodeId, query); params.set('page', String(page)); params.set('page_size', String(pageSize)); return request<StreamHistoryMonitorPage>('/gb28181/stream-history?' + params); }
 export const getActiveStreamManagement = (sessionNodeId: string, streamId: string) => request<ActiveStreamManagementInfo>('/gb28181/streams/' + encodeURIComponent(streamId) + '/management?session_node_id=' + encodeURIComponent(sessionNodeId));
 export const stopMonitoredStream = (sessionNodeId: string, streamId: string, requestId: string, stopReason: string) => request<{ stream_id: string; state: 'stopping' | 'stopped'; session_node_id: string; session_instance_id: string }>('/gb28181/streams/' + encodeURIComponent(streamId) + '/stop', { method: 'POST', body: JSON.stringify({ session_node_id: sessionNodeId, request_id: requestId, stop_reason: stopReason }) });
 export const releaseStream = (streamId: string, subscriptionId: string, requestId: string) => request<StreamSummary>('/streams/' + encodeURIComponent(streamId) + '/release', { method: 'POST', body: JSON.stringify({ request_id: requestId, subscription_id: subscriptionId }) });
-export const setStreamPlaybackSpeed = (streamId: string, speedRate: number) => request<{ accepted: boolean; speed_rate: number }>('/streams/' + encodeURIComponent(streamId) + '/speed', { method: 'POST', body: JSON.stringify({ speed_rate: speedRate }) });
 export interface PlaybackControlResponse { accepted: boolean; generation: number }
 export interface PlaybackPresenceHeartbeatItem { playback_id: string; stream_id: string; subscription_id: string; generation: number }
 export interface PlaybackPresenceHeartbeatResult { playback_id: string; stream_id: string; accepted: boolean; terminal: boolean; generation: number; presence_deadline_ms?: number }
@@ -181,7 +176,6 @@ export const seekGbPlayback = (playbackId: string, payload: { request_id: string
 export const setGbPlaybackSpeed = (playbackId: string, payload: { request_id: string; stream_id: string; speed_rate: number; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/speed', { method: 'POST', body: JSON.stringify(payload) });
 export const setGbPlaybackState = (playbackId: string, payload: { request_id: string; stream_id: string; paused: boolean; expected_generation: number }) => request<PlaybackControlResponse>('/playbacks/' + encodeURIComponent(playbackId) + '/state', { method: 'POST', body: JSON.stringify(payload) });
 export const heartbeatGbPlaybackPresence = (items: PlaybackPresenceHeartbeatItem[]) => request<PlaybackPresenceHeartbeatResponse>('/playbacks/presence/heartbeat', { method: 'POST', body: JSON.stringify({ items }) });
-export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs');
 export const createStreamOutput = async (
   streamId: string,
   outputType: StreamOutputSummary['output_type'],
@@ -195,7 +189,6 @@ export const closeStreamOutput = (streamId: string, outputId: string) => request
 export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
 export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
 export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });
-export const runtimeStatus = () => request<RuntimeStatus>('/runtime/status');
 export const getMediaTransport = () => request<MediaTransportCapability>('/media/transport');
 
 export interface MediaOperationWaitOptions<T> {
@@ -204,15 +197,14 @@ export interface MediaOperationWaitOptions<T> {
   subscriptionId?: string;
 }
 
-export const getMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId), {}, true, 2_000);
-export const getMediaOperations = <T = unknown>(operationIds: string[]) => {
+const getMediaOperations = <T = unknown>(operationIds: string[]) => {
   const query = new URLSearchParams({ ids: operationIds.join(',') });
   return request<MediaOperationSummary<T>[]>('/media/operations?' + query, {}, true, 2_000);
 };
 export const continueMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId) + '/continue', { method: 'POST', body: '{}' }, true, 3_000);
 export const cancelMediaOperation = <T = unknown>(operationId: string) => request<MediaOperationSummary<T>>('/media/operations/' + encodeURIComponent(operationId) + '/cancel', { method: 'POST', body: '{}' }, true, 3_000);
 
-export async function waitMediaOperation<T>(initial: MediaOperationSummary<T>, options: MediaOperationWaitOptions<T> = {}): Promise<T> {
+async function waitMediaOperation<T>(initial: MediaOperationSummary<T>, options: MediaOperationWaitOptions<T> = {}): Promise<T> {
   let operation = initial;
   while (true) {
     options.onUpdate?.(operation);
@@ -356,16 +348,6 @@ export const listGbDevicePage = (page = 1, pageSize = 20, sessionNodeId = '', do
   const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), session_node_id: sessionNodeId, domain_id: domainId, device_id: deviceId, device_name: deviceName, registered_only: String(registeredOnly) });
   return request<GbDevicePage>('/gb28181/devices?' + query);
 };
-export async function listGbDevices(pageSize = 500, sessionNodeId = '', domainId = '') {
-  const items: GbDeviceInfo[] = [];
-  let page = 1;
-  while (true) {
-    const result = await listGbDevicePage(page, pageSize, sessionNodeId, domainId);
-    items.push(...result.items);
-    if (!result.total || items.length >= result.total || result.items.length === 0) return items;
-    page += 1;
-  }
-}
 export const createGbDevice = (payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices', { method: 'POST', body: JSON.stringify(payload) });
 export const updateGbDevice = (deviceId: string, payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices/' + gbPath(deviceId), { method: 'POST', body: JSON.stringify(payload) });
 export const deleteGbDevice = (deviceId: string, sessionNodeId: string, domainId: string) => request<void>('/gb28181/devices/' + gbPath(deviceId) + '/delete', { method: 'POST', body: JSON.stringify({ session_node_id: sessionNodeId, domain_id: domainId }) });
@@ -399,7 +381,6 @@ export const getGbChannelRecords = (deviceId: string, channelId: string, params:
 export const queryGbChannelRecords = (deviceId: string, channelId: string, payload: GbRecordQueryPayload) => request<GbChannelRecordsInfo>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/records/query', { method: 'POST', body: JSON.stringify(payload) });
 export const createCloudRecording = (deviceId: string, channelId: string, payload: { request_id: string; session_node_id: string; start_time_sec: number; end_time_sec: number }) => request<CloudRecordingSummary>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings', { method: 'POST', body: JSON.stringify(payload) });
 export const listCloudRecordings = (deviceId: string, channelId: string, sessionNodeId: string, page = 1, pageSize = 50) => request<CloudRecordingList>('/gb28181/devices/' + gbPath(deviceId) + '/channels/' + gbPath(channelId) + '/cloud-recordings?session_node_id=' + gbPath(sessionNodeId) + '&page=' + page + '&page_size=' + pageSize);
-export const getCloudRecording = (taskId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId));
 export const stopCloudRecording = (taskId: string, requestId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/stop', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const deleteCloudRecording = (taskId: string, requestId: string) => request<CloudRecordingSummary>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/delete', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const issueCloudRecordingAccess = (taskId: string, mode: 'inline' | 'attachment') => request<CloudRecordingAccess>('/gb28181/cloud-recordings/' + gbPath(taskId) + '/access', { method: 'POST', body: JSON.stringify({ mode }) });
@@ -422,7 +403,6 @@ export async function startGbPlayback(
   return waitMediaOperation(operation, options);
 }
 export const startGbBroadcast = (payload: GbBroadcastOperationPayload) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/start', { method: 'POST', body: JSON.stringify(payload) });
-export const getGbBroadcast = (broadcastId: string) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId));
 export const stopGbBroadcast = (broadcastId: string, requestId = `ui-broadcast-stop-${Date.now()}`) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/stop-all', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export const stopGbBroadcastTarget = (broadcastId: string, legId: string, requestId = `ui-broadcast-leg-stop-${Date.now()}`) => request<GbBroadcastOperationSummary>('/gb28181/broadcasts/' + gbPath(broadcastId) + '/targets/' + gbPath(legId) + '/stop', { method: 'POST', body: JSON.stringify({ request_id: requestId }) });
 export interface GbPtzPayload { leftRight: number; upDown: number; inOut: number; horizonSpeed: number; verticalSpeed: number; zoomSpeed: number }

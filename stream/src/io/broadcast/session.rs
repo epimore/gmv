@@ -418,7 +418,12 @@ impl BroadcastManager {
                     return Err(GlobalError::new_biz_error(
                         BaseErrorCode::InvalidState.code(),
                         "stale_endpoint_generation",
-                        |msg| error!("{msg}: broadcast_id={}", req.broadcast_id),
+                        |msg| {
+                            debug!(
+                                "{msg}: action=set_broadcast_target, outcome=ignored, reason=late_completion, broadcast_id={}, leg_id={leg_id}",
+                                req.broadcast_id
+                            )
+                        },
                     ));
                 }
                 *session.target.lock() = Some(BroadcastTarget {

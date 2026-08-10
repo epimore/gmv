@@ -5,7 +5,7 @@ use base_db::dbx::{
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
 use gmv_guard_server::app_config::GuardAppConfig;
-use gmv_guard_server::store::migration::{SQLITE_0001, SQLITE_0003};
+use gmv_guard_server::store::migration::{MIGRATIONS, SQLITE_0001, SQLITE_0003};
 use gmv_guard_server::store::persistent::PersistentStore;
 use gmv_guard_server::store::sqlite::SqliteStore;
 
@@ -106,8 +106,6 @@ guard:
                     "guard_integration_http",
                     "guard_integration_mapping",
                     "guard_integration_master_key",
-                    "guard_integration_mqtt",
-                    "guard_integration_slot",
                     "guard_mqtt_runtime_revision",
                     "guard_mqtt_runtime_state",
                     "guard_outbox",
@@ -128,7 +126,9 @@ guard:
                     (4, "guard_command_idempotency".to_string()),
                     (5, "guard_singleton_mqtt_runtime".to_string()),
                     (6, "guard_mqtt_action_policy_removal".to_string()),
-                    (7, "guard_integration_master_key".to_string())
+                    (7, "guard_integration_master_key".to_string()),
+                    (8, "guard_mqtt_runtime_schema_cleanup".to_string()),
+                    (9, "guard_integration_schema_consolidation".to_string())
                 ]
             );
             let master_key = base_db::sqlx::query_as::<_, (i64, i64)>(
@@ -145,13 +145,27 @@ guard:
             .await
             .unwrap();
             assert!(user_columns.iter().any(|column| column == "expires_at_ms"));
-            let mqtt_columns = base_db::sqlx::query_scalar::<_, String>(
-                "SELECT name FROM pragma_table_info('guard_integration_mqtt') ORDER BY cid",
+            let integration_columns = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT name FROM pragma_table_info('guard_integration') ORDER BY cid",
             )
             .fetch_all(&pool)
             .await
             .unwrap();
-            assert!(!mqtt_columns.iter().any(|column| column == "allowed_actions"));
+            assert!(integration_columns.iter().any(|column| column == "slot"));
+            let runtime_revision_parent = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT \"table\" FROM pragma_foreign_key_list('guard_mqtt_runtime_revision') WHERE \"from\"='slot'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(runtime_revision_parent, "guard_integration");
+            let runtime_state_parent = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT \"table\" FROM pragma_foreign_key_list('guard_mqtt_runtime_state') WHERE \"from\"='slot'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(runtime_state_parent, "guard_integration");
             pool.close().await;
             drop(store);
             let _ = std::fs::remove_dir_all(root);
@@ -207,7 +221,9 @@ fn sqlite_preserves_reserved_user_expiration_v2_and_applies_integrations_v3() {
                     (4, "guard_command_idempotency".to_string()),
                     (5, "guard_singleton_mqtt_runtime".to_string()),
                     (6, "guard_mqtt_action_policy_removal".to_string()),
-                    (7, "guard_integration_master_key".to_string())
+                    (7, "guard_integration_master_key".to_string()),
+                    (8, "guard_mqtt_runtime_schema_cleanup".to_string()),
+                    (9, "guard_integration_schema_consolidation".to_string())
                 ]
             );
             let integration_table = base_db::sqlx::query_scalar::<_, String>(
@@ -280,6 +296,79 @@ fn sqlite_aliases_integrations_v2_without_reapplying_schema() {
                 (4, "guard_command_idempotency")
             );
 
+            pool.close().await;
+            let _ = std::fs::remove_file(path);
+        });
+}
+
+#[test]
+fn sqlite_v8_schema_consolidation_preserves_business_runtime_and_unbound_integrations() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let path = std::env::temp_dir().join(format!(
+                "guard-integration-v8-upgrade-{}.db",
+                uuid::Uuid::new_v4()
+            ));
+            let pool = build_sqlite_pool(
+                SqliteConnectionConfig::new(&path),
+                DatabasePoolConfig {
+                    max_size: 1,
+                    min_idle: Some(0),
+                    connection_timeout: Duration::from_secs(2),
+                    ..DatabasePoolConfig::default()
+                },
+            )
+            .unwrap();
+            base_db::migration::run_sqlite_migrations(&pool, &MIGRATIONS[..7])
+                .await
+                .unwrap();
+            base_db::sqlx::raw_sql(
+                "INSERT INTO guard_integration(integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms) VALUES ('app-1','app','MQTT',1,1,1,'[]',NULL,1,'admin',1,1);
+                 INSERT INTO guard_integration(integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms) VALUES ('app-2','legacy app','HTTP',0,0,0,'[]',NULL,1,'admin',2,2);
+                 UPDATE guard_integration_slot SET integration_id='app-1',updated_by='admin',updated_at_ms=1 WHERE slot='business';
+                 INSERT INTO guard_integration_mqtt(integration_id,command_topic,result_topic,event_topic_prefix,updated_at_ms) VALUES ('app-1','gmv/commands/app-1','gmv/command-results/app-1','gmv/events/app-1',1);
+                 INSERT INTO guard_integration_http(integration_id,callback_url,callback_timeout_ms,private_network_policy,private_network_allowlist,max_attempts,event_ttl_ms,max_response_bytes,updated_at_ms) VALUES ('app-2',NULL,5000,'deny','[]',5,259200000,65536,2);
+                 INSERT INTO guard_mqtt_runtime_revision(slot,revision,protocol_version,broker,port,client_id,username,password_ciphertext,tls,publish_event_ttl_sec,created_by,created_at_ms) VALUES ('business',1,'v5','broker.example.test',1883,'guard',NULL,NULL,0,86400,'admin',1);
+                 INSERT INTO guard_mqtt_runtime_state(slot,desired_revision,active_revision,config_version,apply_state,last_error_code,last_error_summary,last_transition_at_ms,updated_by,updated_at_ms) VALUES ('business',1,1,1,'CONNECTED',NULL,NULL,1,'admin',1);",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            SqliteStore::new(pool.clone()).migrate().await.unwrap();
+
+            let slot = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT slot FROM guard_integration WHERE integration_id='app-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(slot, "business");
+            let legacy = base_db::sqlx::query_as::<_, (Option<String>, i64)>(
+                "SELECT slot,(SELECT COUNT(*) FROM guard_integration_http WHERE integration_id='app-2') FROM guard_integration WHERE integration_id='app-2'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(legacy, (None, 1));
+            let runtime = base_db::sqlx::query_as::<_, (i64, Option<i64>, String)>(
+                "SELECT s.desired_revision,s.active_revision,r.broker FROM guard_mqtt_runtime_state s JOIN guard_mqtt_runtime_revision r ON r.slot=s.slot AND r.revision=s.desired_revision WHERE s.slot='business'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(runtime, (1, Some(1), "broker.example.test".to_string()));
+            for removed in ["guard_integration_mqtt", "guard_integration_slot"] {
+                let exists = base_db::sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?",
+                )
+                .bind(removed)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(exists, 0);
+            }
             pool.close().await;
             let _ = std::fs::remove_file(path);
         });

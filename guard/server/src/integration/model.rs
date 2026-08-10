@@ -642,20 +642,6 @@ pub struct IntegrationMqttConfig {
     pub updated_at_ms: i64,
 }
 
-impl IntegrationMqttConfig {
-    pub fn validate(&self) -> GuardResult<()> {
-        if self.command_topic != format!("gmv/commands/{}", self.integration_id)
-            || self.result_topic != format!("gmv/command-results/{}", self.integration_id)
-            || self.event_topic_prefix != format!("gmv/events/{}", self.integration_id)
-        {
-            return Err(GuardError::InvalidConfig(
-                "MQTT integration topics must use the fixed integration prefix".to_string(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 pub const BUSINESS_INTEGRATION_SLOT: &str = "business";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]

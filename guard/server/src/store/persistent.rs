@@ -226,10 +226,6 @@ impl IntegrationRepository {
         dispatch_integration!(self, get_integration_mqtt_config(integration_id))
     }
 
-    pub async fn upsert_mqtt_config(&self, value: &IntegrationMqttConfig) -> GuardResult<()> {
-        dispatch_integration!(self, upsert_integration_mqtt_config(value))
-    }
-
     pub async fn authorize_mqtt_command(
         &self,
         topic: &str,
@@ -292,18 +288,6 @@ impl IntegrationRepository {
             return Ok(None);
         };
         self.get(&integration_id).await
-    }
-
-    pub async fn bind_business_integration(
-        &self,
-        integration_id: &str,
-        actor: &str,
-        now_ms: i64,
-    ) -> GuardResult<()> {
-        dispatch_integration!(
-            self,
-            bind_business_integration(integration_id, actor, now_ms)
-        )
     }
 
     pub async fn transport_switch_blockers(&self, integration_id: &str) -> GuardResult<(i64, i64)> {

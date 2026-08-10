@@ -199,7 +199,7 @@ macro_rules! impl_integration_store {
 
             pub async fn list_integrations(&self) -> GuardResult<Vec<Integration>> {
                 let rows = base_db::sqlx::query_as::<_, IntegrationRow>(
-                    "SELECT integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms FROM guard_integration ORDER BY created_at_ms DESC,integration_id",
+                    "SELECT integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms FROM guard_integration WHERE slot='business' ORDER BY created_at_ms DESC,integration_id",
                 )
                 .fetch_all(self.pool())
                 .await
@@ -212,7 +212,7 @@ macro_rules! impl_integration_store {
                 integration_id: &str,
             ) -> GuardResult<Option<Integration>> {
                 base_db::sqlx::query_as::<_, IntegrationRow>(
-                    "SELECT integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms FROM guard_integration WHERE integration_id=?",
+                    "SELECT integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms FROM guard_integration WHERE integration_id=? AND slot='business'",
                 )
                 .bind(integration_id)
                 .fetch_optional(self.pool())
@@ -230,7 +230,7 @@ macro_rules! impl_integration_store {
                     .bind(i64::from(value.enabled)).bind(&scopes).bind(value.expires_at_ms).bind(value.config_version).bind(value.updated_at_ms)
                     .bind(&value.integration_id).execute(self.pool()).await.map_err(database_error)?;
                 if result.rows_affected() == 0 {
-                    base_db::sqlx::query("INSERT INTO guard_integration(integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)")
+                    base_db::sqlx::query("INSERT INTO guard_integration(integration_id,name,transport,inbound_enabled,outbound_enabled,enabled,scopes,expires_at_ms,config_version,created_by,created_at_ms,updated_at_ms,slot) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'business')")
                         .bind(&value.integration_id).bind(&value.name).bind(value.transport.as_str()).bind(i64::from(value.inbound_enabled)).bind(i64::from(value.outbound_enabled))
                         .bind(i64::from(value.enabled)).bind(scopes).bind(value.expires_at_ms).bind(value.config_version).bind(&value.created_by)
                         .bind(value.created_at_ms).bind(value.updated_at_ms).execute(self.pool()).await.map_err(database_error)?;
@@ -257,7 +257,7 @@ macro_rules! impl_integration_store {
                 access_key: &str,
             ) -> GuardResult<Option<IntegrationCredential>> {
                 base_db::sqlx::query_as::<_, CredentialRow>(
-                    "SELECT c.credential_id,c.access_key,c.integration_id,c.purpose,c.secret_ciphertext,c.key_version,c.status,c.not_before_ms,c.expires_at_ms,c.revoked_at_ms,c.created_by,c.created_at_ms,c.updated_at_ms FROM guard_integration_credential c JOIN guard_integration_slot s ON s.slot='business' AND s.integration_id=c.integration_id WHERE c.access_key=?",
+                    "SELECT c.credential_id,c.access_key,c.integration_id,c.purpose,c.secret_ciphertext,c.key_version,c.status,c.not_before_ms,c.expires_at_ms,c.revoked_at_ms,c.created_by,c.created_at_ms,c.updated_at_ms FROM guard_integration_credential c JOIN guard_integration i ON i.slot='business' AND i.integration_id=c.integration_id WHERE c.access_key=?",
                 )
                 .bind(access_key)
                 .fetch_optional(self.pool())
@@ -322,60 +322,24 @@ macro_rules! impl_integration_store {
                 &self,
                 integration_id: &str,
             ) -> GuardResult<Option<IntegrationMqttConfig>> {
-                let row = base_db::sqlx::query_as::<_, (String, String, String, String, i64)>(
-                    "SELECT integration_id,command_topic,result_topic,event_topic_prefix,updated_at_ms FROM guard_integration_mqtt WHERE integration_id=?",
-                ).bind(integration_id).fetch_optional(self.pool()).await.map_err(database_error)?;
-                row.map(mqtt_config_from_row).transpose()
-            }
-
-            pub async fn upsert_integration_mqtt_config(
-                &self,
-                value: &IntegrationMqttConfig,
-            ) -> GuardResult<()> {
-                let result = base_db::sqlx::query("UPDATE guard_integration_mqtt SET command_topic=?,result_topic=?,event_topic_prefix=?,updated_at_ms=? WHERE integration_id=?")
-                    .bind(&value.command_topic).bind(&value.result_topic).bind(&value.event_topic_prefix)
-                    .bind(value.updated_at_ms).bind(&value.integration_id).execute(self.pool()).await.map_err(database_error)?;
-                if result.rows_affected() == 0 {
-                    base_db::sqlx::query("INSERT INTO guard_integration_mqtt(integration_id,protocol_version,command_topic,result_topic,event_topic_prefix,updated_at_ms) VALUES (?,?,?,?,?,?)")
-                        .bind(&value.integration_id).bind("managed").bind(&value.command_topic).bind(&value.result_topic)
-                        .bind(&value.event_topic_prefix).bind(value.updated_at_ms).execute(self.pool()).await.map_err(database_error)?;
-                }
-                Ok(())
+                Ok(self.get_integration(integration_id).await?.map(|integration| {
+                    IntegrationMqttConfig {
+                        command_topic: format!("gmv/commands/{integration_id}"),
+                        result_topic: format!("gmv/command-results/{integration_id}"),
+                        event_topic_prefix: format!("gmv/events/{integration_id}"),
+                        integration_id: integration.integration_id,
+                        updated_at_ms: integration.updated_at_ms,
+                    }
+                }))
             }
 
             pub async fn business_integration_id(&self) -> GuardResult<Option<String>> {
-                base_db::sqlx::query_scalar::<_, Option<String>>(
-                    "SELECT integration_id FROM guard_integration_slot WHERE slot='business'",
+                base_db::sqlx::query_scalar::<_, String>(
+                    "SELECT integration_id FROM guard_integration WHERE slot='business'",
                 )
                 .fetch_optional(self.pool())
                 .await
                 .map_err(database_error)
-                .map(Option::flatten)
-            }
-
-            pub async fn bind_business_integration(
-                &self,
-                integration_id: &str,
-                actor: &str,
-                now_ms: i64,
-            ) -> GuardResult<()> {
-                if self.get_integration(integration_id).await?.is_none() {
-                    return Err(GuardError::NotFound(format!("integration {integration_id}")));
-                }
-                let result = base_db::sqlx::query(
-                    "UPDATE guard_integration_slot SET integration_id=?,updated_by=?,updated_at_ms=? WHERE slot='business'",
-                )
-                .bind(integration_id)
-                .bind(actor)
-                .bind(now_ms)
-                .execute(self.pool())
-                .await
-                .map_err(database_error)?;
-                if result.rows_affected() == 0 {
-                    base_db::sqlx::query("INSERT INTO guard_integration_slot(slot,integration_id,updated_by,updated_at_ms) VALUES ('business',?,?,?)")
-                        .bind(integration_id).bind(actor).bind(now_ms).execute(self.pool()).await.map_err(database_error)?;
-                }
-                Ok(())
             }
 
             pub async fn integration_transport_switch_blockers(
@@ -383,7 +347,7 @@ macro_rules! impl_integration_store {
                 integration_id: &str,
             ) -> GuardResult<(i64, i64)> {
                 let commands = base_db::sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM guard_command WHERE integration_id=? AND state NOT IN ('SUCCEEDED','FAILED','CANCELLED')",
+                    "SELECT COUNT(*) FROM guard_command WHERE integration_id=? AND state NOT IN ('COMPLETED','SUCCEEDED','FAILED','CANCELLED')",
                 )
                 .bind(integration_id)
                 .fetch_one(self.pool())
@@ -506,12 +470,21 @@ macro_rules! impl_integration_store {
                 last_error_summary: Option<&str>,
                 now_ms: i64,
             ) -> GuardResult<()> {
+                let mut transaction = self.pool().begin().await.map_err(database_error)?;
                 let result = base_db::sqlx::query("UPDATE guard_mqtt_runtime_state SET active_revision=?,apply_state=?,last_error_code=?,last_error_summary=?,last_transition_at_ms=? WHERE slot='business' AND desired_revision=?")
                     .bind(active_revision).bind(apply_state.as_str()).bind(last_error_code).bind(last_error_summary).bind(now_ms).bind(desired_revision)
-                    .execute(self.pool()).await.map_err(database_error)?;
+                    .execute(&mut *transaction).await.map_err(database_error)?;
                 if result.rows_affected() == 0 {
                     return Err(GuardError::Conflict("MQTT desired revision changed while applying".to_string()));
                 }
+                if let Some(active_revision) = active_revision {
+                    base_db::sqlx::query("DELETE FROM guard_mqtt_runtime_revision WHERE slot='business' AND revision<>? AND revision<>?")
+                        .bind(desired_revision).bind(active_revision).execute(&mut *transaction).await.map_err(database_error)?;
+                } else {
+                    base_db::sqlx::query("DELETE FROM guard_mqtt_runtime_revision WHERE slot='business' AND revision<>?")
+                        .bind(desired_revision).execute(&mut *transaction).await.map_err(database_error)?;
+                }
+                transaction.commit().await.map_err(database_error)?;
                 Ok(())
             }
 
@@ -646,18 +619,6 @@ fn http_config_from_row(
         event_ttl_ms: row.6,
         max_response_bytes: row.7,
         updated_at_ms: row.8,
-    })
-}
-
-fn mqtt_config_from_row(
-    row: (String, String, String, String, i64),
-) -> GuardResult<IntegrationMqttConfig> {
-    Ok(IntegrationMqttConfig {
-        integration_id: row.0,
-        command_topic: row.1,
-        result_topic: row.2,
-        event_topic_prefix: row.3,
-        updated_at_ms: row.4,
     })
 }
 

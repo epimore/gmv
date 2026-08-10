@@ -643,7 +643,12 @@ impl MediaEndpointManager {
                 Err(GlobalError::new_biz_error(
                     BaseErrorCode::InvalidState.code(),
                     "stale_endpoint_generation",
-                    |msg| error!("{msg}: stream_id={}", request.stream_id),
+                    |msg| {
+                        debug!(
+                            "{msg}: action=connect_tcp_active, outcome=ignored, reason=late_completion, stream_id={}, endpoint_id={}, generation={}",
+                            request.stream_id, request.endpoint_id, request.generation
+                        )
+                    },
                 ))
             }
             Err(error_value) => {

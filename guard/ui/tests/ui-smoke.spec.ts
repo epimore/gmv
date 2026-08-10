@@ -33,7 +33,7 @@ async function mockAuth(page: Page, initiallyAuthenticated = false, authSession 
     ['/api/v2/leases', []],
     ['/api/v2/integrations/outbox', []],
     ['/api/v2/integrations/master-key', { configured: true, key_version: 1, created_at_ms: 1, updated_by: 'system:init', updated_at_ms: 1 }],
-    ['/api/v2/integrations/mqtt/runtime', { configured: false, broker_connected: false, config: null, connection_scope: 'deployment', qos: 1, retain: false }],
+    ['/api/v2/integrations/business/mqtt/runtime', { configured: false, broker_connected: false, config: null, connection_scope: 'deployment', qos: 1, retain: false }],
     ['/api/v2/runtime/status', { guard_available: true, streams: 0, running_streams: 0, ai_tasks: 0, running_ai_tasks: 0, ptz_commands: 0 }],
     ['/api/v2/media/transport', { scheme: 'http', http_version: 'http/1.1', multi_view_limit: 6 }],
   ]);
@@ -214,15 +214,17 @@ test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ p
   await expect(page.getByRole('heading', { name: '边端能力矩阵', level: 2 })).toBeVisible();
   await expect(page.getByRole('button', { name: /GB28181/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /ONVIF/ })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /MQTT 接入/ })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /HTTP 接入/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /MQTT 接入/ })).toBeVisible();
   await expect(page.getByText('尚未发现业务节点')).toBeVisible();
   await expect(page.getByRole('heading', { name: '业务异常概览', level: 2 })).toBeVisible();
   await expect(page.getByText('星图拓扑')).toHaveCount(0);
   await expect(page.getByText('资源分布')).toHaveCount(0);
 });
 
-test('Dashboard 将单次流失败归入业务异常而不是待处理事项', async ({ page }) => {
+test('Dashboard 使用 Guard 租约事实且不读取全局流投影', async ({ page }) => {
   await mockAuth(page, true);
+  let streamRequests = 0;
   await page.route('**/api/v2/nodes', async (route) => {
     await route.fulfill({
       status: 200,
@@ -231,21 +233,26 @@ test('Dashboard 将单次流失败归入业务异常而不是待处理事项', a
     });
   });
   await page.route('**/api/v2/streams', async (route) => {
+    streamRequests += 1;
+    await route.fulfill({ status: 500, body: '' });
+  });
+  await page.route('**/api/v2/leases', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify([{
-        stream_id: 'failed-1', device_id: 'device-1', channel_id: 'channel-1', node_id: 'stream-1',
-        lease_id: '', endpoint: '', state: 'failed',
+        lease_id: 'lease-1', route_id: 'route-1', resource_id: 'stream-1', node_id: 'session-1',
+        instance_id: 'instance-1', state: 'confirmed', expires_at_ms: Date.now() + 60_000,
       }]),
     });
   });
 
   await page.goto('/dashboard');
 
-  await expect(page.getByText('1 条失败流记录')).toBeVisible();
+  await expect(page.getByText('活动租约')).toBeVisible();
+  await expect(page.getByText('Guard 控制面事实')).toBeVisible();
   await expect(page.getByText('当前无待处理事项')).toBeVisible();
-  await expect(page.getByText('1 路流失败')).toHaveCount(0);
+  expect(streamRequests).toBe(0);
 });
 
 test('接入应用页面选择并启用 MQTT 后直接进入详细配置', async ({ page }) => {
@@ -372,7 +379,7 @@ test('运行中的 MQTT 应用切换为 HTTP 后直接进入详细配置', async
 
 test('已停用的 MQTT 应用可重新启用并直接进入详细配置', async ({ page }) => {
   await mockAuth(page, true);
-  await page.route('**/api/v2/integrations/mqtt/runtime', async (route) => route.fulfill({
+  await page.route('**/api/v2/integrations/business/mqtt/runtime', async (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({
@@ -685,7 +692,7 @@ test('未启用 MQTT 应用时详细配置保持只读并引导先选择接入�
   await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'unconfigured', integration: null }),
   }));
-  await page.route('**/api/v2/integrations/mqtt/runtime', async (route) => route.fulfill({
+  await page.route('**/api/v2/integrations/business/mqtt/runtime', async (route) => route.fulfill({
     status: 200,
     contentType: 'application/json',
     body: JSON.stringify({ configured: false, broker_connected: false, config: null, connection_scope: 'deployment', qos: 1, retain: false }),
@@ -713,8 +720,11 @@ test('MQTT 子页面展示连接状态、Topic 契约、文档与可靠投递', 
   await page.route('**/api/v2/integrations/business', async (route) => route.fulfill({
     status: 200, contentType: 'application/json', body: JSON.stringify({ state: 'ready', integration }),
   }));
-  await page.route('**/api/v2/integrations/mqtt/runtime', (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, broker_connected: true, config: { protocol_version: 'v5', broker: 'broker.example.test', port: 1883, client_id: 'guard-test', username: 'guard', password_configured: true, tls: false, publish_event_ttl_sec: 86400, desired_revision: 2, active_revision: 2, config_version: 2, apply_state: 'CONNECTED', last_error_code: null, last_error_summary: null, last_transition_at_ms: 1, updated_by: 'admin', updated_at_ms: 1 }, connection_scope: 'deployment', qos: 1, retain: false }) }));
   await page.route('**/api/v2/integrations/business/mqtt/runtime', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ configured: true, broker_connected: true, config: { protocol_version: 'v5', broker: 'broker.example.test', port: 1883, client_id: 'guard-test', username: 'guard', password_configured: true, tls: false, publish_event_ttl_sec: 86400, desired_revision: 2, active_revision: 2, config_version: 2, apply_state: 'CONNECTED', last_error_code: null, last_error_summary: null, last_transition_at_ms: 1, updated_by: 'admin', updated_at_ms: 1 }, connection_scope: 'deployment', qos: 1, retain: false }) });
+      return;
+    }
     const payload = route.request().postDataJSON() as { protocol_version: string };
     savedVersion = payload.protocol_version;
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ protocol_version: payload.protocol_version, broker: 'broker.example.test', port: 1883, client_id: 'guard-test', username: 'guard', password_configured: true, tls: false, publish_event_ttl_sec: 86400, desired_revision: 3, active_revision: 2, config_version: 3, apply_state: 'PENDING', last_error_code: null, last_error_summary: null, last_transition_at_ms: 2, updated_by: 'admin', updated_at_ms: 2 }) });

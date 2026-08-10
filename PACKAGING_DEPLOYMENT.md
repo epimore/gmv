@@ -968,12 +968,14 @@ journalctl -u gmv-stream -f
 - `guard_integration`
 - `guard_integration_credential`
 - `guard_integration_http`
-- `guard_integration_mqtt`
 - `guard_integration_mapping`
 - `guard_integration_audit`
 - `guard_integration_delivery`
+- `guard_integration_master_key`
+- `guard_mqtt_runtime_revision`
+- `guard_mqtt_runtime_state`
 
-节点、租约、运行路由和事件当前由 Guard 内存状态承载，不创建同名数据库表。该预览版不承诺旧 Guard 数据库原地升级，启动时不会自动删除旧表。
+节点、租约、运行路由和事件当前由 Guard 内存状态承载，不创建同名数据库表。固定 MQTT Topic 由 `guard_integration.integration_id` 即时推导，不单独建表；唯一 `business` 约束由 `guard_integration.slot` 承载。MQTT 协议版本只保存在 `guard_mqtt_runtime_revision`，Runtime revision 只保留 desired/active 回滚所需版本。该预览版不承诺早期旧 Guard 数据库原地升级，启动时不会自动删除旧占位表。
 
 嵌入式或单机部署推荐 SQLite：
 
@@ -1080,7 +1082,7 @@ Session 初始化直接执行模块自有 schema SQL，不依赖 `_base_db_migra
 业务 API `/api/v2/*` 需要 UI session、角色和 CSRF 校验：
 
 - Viewer：读取节点、设备、流、事件等；
-- Operator：预览、回放、下载、对讲、云台、停流、AI 操作等；
+- Operator：预览、回放、下载、对讲、云台、停流等；AI 操作当前仅在管理员显式开启实验页面后可见，执行器固定返回 `executor_unavailable`，不属于本次正式发布能力；
 - Admin：用户管理等。
 
 未鉴权的运维接口：
@@ -1473,7 +1475,7 @@ gmv-guard-server export-integration-contracts ./integration-contracts
 | Guard -> MQTT Broker | TCP/TLS，通常 8883 | 最小账号和 topic ACL |
 | Guard -> callback endpoint | HTTPS 443 | DNS/IP/私网策略校验，禁止未授权内网地址和重定向 |
 
-Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_slot`、`guard_integration_master_key`、`guard_integration_credential`、`guard_integration_http`、`guard_integration_mqtt`、`guard_mqtt_runtime_revision`、`guard_mqtt_runtime_state`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前备份完整数据库和 Guard 配置；恢复时不得遗漏主密钥记录或只恢复部分集成表。
+Guard 当前持久化表包括 `_base_db_migrations`、`guard_user`、`guard_outbox`、`guard_command`、`guard_integration`、`guard_integration_master_key`、`guard_integration_credential`、`guard_integration_http`、`guard_mqtt_runtime_revision`、`guard_mqtt_runtime_state`、`guard_integration_mapping`、`guard_integration_audit`、`guard_integration_delivery`。升级前备份完整数据库和 Guard 配置；恢复时不得遗漏主密钥记录或只恢复部分集成表。
 
 ### 21.6 第三方专项验收矩阵
 

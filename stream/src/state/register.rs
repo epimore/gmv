@@ -1742,16 +1742,22 @@ impl Register {
         stream_id: &str,
         profile: ActualMediaProfile,
     ) -> GlobalResult<()> {
+        if Self::try_set_actual_media_profile(stream_id, profile) {
+            return Ok(());
+        }
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "stream media is not initialized",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ))
+    }
+
+    pub(crate) fn try_set_actual_media_profile(
+        stream_id: &str,
+        profile: ActualMediaProfile,
+    ) -> bool {
         let arc = Self::get().inner.clone();
-        let mut meta = arc.stream_metadata_map.get_mut(stream_id).ok_or_else(|| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::NotFound.code(),
-                "stream media is not initialized",
-                |msg| error!("{msg}: stream_id={stream_id}"),
-            )
-        })?;
-        meta.actual_media_profile = Some(profile);
-        Ok(())
+        update_actual_media_profile_if_present(&arc.stream_metadata_map, stream_id, profile)
     }
 
     pub fn actual_media_profile(stream_id: &str) -> Option<ActualMediaProfile> {
@@ -1780,6 +1786,21 @@ impl Register {
         output_type: &str,
         metadata: OutputMediaMetadata,
     ) -> GlobalResult<()> {
+        if Self::try_set_output_media_metadata(stream_id, output_type, metadata)? {
+            return Ok(());
+        }
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::NotFound.code(),
+            "stream media is not initialized",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ))
+    }
+
+    pub(crate) fn try_set_output_media_metadata(
+        stream_id: &str,
+        output_type: &str,
+        metadata: OutputMediaMetadata,
+    ) -> GlobalResult<bool> {
         let (output_type, _, _, _) = live_output_contract(output_type)?;
         if !output_media_metadata_is_valid(&metadata) {
             return Err(GlobalError::new_biz_error(
@@ -1789,16 +1810,12 @@ impl Register {
             ));
         }
         let arc = Self::get().inner.clone();
-        let mut meta = arc.stream_metadata_map.get_mut(stream_id).ok_or_else(|| {
-            GlobalError::new_biz_error(
-                BaseErrorCode::NotFound.code(),
-                "stream media is not initialized",
-                |msg| error!("{msg}: stream_id={stream_id}"),
-            )
-        })?;
-        meta.output_media_metadata
-            .insert(output_type.to_string(), metadata);
-        Ok(())
+        Ok(update_output_media_metadata_if_present(
+            &arc.stream_metadata_map,
+            stream_id,
+            output_type,
+            metadata,
+        ))
     }
 
     pub fn output_media_metadata(
@@ -2369,17 +2386,47 @@ impl OutputCount {
     }
 }
 
+fn update_output_media_metadata_if_present(
+    stream_metadata_map: &DashMap<Arc<str>, StreamMetadata>,
+    stream_id: &str,
+    output_type: &str,
+    metadata: OutputMediaMetadata,
+) -> bool {
+    let Some(mut stream_metadata) = stream_metadata_map.get_mut(stream_id) else {
+        return false;
+    };
+    stream_metadata
+        .output_media_metadata
+        .insert(output_type.to_string(), metadata);
+    true
+}
+
+fn update_actual_media_profile_if_present(
+    stream_metadata_map: &DashMap<Arc<str>, StreamMetadata>,
+    stream_id: &str,
+    profile: ActualMediaProfile,
+) -> bool {
+    let Some(mut stream_metadata) = stream_metadata_map.get_mut(stream_id) else {
+        return false;
+    };
+    stream_metadata.actual_media_profile = Some(profile);
+    true
+}
+
 #[cfg(test)]
 mod unknown_stream_tests {
     use super::{
-        ContextEvent, MuxerEnum, MuxerEvent, OutputMediaMetadata, OutputRuntimeState, RtpChannel,
-        UNKNOWN_STREAM_COOLDOWN_MS, UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation,
-        close_output_layers, live_output_contract, output_media_metadata_is_valid,
-        publish_muxer_event, stream_config_ready,
+        ActualMediaProfile, ContextEvent, MuxerEnum, MuxerEvent, OutputMediaMetadata,
+        OutputRuntimeState, RtpChannel, StreamMetadata, UNKNOWN_STREAM_COOLDOWN_MS,
+        UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, close_output_layers,
+        live_output_contract, output_media_metadata_is_valid, publish_muxer_event,
+        stream_config_ready, update_actual_media_profile_if_present,
+        update_output_media_metadata_if_present,
     };
     use crate::state::layer::muxer_layer::MuxerLayer;
     use crate::state::layer::output_layer::OutputLayer;
     use base::bus::mpsc::TypedMessageBus;
+    use base::dashmap::DashMap;
     use base::net::state::Protocol;
     use gmv_domain::info::media_info_ext::MediaExt;
     use gmv_domain::info::output::{HlsFmp4Output, HlsPlaylistProfile, OutputKind};
@@ -2455,6 +2502,23 @@ mod unknown_stream_tests {
         let channel = RtpChannel::new(Arc::from("stream-a"));
         assert!(!channel.media_started.swap(true, Ordering::AcqRel));
         assert!(channel.media_started.swap(true, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn late_output_metadata_update_is_idempotent_after_finalize() {
+        let stream_metadata_map: DashMap<Arc<str>, StreamMetadata> = DashMap::new();
+
+        assert!(!update_output_media_metadata_if_present(
+            &stream_metadata_map,
+            "finalized-stream",
+            "flv",
+            OutputMediaMetadata::default(),
+        ));
+        assert!(!update_actual_media_profile_if_present(
+            &stream_metadata_map,
+            "finalized-stream",
+            ActualMediaProfile::default(),
+        ));
     }
 
     #[test]

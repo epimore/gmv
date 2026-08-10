@@ -3,8 +3,7 @@ use base_db::dbx::{
     sqlitex::{SqliteConnectionConfig, build_sqlite_pool},
 };
 use gmv_guard_server::integration::model::{
-    Integration, IntegrationHttpConfig, IntegrationMapping, IntegrationMqttConfig,
-    IntegrationTransport,
+    Integration, IntegrationHttpConfig, IntegrationMapping, IntegrationTransport,
 };
 use gmv_guard_server::mqttc::{CommandIdRepository, MqttCommandPolicy};
 use gmv_guard_server::outbox::OutboxRepository;
@@ -140,20 +139,6 @@ fn mqtt_authorization_uses_current_integration_state_and_exact_topic() {
                 updated_at_ms: 100,
             };
             integrations.upsert(&integration).await.unwrap();
-            integrations
-                .bind_business_integration("app-1", "test", 100)
-                .await
-                .unwrap();
-            integrations
-                .upsert_mqtt_config(&IntegrationMqttConfig {
-                    integration_id: "app-1".to_string(),
-                    command_topic: "gmv/commands/app-1".to_string(),
-                    result_topic: "gmv/command-results/app-1".to_string(),
-                    event_topic_prefix: "gmv/events/app-1".to_string(),
-                    updated_at_ms: 100,
-                })
-                .await
-                .unwrap();
             let policy = MqttCommandPolicy::new(["stream.stop".to_string()], 60_000).unwrap();
             let commands = CommandIdRepository::from(store.clone());
             let payload = br#"{
@@ -267,10 +252,6 @@ fn http_callback_only_enqueues_documented_business_events() {
                     created_at_ms: 100,
                     updated_at_ms: 100,
                 })
-                .await
-                .unwrap();
-            integrations
-                .bind_business_integration("app-http", "test", 100)
                 .await
                 .unwrap();
             integrations

@@ -91,7 +91,11 @@ pub async fn begin_manual(stream_id: String) -> GlobalResult<BeginCloseResult> {
         GlobalError::new_biz_error(
             BaseErrorCode::NotFound.code(),
             "stream runtime close context not found",
-            |msg| warn!("{msg}: stream_id={stream_id}"),
+            |msg| {
+                debug!(
+                    "{msg}: action=stream_close, outcome=not_started, reason=runtime_context_absent, stream_id={stream_id}"
+                )
+            },
         )
     })?;
     let result = if start.newly_started {

@@ -178,10 +178,6 @@ pub fn router(state: HttpState) -> Router {
             get(get_integration_mqtt),
         )
         .route(
-            "/integrations/mqtt/runtime",
-            get(integration_mqtt_runtime).post(update_integration_mqtt_runtime),
-        )
-        .route(
             "/integrations/business/mqtt/runtime",
             get(integration_mqtt_runtime).post(update_integration_mqtt_runtime),
         )
@@ -5174,23 +5170,15 @@ async fn save_business_integration(
             .deactivate_transport(&value.integration_id, previous, now_ms)
             .await?;
     }
-    if is_new {
-        repository
-            .bind_business_integration(&value.integration_id, &session.username, now_ms)
-            .await?;
-    }
-    let transport_config_missing = match value.transport {
-        IntegrationTransport::Http => repository
+    if value.transport == IntegrationTransport::Http
+        && repository
             .http_config(&value.integration_id)
             .await?
-            .is_none(),
-        IntegrationTransport::Mqtt => repository
-            .mqtt_config(&value.integration_id)
-            .await?
-            .is_none(),
-    };
-    if transport_config_missing {
-        initialize_transport_config(repository, &value, now_ms).await?;
+            .is_none()
+    {
+        repository
+            .upsert_http_config(&default_http_config(&value.integration_id, now_ms))
+            .await?;
     }
     append_integration_audit(
         repository,
@@ -5257,36 +5245,10 @@ async fn create_integration(
         .into());
     }
     repository.upsert(&value).await?;
-    repository
-        .bind_business_integration(&integration_id, &session.username, now_ms)
-        .await?;
-    match transport {
-        IntegrationTransport::Http => {
-            repository
-                .upsert_http_config(&IntegrationHttpConfig {
-                    integration_id: integration_id.clone(),
-                    callback_url: None,
-                    callback_timeout_ms: 5_000,
-                    private_network_policy: "deny".to_string(),
-                    private_network_allowlist: Vec::new(),
-                    max_attempts: 5,
-                    event_ttl_ms: 259_200_000,
-                    max_response_bytes: 65_536,
-                    updated_at_ms: now_ms,
-                })
-                .await?;
-        }
-        IntegrationTransport::Mqtt => {
-            repository
-                .upsert_mqtt_config(&IntegrationMqttConfig {
-                    integration_id: integration_id.clone(),
-                    command_topic: format!("gmv/commands/{integration_id}"),
-                    result_topic: format!("gmv/command-results/{integration_id}"),
-                    event_topic_prefix: format!("gmv/events/{integration_id}"),
-                    updated_at_ms: now_ms,
-                })
-                .await?;
-        }
+    if transport == IntegrationTransport::Http {
+        repository
+            .upsert_http_config(&default_http_config(&integration_id, now_ms))
+            .await?;
     }
     append_integration_audit(
         repository,
@@ -5897,38 +5859,17 @@ async fn require_business_integration(
     Ok(())
 }
 
-async fn initialize_transport_config(
-    repository: &IntegrationRepository,
-    integration: &Integration,
-    now_ms: i64,
-) -> GuardResult<()> {
-    match integration.transport {
-        IntegrationTransport::Http => {
-            repository
-                .upsert_http_config(&IntegrationHttpConfig {
-                    integration_id: integration.integration_id.clone(),
-                    callback_url: None,
-                    callback_timeout_ms: 5_000,
-                    private_network_policy: "deny".to_string(),
-                    private_network_allowlist: Vec::new(),
-                    max_attempts: 5,
-                    event_ttl_ms: 259_200_000,
-                    max_response_bytes: 65_536,
-                    updated_at_ms: now_ms,
-                })
-                .await
-        }
-        IntegrationTransport::Mqtt => {
-            repository
-                .upsert_mqtt_config(&IntegrationMqttConfig {
-                    integration_id: integration.integration_id.clone(),
-                    command_topic: format!("gmv/commands/{}", integration.integration_id),
-                    result_topic: format!("gmv/command-results/{}", integration.integration_id),
-                    event_topic_prefix: format!("gmv/events/{}", integration.integration_id),
-                    updated_at_ms: now_ms,
-                })
-                .await
-        }
+fn default_http_config(integration_id: &str, now_ms: i64) -> IntegrationHttpConfig {
+    IntegrationHttpConfig {
+        integration_id: integration_id.to_string(),
+        callback_url: None,
+        callback_timeout_ms: 5_000,
+        private_network_policy: "deny".to_string(),
+        private_network_allowlist: Vec::new(),
+        max_attempts: 5,
+        event_ttl_ms: 259_200_000,
+        max_response_bytes: 65_536,
+        updated_at_ms: now_ms,
     }
 }
 

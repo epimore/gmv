@@ -115,7 +115,9 @@ fn mark_outputs_failed(stream_id: &str) {
             continue;
         };
         metadata.state = OutputRuntimeState::Failed;
-        if let Err(error) = Register::set_output_media_metadata(stream_id, output_type, metadata) {
+        if let Err(error) =
+            Register::try_set_output_media_metadata(stream_id, output_type, metadata)
+        {
             error!(
                 "output failure state update failed: stream_id={}, output_type={}, reason={error}",
                 stream_id, output_type

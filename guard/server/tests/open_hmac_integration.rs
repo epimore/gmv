@@ -109,10 +109,6 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                 })
                 .await
                 .unwrap();
-            integrations
-                .bind_business_integration("integration-test", "test", now_ms)
-                .await
-                .unwrap();
             let cipher = IntegrationSecretCipher::from_base64_key_no_pad(
                 "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             )
@@ -292,10 +288,6 @@ fn credential_secret_reveal_requires_secondary_authentication() {
                     created_at_ms: now_ms,
                     updated_at_ms: now_ms,
                 })
-                .await
-                .unwrap();
-            integrations
-                .bind_business_integration("integration-reveal", "admin", now_ms)
                 .await
                 .unwrap();
             let cipher = IntegrationSecretCipher::from_base64_key_no_pad(

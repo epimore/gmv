@@ -32,9 +32,11 @@ impl MysqlStore {
             .map_err(database_error)?;
         migrate_integrations_v3(&self.pool).await?;
         migrate_command_idempotency_v4(&self.pool).await?;
-        base_db::migration::run_mysql_migrations(&self.pool, MYSQL_MIGRATIONS)
+        base_db::migration::run_mysql_migrations(&self.pool, &MYSQL_MIGRATIONS[..6])
             .await
-            .map_err(database_error)
+            .map_err(database_error)?;
+        migrate_mqtt_runtime_schema_cleanup_v8(&self.pool).await?;
+        migrate_integration_schema_consolidation_v9(&self.pool).await
     }
 
     pub async fn due_outbox(&self, now_ms: i64, limit: usize) -> GuardResult<Vec<OutboxRecord>> {
@@ -671,6 +673,216 @@ async fn migrate_command_idempotency_v4(pool: &MySqlPool) -> GuardResult<()> {
         .as_millis();
     base_db::sqlx::query(
         "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (4,'guard_command_idempotency',?)",
+    )
+    .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
+    .execute(pool)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn migrate_mqtt_runtime_schema_cleanup_v8(pool: &MySqlPool) -> GuardResult<()> {
+    let existing = base_db::sqlx::query_scalar::<_, String>(
+        "SELECT name FROM _base_db_migrations WHERE version=8",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?;
+    if existing.is_some() {
+        return Ok(());
+    }
+
+    let column_exists = base_db::sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='guard_integration_mqtt' AND COLUMN_NAME='protocol_version')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    if column_exists != 0 {
+        base_db::sqlx::query("ALTER TABLE guard_integration_mqtt DROP COLUMN protocol_version")
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+    }
+    let applied_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base_db::sqlx::query(
+        "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (8,'guard_mqtt_runtime_schema_cleanup',?)",
+    )
+    .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
+    .execute(pool)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+async fn migrate_integration_schema_consolidation_v9(pool: &MySqlPool) -> GuardResult<()> {
+    let existing = base_db::sqlx::query_scalar::<_, String>(
+        "SELECT name FROM _base_db_migrations WHERE version=9",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?;
+    if let Some(existing) = existing {
+        if existing != "guard_integration_schema_consolidation" {
+            return Err(GuardError::Conflict(format!(
+                "migration version 9 is registered as {existing}"
+            )));
+        }
+        return Ok(());
+    }
+
+    let integration_slot_table_exists = base_db::sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='guard_integration_slot')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    let slot_column_nullable = base_db::sqlx::query_scalar::<_, String>(
+        "SELECT IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='guard_integration' AND COLUMN_NAME='slot'",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(database_error)?;
+    if slot_column_nullable.is_none() {
+        base_db::sqlx::query("ALTER TABLE guard_integration ADD COLUMN slot VARCHAR(32) NULL")
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+    } else if integration_slot_table_exists != 0 && slot_column_nullable.as_deref() == Some("NO") {
+        for table in ["guard_mqtt_runtime_revision", "guard_mqtt_runtime_state"] {
+            let constraints = base_db::sqlx::query_scalar::<_, String>(
+                "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='slot' AND REFERENCED_TABLE_NAME='guard_integration'",
+            )
+            .bind(table)
+            .fetch_all(pool)
+            .await
+            .map_err(database_error)?;
+            for constraint in constraints {
+                if !constraint
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+                {
+                    return Err(GuardError::Conflict(format!(
+                        "unsafe MySQL foreign key name {constraint}"
+                    )));
+                }
+                base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE {table} DROP FOREIGN KEY {constraint}"
+                )))
+                .execute(pool)
+                .await
+                .map_err(database_error)?;
+            }
+        }
+        base_db::sqlx::query(
+            "ALTER TABLE guard_integration MODIFY COLUMN slot VARCHAR(32) NULL DEFAULT NULL",
+        )
+        .execute(pool)
+        .await
+        .map_err(database_error)?;
+    }
+    if integration_slot_table_exists != 0 {
+        base_db::sqlx::query(
+            "UPDATE guard_integration AS integration LEFT JOIN guard_integration_slot AS integration_slot ON integration_slot.integration_id=integration.integration_id SET integration.slot=integration_slot.slot",
+        )
+        .execute(pool)
+        .await
+        .map_err(database_error)?;
+    }
+
+    let slot_index_exists = base_db::sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='guard_integration' AND INDEX_NAME='idx_guard_integration_slot')",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(database_error)?;
+    if slot_index_exists == 0 {
+        base_db::sqlx::query(
+            "CREATE UNIQUE INDEX idx_guard_integration_slot ON guard_integration(slot)",
+        )
+        .execute(pool)
+        .await
+        .map_err(database_error)?;
+    }
+
+    for table in ["guard_mqtt_runtime_revision", "guard_mqtt_runtime_state"] {
+        let constraints = base_db::sqlx::query_scalar::<_, String>(
+            "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='slot' AND REFERENCED_TABLE_NAME='guard_integration_slot'",
+        )
+        .bind(table)
+        .fetch_all(pool)
+        .await
+        .map_err(database_error)?;
+        for constraint in constraints {
+            if !constraint
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric() || character == '_')
+            {
+                return Err(GuardError::Conflict(format!(
+                    "unsafe MySQL foreign key name {constraint}"
+                )));
+            }
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} DROP FOREIGN KEY {constraint}"
+            )))
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+
+    for (table, constraint) in [
+        (
+            "guard_mqtt_runtime_revision",
+            "fk_guard_mqtt_revision_integration_slot",
+        ),
+        (
+            "guard_mqtt_runtime_state",
+            "fk_guard_mqtt_state_integration_slot",
+        ),
+    ] {
+        let foreign_key_exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='slot' AND REFERENCED_TABLE_NAME='guard_integration' AND REFERENCED_COLUMN_NAME='slot')",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if foreign_key_exists == 0 {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!(
+                "ALTER TABLE {table} ADD CONSTRAINT {constraint} FOREIGN KEY (slot) REFERENCES guard_integration(slot)"
+            )))
+            .execute(pool)
+            .await
+            .map_err(database_error)?;
+        }
+    }
+
+    for table in ["guard_integration_mqtt", "guard_integration_slot"] {
+        let table_exists = base_db::sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?)",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await
+        .map_err(database_error)?;
+        if table_exists != 0 {
+            base_db::sqlx::query(base_db::sqlx::AssertSqlSafe(format!("DROP TABLE {table}")))
+                .execute(pool)
+                .await
+                .map_err(database_error)?;
+        }
+    }
+
+    let applied_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    base_db::sqlx::query(
+        "INSERT INTO _base_db_migrations(version,name,applied_at_ms) VALUES (9,'guard_integration_schema_consolidation',?)",
     )
     .bind(i64::try_from(applied_at_ms).unwrap_or(i64::MAX))
     .execute(pool)

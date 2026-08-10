@@ -19,7 +19,7 @@
     <MetricCard
       v-for="item in metrics"
       :key="item.label"
-      :class="[experimental.enabled ? 'span-3' : 'span-4', `metric-${item.tone}`]"
+      :class="['span-3', `metric-${item.tone}`]"
       :label="item.label"
       :value="item.value"
       :trend="item.trend"
@@ -142,14 +142,12 @@ import {
   listLeases,
   listNodes,
   listOutbox,
-  listStreams,
   pollEvents,
   type AiTaskSummary,
   type EventItem,
   type LeaseInfo,
   type NodeInfo,
   type OutboxInfo,
-  type StreamSummary,
 } from "@/api/client";
 import GlassPanel from "@/components/GlassPanel.vue";
 import MetricCard from "@/components/MetricCard.vue";
@@ -189,13 +187,11 @@ const loading = ref(false);
 const lastRefreshAt = ref(0);
 const nodes = ref<NodeInfo[]>([]);
 const leases = ref<LeaseInfo[]>([]);
-const streams = ref<StreamSummary[]>([]);
 const aiTasks = ref<AiTaskSummary[]>([]);
 const outbox = ref<OutboxInfo[]>([]);
 const events = ref<EventItem[]>([]);
 const nodesAvailable = ref(true);
 const leasesAvailable = ref(true);
-const streamsAvailable = ref(true);
 const aiAvailable = ref(true);
 const outboxAvailable = ref(true);
 const eventsAvailable = ref(true);
@@ -207,8 +203,10 @@ const offlineNodes = computed(() =>
 const degradedNodes = computed(() =>
   nodes.value.filter((node) => !isNodeReady(node) && !offlineNodes.value.includes(node)),
 );
-const runningStreams = computed(() => streams.value.filter((item) => item.state === "running"));
 const runningAiTasks = computed(() => aiTasks.value.filter((item) => item.state === "running"));
+const activeLeases = computed(() =>
+  leases.value.filter((item) => item.state === "allocated" || item.state === "confirmed"),
+);
 const deadOutbox = computed(() => outbox.value.filter((item) => item.state === "dead"));
 const pendingOutbox = computed(() =>
   outbox.value.filter(
@@ -222,7 +220,6 @@ const activeLeasesOnOfflineNodes = computed(() => {
       offlineIds.has(lease.node_id) && (lease.state === "allocated" || lease.state === "confirmed"),
   );
 });
-const failedStreams = computed(() => streams.value.filter((item) => item.state === "failed"));
 const failedAiTasks = computed(() => aiTasks.value.filter((item) => item.state === "failed"));
 const degradedCatalogSubscriptions = computed(() =>
   nodes.value.reduce((total, node) => {
@@ -265,15 +262,6 @@ const attentionItems = computed<AttentionItem[]>(() => {
       tone: "warning",
       route: "/system/health",
       action: "检查系统",
-    });
-  if (!streamsAvailable.value)
-    items.push({
-      key: "streams-unavailable",
-      title: "流运行状态不可用",
-      detail: "当前无法读取 Guard 流运行投影",
-      tone: "warning",
-      route: "/streams",
-      action: "检查流媒",
     });
   if (offlineNodes.value.length)
     items.push({
@@ -320,7 +308,7 @@ const attentionItems = computed<AttentionItem[]>(() => {
       route: "/system/health",
       action: "检查任务",
     });
-  if (experimental.enabled && deadOutbox.value.length)
+  if (deadOutbox.value.length)
     items.push({
       key: "outbox-dead",
       title: `${deadOutbox.value.length} 条外部投递已终止`,
@@ -343,15 +331,6 @@ const attentionItems = computed<AttentionItem[]>(() => {
 
 const businessExceptionItems = computed<AttentionItem[]>(() => {
   const items: AttentionItem[] = [];
-  if (failedStreams.value.length)
-    items.push({
-      key: "streams-failed",
-      title: `${failedStreams.value.length} 条失败流记录`,
-      detail: "这是业务运行结果，可进入流媒监控查看原因或重新发起",
-      tone: "warning",
-      route: "/streams",
-      action: "查看流媒",
-    });
   if (experimental.enabled && failedAiTasks.value.length)
     items.push({
       key: "ai-failed",
@@ -375,9 +354,7 @@ const overallStatus = computed(() => {
   if (attentionItems.value.some((item) => item.tone === "danger"))
     return {
       title: "存在需要立即处理的问题",
-      description: experimental.enabled
-        ? "关键节点、系统状态或外部投递存在异常，请从待处理事项进入定位。"
-        : "关键节点或系统状态存在异常，请从待处理事项进入定位。",
+      description: "关键节点、系统状态或外部投递存在异常，请从待处理事项进入定位。",
       label: "异常",
       tone: "danger" as Tone,
     };
@@ -397,9 +374,7 @@ const overallStatus = computed(() => {
     };
   return {
     title: "运行正常",
-    description: experimental.enabled
-      ? "已知节点、运行资源和外部投递均未发现待处理异常。"
-      : "已知节点和运行资源均未发现待处理异常。",
+    description: "已知节点、运行资源和外部投递均未发现待处理异常。",
     label: "正常",
     tone: "ready" as Tone,
   };
@@ -415,21 +390,11 @@ const metrics = computed(() => {
       tone: offlineNodes.value.length ? "danger" : "ready",
     },
     {
-      label: "活动业务",
-      value: streamsAvailable.value
-        ? runningStreams.value.length +
-          (experimental.enabled && aiAvailable.value ? runningAiTasks.value.length : 0)
-        : "—",
-      trend: streamsAvailable.value
-        ? experimental.enabled && aiAvailable.value
-          ? `流 ${runningStreams.value.length} · AI ${runningAiTasks.value.length}`
-          : `流 ${runningStreams.value.length}`
-        : "接口不可用",
-      hint: "当前运行",
-      tone:
-        streamsAvailable.value && (!experimental.enabled || aiAvailable.value)
-          ? "ready"
-          : "warning",
+      label: "活动租约",
+      value: leasesAvailable.value ? activeLeases.value.length : "—",
+      trend: leasesAvailable.value ? "ALLOCATED / CONFIRMED" : "接口不可用",
+      hint: "Guard 控制面事实",
+      tone: leasesAvailable.value ? "ready" : "warning",
     },
     {
       label: "待处理",
@@ -445,20 +410,19 @@ const metrics = computed(() => {
           : "ready",
     },
   ];
-  if (experimental.enabled)
-    items.push({
-      label: "外部投递",
-      value: outboxAvailable.value ? pendingOutbox.value.length + deadOutbox.value.length : "—",
-      trend: outboxAvailable.value ? `处理中 ${pendingOutbox.value.length}` : "接口不可用",
-      hint: outboxAvailable.value ? `Dead ${deadOutbox.value.length}` : "状态未知",
-      tone: deadOutbox.value.length
-        ? "danger"
-        : pendingOutbox.value.length
-          ? "warning"
-          : outboxAvailable.value
-            ? "ready"
-            : "info",
-    });
+  items.push({
+    label: "外部投递",
+    value: outboxAvailable.value ? pendingOutbox.value.length + deadOutbox.value.length : "—",
+    trend: outboxAvailable.value ? `处理中 ${pendingOutbox.value.length}` : "接口不可用",
+    hint: outboxAvailable.value ? `Dead ${deadOutbox.value.length}` : "状态未知",
+    tone: deadOutbox.value.length
+      ? "danger"
+      : pendingOutbox.value.length
+        ? "warning"
+        : outboxAvailable.value
+          ? "ready"
+          : "info",
+  });
   return items;
 });
 
@@ -473,45 +437,38 @@ const capabilities = computed<CapabilityItem[]>(() => {
       "实时预览、回放与输出管理",
       "/streams",
       (node) => nodeMatches(node, ["stream"]),
-      streamsAvailable.value ? `运行 ${runningStreams.value.length} 路` : "运行数据不可用",
+    ),
+    integrationCapability(
+      "03",
+      "HTTP 接入",
+      "开放接口与事件回调入口",
+      "/integrations/http",
+      "webhook",
+    ),
+    integrationCapability(
+      "04",
+      "MQTT 接入",
+      "命令订阅与事件发布入口",
+      "/integrations/mqtt",
+      "mqtt",
     ),
   ];
   if (!experimental.enabled) return items;
   items.push(
     {
-      ...capabilityFromNodes("03", "ONVIF", "设备发现与通道控制入口", "/onvif", (node) =>
+      ...capabilityFromNodes("05", "ONVIF", "设备发现与通道控制入口", "/onvif", (node) =>
         nodeMatches(node, ["session-onvif", "onvif"]),
       ),
       experimental: true,
     },
     {
       ...capabilityFromNodes(
-        "04",
+        "06",
         "智能分析",
         "AI 任务调度与结果摘要",
         "/ai",
         (node) => nodeMatches(node, ["avai"]),
         aiAvailable.value ? `运行 ${runningAiTasks.value.length} 个任务` : "任务数据不可用",
-      ),
-      experimental: true,
-    },
-    {
-      ...integrationCapability(
-        "05",
-        "HTTP 接入",
-        "开放接口与事件回调入口",
-        "/integrations/http",
-        "webhook",
-      ),
-      experimental: true,
-    },
-    {
-      ...integrationCapability(
-        "06",
-        "MQTT 接入",
-        "命令订阅与事件发布入口",
-        "/integrations/mqtt",
-        "mqtt",
       ),
       experimental: true,
     },
@@ -706,22 +663,20 @@ async function load() {
   const baseResults = await Promise.allSettled([
     listNodes(),
     listLeases(),
-    listStreams(),
+    listOutbox(200),
   ]);
   assignArrayResult(baseResults[0], nodes, nodesAvailable);
   assignArrayResult(baseResults[1], leases, leasesAvailable);
-  assignArrayResult(baseResults[2], streams, streamsAvailable);
+  assignArrayResult(baseResults[2], outbox, outboxAvailable);
   let experimentalRejected = false;
   if (experimental.enabled) {
     const experimentalResults = await Promise.allSettled([
       listAiTasks(),
-      listOutbox(200),
       pollEvents(undefined, 100),
     ]);
     assignArrayResult(experimentalResults[0], aiTasks, aiAvailable);
-    assignArrayResult(experimentalResults[1], outbox, outboxAvailable);
-    if (experimentalResults[2].status === "fulfilled") {
-      events.value = experimentalResults[2].value.items;
+    if (experimentalResults[1].status === "fulfilled") {
+      events.value = experimentalResults[1].value.items;
       eventsAvailable.value = true;
     } else {
       events.value = [];
@@ -730,10 +685,8 @@ async function load() {
     experimentalRejected = experimentalResults.some((result) => result.status === "rejected");
   } else {
     aiTasks.value = [];
-    outbox.value = [];
     events.value = [];
     aiAvailable.value = true;
-    outboxAvailable.value = true;
     eventsAvailable.value = true;
   }
   lastRefreshAt.value = Date.now();

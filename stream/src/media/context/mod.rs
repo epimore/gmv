@@ -27,7 +27,7 @@ use base::err::BaseErrorCode;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{GlobalError, GlobalResult};
 use gmv_domain::info::media_info_ext::MediaExt;
-use log::{error, warn};
+use log::{debug, error, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVERROR_EOF, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO,
@@ -475,7 +475,10 @@ impl MediaContext {
                     .unwrap_or_default(),
             };
             if let Some(stream_id) = self.stream_id.as_deref() {
-                Register::set_actual_media_profile(stream_id, actual_media_profile.clone())?;
+                if !Register::try_set_actual_media_profile(stream_id, actual_media_profile.clone())
+                {
+                    return Ok(MediaCompletion::InputClosed);
+                }
             }
             self.actual_media_profile = Some(actual_media_profile);
             //初始化muxer
@@ -795,7 +798,7 @@ fn set_output_ready(
     {
         return Ok(());
     }
-    Register::set_output_media_metadata(
+    let updated = Register::try_set_output_media_metadata(
         stream_id,
         output_type,
         OutputMediaMetadata {
@@ -804,7 +807,13 @@ fn set_output_ready(
             audio_codec: profile.audio_codec.clone(),
             mime_codec: output_mime_codec(output_type, profile),
         },
-    )
+    )?;
+    if !updated {
+        debug!(
+            "output ready state update ignored: action=output_metadata, outcome=ignored, reason=stream_finalized, stream_id={stream_id}, output_type={output_type}"
+        );
+    }
+    Ok(())
 }
 
 fn output_mime_codec(output_type: &str, profile: &ActualMediaProfile) -> String {

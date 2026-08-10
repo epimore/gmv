@@ -19,6 +19,14 @@ pub const MYSQL_0007: &str =
     include_str!("../../migrations/mysql/0007_guard_integration_master_key.sql");
 pub const SQLITE_0007: &str =
     include_str!("../../migrations/sqlite/0007_guard_integration_master_key.sql");
+pub const MYSQL_0008: &str =
+    include_str!("../../migrations/mysql/0008_guard_mqtt_runtime_schema_cleanup.sql");
+pub const SQLITE_0008: &str =
+    include_str!("../../migrations/sqlite/0008_guard_mqtt_runtime_schema_cleanup.sql");
+pub const MYSQL_0009: &str =
+    include_str!("../../migrations/mysql/0009_guard_integration_schema_consolidation.sql");
+pub const SQLITE_0009: &str =
+    include_str!("../../migrations/sqlite/0009_guard_integration_schema_consolidation.sql");
 
 pub const INTEGRATIONS_V2_COMPATIBILITY_SQL: &str = "INSERT INTO _base_db_migrations(version,name,applied_at_ms) \
      SELECT 3,'guard_integrations',applied_at_ms FROM _base_db_migrations \
@@ -90,7 +98,7 @@ pub const MYSQL_0004_INDEXES: &[(&str, &str, &str)] = &[(
     "CREATE INDEX idx_guard_command_integration_created ON guard_command(integration_id, created_at_ms)",
 )];
 
-pub fn migration_pairs() -> [(&'static str, &'static str); 6] {
+pub fn migration_pairs() -> [(&'static str, &'static str); 8] {
     [
         (MYSQL_0001, SQLITE_0001),
         (MYSQL_0003, SQLITE_0003),
@@ -98,6 +106,8 @@ pub fn migration_pairs() -> [(&'static str, &'static str); 6] {
         (MYSQL_0005, SQLITE_0005),
         (MYSQL_0006, SQLITE_0006),
         (MYSQL_0007, SQLITE_0007),
+        (MYSQL_0008, SQLITE_0008),
+        (MYSQL_0009, SQLITE_0009),
     ]
 }
 
@@ -132,6 +142,16 @@ pub const MIGRATIONS: &[base_db::migration::Migration] = &[
         name: "guard_integration_master_key",
         sql: SQLITE_0007,
     },
+    base_db::migration::Migration {
+        version: 8,
+        name: "guard_mqtt_runtime_schema_cleanup",
+        sql: SQLITE_0008,
+    },
+    base_db::migration::Migration {
+        version: 9,
+        name: "guard_integration_schema_consolidation",
+        sql: SQLITE_0009,
+    },
 ];
 
 pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
@@ -164,5 +184,15 @@ pub const MYSQL_MIGRATIONS: &[base_db::migration::Migration] = &[
         version: 7,
         name: "guard_integration_master_key",
         sql: MYSQL_0007,
+    },
+    base_db::migration::Migration {
+        version: 8,
+        name: "guard_mqtt_runtime_schema_cleanup",
+        sql: MYSQL_0008,
+    },
+    base_db::migration::Migration {
+        version: 9,
+        name: "guard_integration_schema_consolidation",
+        sql: MYSQL_0009,
     },
 ];
