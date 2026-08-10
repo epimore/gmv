@@ -1,6 +1,7 @@
 log:
     level: warn
     stdout: true
+    file: true
     prefix: session
     store_path: ./logs
     specify:

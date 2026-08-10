@@ -955,6 +955,71 @@ journalctl -u gmv-session-gb28181 -f
 journalctl -u gmv-stream -f
 ```
 
+### 13.4 嵌入式设备日志策略
+
+资源受限且使用 Flash/eMMC 的嵌入式设备，推荐由 systemd/procd 托管前台进程，并将 GMV 日志只输出到 stdout/stderr。supervisor 再把日志写入有容量上限的 RAM/易失环形存储，避免应用日期日志长期占用空间和产生持续写放大。
+
+该能力由公共 logger 的 `log.file` 配置控制。
+
+嵌入式配置为：
+
+```yaml
+log:
+  level: warn
+  stdout: true
+  file: false
+  prefix: guard
+  store_path: /run/gmv/logs
+```
+
+其中：
+
+- `file` 默认保持 `true`，现有服务器和开发环境升级后继续写日志文件；
+- `file: false` 时不创建 `store_path`，也不创建主日志或 `specify.file_name_prefix` 独立日志文件；
+- `stdout: true` 必须保留，由 supervisor 接管输出；
+- `store_path` 在 `file: false` 时仅作为兼容配置保留，不发生写入；
+- 日志 sink 的变化不改变 INFO/WARN/ERROR 语义、敏感信息规则和优雅停机终态。
+
+stdout-only 模式必须继续使用前台 systemd unit：
+
+```ini
+[Service]
+Type=simple
+ExecStart=/opt/gmv/bin/guard start -c /opt/gmv/config/guard.yml
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gmv-guard
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+Restart=always
+RestartSec=3
+```
+
+Session 和 Stream 使用相同规则，并分别设置自己的 `ExecStart` 与 `SyslogIdentifier`。`ExecStart` 不得增加 `--daemon`：应用自身 daemon 会脱离调用终端，关闭文件 sink 后可能没有可靠的日志接收端。停止服务使用 `systemctl stop`，由 systemd 发送 SIGTERM；10 秒停止期限为应用 8 秒关闭预算预留最终退出时间。
+
+journald 建议使用易失存储并设置硬容量上限。以下仅为设备级示例，数值必须根据目标设备可用 RAM 调整；该配置影响整机 journal，不应在未核对其它服务需求时直接覆盖：
+
+```ini
+# /etc/systemd/journald.conf.d/gmv-volatile.conf
+[Journal]
+Storage=volatile
+RuntimeMaxUse=16M
+MaxRetentionSec=1day
+RateLimitIntervalSec=30s
+RateLimitBurst=1000
+```
+
+应用该配置后执行：
+
+```bash
+sudo systemctl restart systemd-journald
+sudo systemctl restart gmv-guard gmv-session-gb28181 gmv-stream
+journalctl --disk-usage
+journalctl -u gmv-guard -u gmv-session-gb28181 -u gmv-stream --since today
+```
+
+易失日志在设备断电或重启后不可恢复，这是降低 Flash 写入的明确取舍。需要长期取证的现场可以继续使用默认 `file: true`，但必须由 logrotate 或外部采集系统设置总容量和保留期限；不得同时依赖应用无界日期文件和无界 journal。
+
 ## 14. 数据库和持久化目录
 
 ### 14.1 Guard 数据库

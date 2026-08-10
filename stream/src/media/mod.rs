@@ -41,9 +41,11 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
             _ = runtime.cancel.cancelled() => break,
             ssrc = rx.recv() => {
                 let Some(ssrc) = ssrc else {
-                    if !runtime.cancel.is_cancelled() {
+                    if !runtime.cancel.is_cancelled() && !runtime.is_shutting_down() {
                         error!("media dispatcher input closed unexpectedly");
                         GlobalRuntime::request_shutdown_with_error();
+                    } else {
+                        debug!("media dispatcher input closed during shutdown");
                     }
                     break;
                 };

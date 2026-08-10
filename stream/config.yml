@@ -1,6 +1,7 @@
 log:
   level: warn
   stdout: true
+  file: true
   prefix: stream
   store_path: ./logs
   specify:
