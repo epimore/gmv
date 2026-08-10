@@ -501,7 +501,7 @@ async function mountPlayer(sources = props.sources) {
     destroyPlayer();
     return;
   }
-  if (activePlaybackReady.value && activeSource.value?.url === sources[0].url) {
+  if (activePlaybackReady.value && sameSourceContract(activeSource.value, sources[0])) {
     destroyPlayerSlot(activeVideoSlot.value === 0 ? 1 : 0);
     viewState.value = 'playing';
     isLoading.value = false;
@@ -541,7 +541,7 @@ async function mountPlayer(sources = props.sources) {
   playerStops[slot].push(core.on('playing', () => {
     if (version !== playerLoadVersion) return;
     const previousSlot = activeVideoSlot.value;
-    const changed = activeSource.value?.url !== slotSource.url;
+    const changed = !sameSourceContract(activeSource.value, slotSource);
     activeVideoSlot.value = slot;
     activePlaybackReady.value = true;
     activeSource.value = slotSource;
@@ -627,6 +627,14 @@ async function mountPlayer(sources = props.sources) {
   }));
 
   await core.load();
+}
+
+function sameSourceContract(left: GmvSource | undefined, right: GmvSource): boolean {
+  return left?.url === right.url
+    && left.protocol === right.protocol
+    && left.codec === right.codec
+    && left.mimeCodec === right.mimeCodec
+    && left.hasAudio === right.hasAudio;
 }
 
 function destroyPlayer() {

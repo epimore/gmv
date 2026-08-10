@@ -1248,7 +1248,7 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
     snapshot: true,
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
-    audio: channel ? canAudio(channel) && hasAudio : false,
+    audio: !!channel && hasAudio,
     streamSwitch: false,
     streamProfile: !!channel && lastAction.value !== '历史回放',
     aiOverlay: false,
@@ -1258,6 +1258,7 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const channel = selectedChannel.value;
   const playback = lastAction.value === '历史回放';
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
+  if (streamHasAudio(lastStream.value)) items.splice(1, 0, 'audio');
   if (playback && channel && canPlayback(channel)) {
     items.splice(1, 0, 'playbackClip');
     items.push('timeline');
@@ -1266,7 +1267,6 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   overflowItems.push('outputType');
   overflowItems.push('info');
   if (!playback) overflowItems.push('streamProfile');
-  if (channel && canAudio(channel)) overflowItems.push('audio');
   if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
   if (playback && channel && canPlayback(channel)) overflowItems.push('playbackRate');
   if (playback && channel) overflowItems.push('cloudRecord');
@@ -1404,7 +1404,6 @@ function canPlayback(channel: GbChannelInfo) { return channelOnline(channel) && 
 function canSelectMultiChannel(channel: GbChannelInfo) { return multiMode.value === 'live' ? canPlayLive(channel) : canPlayback(channel); }
 function canSnapshot(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.snapshot); }
 function canPtz(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.ptz_enable); }
-function canAudio(channel: GbChannelInfo) { return channelOnline(channel) && bizEnabled(channel) && confEnabled(channel.audio_enable); }
 function canViewImages(channel: GbChannelInfo) { return bizEnabled(channel); }
 function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
   const hasAudio = cell.sources.some((source) => source.hasAudio);
@@ -1414,7 +1413,7 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
     snapshot: true,
     record: false,
     playback: cell.mode === 'playback' && canPlayback(cell.channel),
-    audio: hasAudio && canAudio(cell.channel),
+    audio: hasAudio,
     streamSwitch: cell.sources.length > 1,
     streamProfile: cell.mode === 'live',
     aiOverlay: false,
@@ -1430,7 +1429,7 @@ function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControls
   } else {
     items.push('snapshot', 'fullscreen');
   }
-  if (capabilities.audio) overflowItems.push('audio');
+  if (capabilities.audio) items.splice(1, 0, 'audio');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
   if (capabilities.streamProfile) overflowItems.push('streamProfile');

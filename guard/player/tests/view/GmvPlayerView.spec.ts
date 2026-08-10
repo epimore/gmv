@@ -81,6 +81,45 @@ afterEach(() => {
 });
 
 describe("GmvPlayerView make-before-break", () => {
+  it("starts muted and lets the user enable runtime-detected audio", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [
+          { protocol: "flv", url: "http://127.0.0.1/live.flv", codec: "h264", hasAudio: true },
+        ],
+        capabilities: { audio: true },
+        controls: { items: ["audio"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(video.muted).toBe(true);
+    await wrapper.get('button[aria-label="切换声音"]').trigger("click");
+    expect(video.muted).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("reconnects when audio metadata changes on the same URL", async () => {
+    const url = "http://127.0.0.1/live.flv";
+    const wrapper = mount(GmvPlayerView, {
+      props: { sources: source(url) },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    wrapper.findAll("video")[0].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    await wrapper.setProps({
+      sources: [{ protocol: "flv", url, codec: "h264", hasAudio: true }],
+    });
+
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    expect(players[0].destroy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("截图从当前活动视频帧生成 PNG 并触发浏览器下载", async () => {
     const drawImage = vi.fn();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({

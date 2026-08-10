@@ -49,8 +49,8 @@ pub mod utils;
 /// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 const FIX_MAX_READ_FRAME: usize = 128;
-const TOPOLOGY_SETTLE_PACKETS: usize = 64;
-const TOPOLOGY_SETTLE_BYTES: usize = 64 * 1024;
+const TOPOLOGY_SETTLE_PACKETS: usize = 8;
+const TOPOLOGY_SETTLE_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaCompletion {
