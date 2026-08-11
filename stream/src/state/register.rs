@@ -172,6 +172,7 @@ pub struct RtpChannel {
     pub stream_id: Arc<str>,
     pub last_packet_at_ms: AtomicU64,
     pub packet_count: AtomicU64,
+    first_packet_at: Mutex<Option<Instant>>,
     accepting: AtomicBool,
     active_refreshes: AtomicUsize,
     pub miss_pkt: AtomicUsize,
@@ -192,6 +193,7 @@ impl RtpChannel {
             stream_id,
             last_packet_at_ms: AtomicU64::new(now_ms),
             packet_count: AtomicU64::new(0),
+            first_packet_at: Mutex::new(None),
             accepting: AtomicBool::new(true),
             active_refreshes: AtomicUsize::new(0),
             miss_pkt: AtomicUsize::new(0),
@@ -201,6 +203,9 @@ impl RtpChannel {
     }
     fn get_rtp_rx(&self) -> crossbeam_channel::Receiver<RtpPacket> {
         self.rtp_rx.clone()
+    }
+    fn first_packet_at(&self) -> Option<Instant> {
+        *self.first_packet_at.lock()
     }
     fn refresh(
         &self,
@@ -230,7 +235,9 @@ impl RtpChannel {
             .compare_exchange(true, false, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
-            Register::get()
+            let accepted_at = Instant::now();
+            *self.first_packet_at.lock() = Some(accepted_at);
+            if let Err(error) = Register::get()
                 .inner
                 .event_tx
                 .try_send((
@@ -244,7 +251,11 @@ impl RtpChannel {
                 .hand_log(|msg| {
                     error!("System busy;InnerEvent: {ssrc} Stream registration send failed: {msg}")
                 })
-                .inspect_err(|_| self.wait_sign_in.store(true, Ordering::Release))?;
+            {
+                self.wait_sign_in.store(true, Ordering::Release);
+                *self.first_packet_at.lock() = None;
+                return Err(error);
+            }
             let lifecycle_generation = Register::get()
                 .inner
                 .stream_metadata_map
@@ -416,6 +427,7 @@ pub struct StreamMetadata {
     pub converter: ConverterLayer,
     pub media_ext: Option<MediaExt>,
     actual_media_profile: Option<ActualMediaProfile>,
+    audio_runtime: AudioRuntimeMetadata,
     output_media_metadata: HashMap<String, OutputMediaMetadata>,
     pub output: OutputLayer,
     pub session_hook_endpoint: Option<String>,
@@ -435,6 +447,36 @@ pub struct StreamRuntimeObservation {
 pub struct ActualMediaProfile {
     pub video_codec: String,
     pub audio_codec: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum AudioSourceRuntimeState {
+    #[default]
+    NotExpected,
+    DeclaredUnobserved,
+    DetectedUnready,
+    Ready,
+    Unavailable,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum OutputAudioRuntimeMode {
+    #[default]
+    None,
+    SilentPlaceholder,
+    Real,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AudioRuntimeMetadata {
+    pub source_state: AudioSourceRuntimeState,
+    pub output_mode: OutputAudioRuntimeMode,
+    pub recovery_eligible: bool,
+    pub late_track_watch: bool,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub generation: u64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -514,6 +556,7 @@ impl StreamMetadata {
             converter,
             media_ext: None,
             actual_media_profile: None,
+            audio_runtime: AudioRuntimeMetadata::default(),
             output_media_metadata: HashMap::new(),
             output,
             session_hook_endpoint: None,
@@ -1661,11 +1704,26 @@ impl Register {
                                 return Err(error);
                             }
                         };
+                        let Some(first_rtp_at) = rtp_channel.first_packet_at() else {
+                            rtp_channel.media_started.store(false, Ordering::Release);
+                            return Err(GlobalError::new_biz_error(
+                                BaseErrorCode::InvalidState.code(),
+                                "stream first RTP timestamp is unavailable",
+                                |msg| error!("{msg}: stream_id={stream_id}, ssrc={}", meta.ssrc),
+                            ));
+                        };
+                        let resolved_in_wait_timeout =
+                            Duration::from_secs(u64::from(meta.in_wait_timeout));
+                        let startup_io_deadline =
+                            first_rtp_at + resolved_in_wait_timeout.min(Duration::from_secs(5));
                         let stream_config = StreamConfig {
                             converter: meta.converter.clone(),
                             media_ext: media_ext.clone(),
                             rtp_rx,
                             context_event_rx: converter_event_rx,
+                            first_rtp_at,
+                            startup_io_deadline,
+                            resolved_in_wait_timeout,
                         };
                         meta.mpsc_bus
                             .try_publish(stream_config)
@@ -1767,6 +1825,25 @@ impl Register {
         arc.stream_metadata_map
             .get(stream_id)
             .and_then(|meta| meta.actual_media_profile.clone())
+    }
+
+    pub(crate) fn try_set_audio_runtime(
+        stream_id: &str,
+        audio_runtime: AudioRuntimeMetadata,
+    ) -> bool {
+        let arc = Self::get().inner.clone();
+        let Some(mut metadata) = arc.stream_metadata_map.get_mut(stream_id) else {
+            return false;
+        };
+        metadata.audio_runtime = audio_runtime;
+        true
+    }
+
+    pub fn audio_runtime(stream_id: &str) -> Option<AudioRuntimeMetadata> {
+        let arc = Self::get().inner.clone();
+        arc.stream_metadata_map
+            .get(stream_id)
+            .map(|metadata| metadata.audio_runtime.clone())
     }
 
     pub fn set_actual_media_profile_by_ssrc(

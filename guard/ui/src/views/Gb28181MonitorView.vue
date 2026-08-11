@@ -555,7 +555,9 @@
             :media-mode="lastAction === '历史回放' ? 'playback' : 'live'" :stream-id="lastStream?.stream_id"
             :media-transport="mediaTransportLabel(singleMediaTransport)"
             :media-node-id="lastStream?.node_id" :session-node-id="lastStream?.session_node_id"
-            :audio-codec="lastStream?.audio_codec" :poster="playerPoster" :capabilities="playerCapabilities"
+            :audio-codec="lastStream?.audio_codec" :source-audio-state="lastStream?.source_audio_state"
+            :output-audio-mode="lastStream?.output_audio_mode" :audio-sample-rate="lastStream?.audio_sample_rate"
+            :audio-channels="lastStream?.audio_channels" :poster="playerPoster" :capabilities="playerCapabilities"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
             :cloud-record-locked-range="singleCloudRecordLockedRange" :output-type="singlePlayerOutputType"
@@ -756,6 +758,7 @@ import {
   listGbChannels,
   listGbDevicePage,
   listGbResources,
+  listStreamOutputs,
   listCloudRecordings,
   listNodes,
   queryGbChannelRecords,
@@ -967,6 +970,10 @@ let playRequestSeq = 0;
 let multiViewDisposed = false;
 let playbackPresenceTimer: number | undefined;
 let playbackPresenceInFlight = false;
+let mediaStatePollTimer: number | undefined;
+let mediaStatePollInFlight = false;
+let mediaStatePollStartedAt = 0;
+let mediaStatePollFailures = 0;
 const configForm = reactive<GbChannelPayload & { device_id?: string }>({ channel_id: '', device_id: '' });
 const canOperate = computed(() => auth.session?.role === 'operator' || auth.session?.role === 'admin');
 const canManageResources = computed(() => auth.session?.role === 'admin');
@@ -1239,6 +1246,99 @@ watch(pausedPlaybackPresenceKey, (key) => {
   syncPlaybackPresenceHeartbeat();
   if (key) void heartbeatPausedPlaybacks();
 });
+
+const activeMediaStateKey = computed(() => [
+  lastStream.value?.state === 'running' ? lastStream.value.stream_id : '',
+  ...multiCells.value.filter((cell) => cell.stream?.state === 'running').map((cell) => cell.stream!.stream_id),
+].filter(Boolean).sort().join('|'));
+
+function stopMediaStatePolling() {
+  if (mediaStatePollTimer !== undefined) window.clearTimeout(mediaStatePollTimer);
+  mediaStatePollTimer = undefined;
+  mediaStatePollStartedAt = 0;
+  mediaStatePollFailures = 0;
+}
+
+function mediaStatePollDelay() {
+  const age = Date.now() - mediaStatePollStartedAt;
+  const failureBackoff = [2_000, 5_000, 10_000];
+  const base = mediaStatePollFailures > 0
+    ? failureBackoff[Math.min(mediaStatePollFailures, failureBackoff.length) - 1]
+    : age < 10_000 ? 1_000 : age < 60_000 ? 2_000 : 5_000;
+  let hash = 0;
+  for (const char of activeMediaStateKey.value) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return Math.round(base * (0.9 + (Math.abs(hash) % 201) / 1_000));
+}
+
+function applyOutputState(stream: StreamSummary, output: StreamOutputSummary): StreamSummary {
+  return {
+    ...stream,
+    endpoint: output.endpoint || stream.endpoint,
+    video_codec: output.video_codec || stream.video_codec,
+    audio_codec: output.audio_codec || stream.audio_codec,
+    mime_codec: output.mime_codec || stream.mime_codec,
+    source_audio_state: output.source_audio_state,
+    output_audio_mode: output.output_audio_mode,
+    audio_recovery_eligible: output.audio_recovery_eligible,
+    late_track_watch: output.late_track_watch,
+    audio_sample_rate: output.audio_sample_rate,
+    audio_channels: output.audio_channels,
+    output_generation: output.generation,
+  };
+}
+
+async function pollMediaStates() {
+  if (mediaStatePollInFlight || !activeMediaStateKey.value || multiViewDisposed) return;
+  mediaStatePollInFlight = true;
+  try {
+    const streamIds = [...new Set(activeMediaStateKey.value.split('|').filter(Boolean))];
+    const results = await Promise.allSettled(streamIds.map(async (streamId) => ({
+      streamId,
+      outputs: await listStreamOutputs(streamId),
+    })));
+    mediaStatePollFailures = results.every((result) => result.status === 'fulfilled')
+      ? 0
+      : mediaStatePollFailures + 1;
+    for (const result of results) {
+      if (result.status !== 'fulfilled') continue;
+      const { streamId, outputs } = result.value;
+      const currentSingle = lastStream.value;
+      if (currentSingle?.stream_id === streamId) {
+        const output = outputs.find((item) => item.output_id === singleOutput.value?.output_id)
+          ?? outputs.find((item) => item.endpoint === currentSingle.endpoint)
+          ?? outputs.find((item) => item.state === 'ready');
+        if (output) {
+          singleOutput.value = output;
+          lastStream.value = applyOutputState(currentSingle, output);
+        }
+      }
+      for (const cell of multiCells.value.filter((item) => item.stream?.stream_id === streamId)) {
+        const output = outputs.find((item) => item.output_id === cell.output?.output_id)
+          ?? outputs.find((item) => item.endpoint === cell.stream?.endpoint)
+          ?? outputs.find((item) => item.state === 'ready');
+        if (!output || !cell.stream) continue;
+        const previousState = `${cell.stream.source_audio_state}:${cell.stream.output_audio_mode}:${cell.stream.output_generation}`;
+        cell.output = output;
+        cell.stream = applyOutputState(cell.stream, output);
+        const nextState = `${cell.stream.source_audio_state}:${cell.stream.output_audio_mode}:${cell.stream.output_generation}`;
+        if (previousState !== nextState) cell.sources = streamSources(cell.stream, cell.mode);
+      }
+    }
+  } finally {
+    mediaStatePollInFlight = false;
+    if (activeMediaStateKey.value && !multiViewDisposed) {
+      mediaStatePollTimer = window.setTimeout(() => void pollMediaStates(), mediaStatePollDelay());
+    }
+  }
+}
+
+watch(activeMediaStateKey, (key) => {
+  stopMediaStatePolling();
+  if (!key) return;
+  mediaStatePollStartedAt = Date.now();
+  void pollMediaStates();
+});
+
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
   const audioState = streamAudioState(lastStream.value);
@@ -1300,6 +1400,7 @@ const playerSources = computed<GmvSource[]>(() => {
     rateMode: protocol === 'mp4' ? 'local-file' : lastAction.value === '历史回放' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, audioState),
     priority: 1,
+    generation: lastStream.value?.output_generation,
   }];
 });
 const multiGridCells = computed(() => multiCells.value.map((cell) => {
@@ -1318,6 +1419,10 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     mediaNodeId: cell.stream?.node_id,
     sessionNodeId: cell.session_node_id,
     audioCodec: cell.stream?.audio_codec,
+    sourceAudioState: cell.stream?.source_audio_state,
+    outputAudioMode: cell.stream?.output_audio_mode,
+    audioSampleRate: cell.stream?.audio_sample_rate,
+    audioChannels: cell.stream?.audio_channels,
     poster: cell.poster,
     capabilities,
     controls: multiCellControls(capabilities),
@@ -1456,6 +1561,9 @@ function streamAudioCodec(stream?: StreamSummary) {
   return codec && !['none', 'unknown', 'null'].includes(codec) ? codec : undefined;
 }
 function streamAudioState(stream?: StreamSummary): boolean | undefined {
+  if (stream?.output_audio_mode === 'silent_placeholder' || stream?.output_audio_mode === 'real') return true;
+  if (stream?.output_audio_mode === 'none') return false;
+  if (['declared_unobserved', 'detected_unready', 'ready', 'unavailable', 'failed'].includes(stream?.source_audio_state || '')) return true;
   const codec = (stream?.audio_codec || '').trim().toLowerCase();
   if (!codec || ['unknown', 'null'].includes(codec)) return undefined;
   return codec !== 'none';
@@ -1533,6 +1641,7 @@ function streamSources(stream?: StreamSummary, mode: MultiMode = 'live'): GmvSou
     rateMode: protocol === 'mp4' ? 'local-file' : mode === 'playback' ? 'remote-stream' : 'disabled',
     label: streamSourceLabel(codec, audioState),
     priority: 1,
+    generation: stream?.output_generation,
   }];
 }
 function playbackCellDurationMs(cell: MultiViewCell) {
@@ -4015,11 +4124,13 @@ onBeforeRouteLeave(async () => {
   if (!await retryPendingViewerReleases()) return false;
   multiViewDisposed = true;
   stopPlaybackPresenceHeartbeat();
+  stopMediaStatePolling();
 });
 onBeforeUnmount(() => {
   multiViewDisposed = true;
   stopRecordPolling();
   stopPlaybackPresenceHeartbeat();
+  stopMediaStatePolling();
   window.removeEventListener('online', handlePlaybackPresenceWakeup);
   window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
   document.removeEventListener('visibilitychange', handlePlaybackPresenceWakeup);

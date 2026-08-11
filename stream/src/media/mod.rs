@@ -65,11 +65,38 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
                 let worker_runtime = runtime.clone();
                 let task_name = format!("stream-media-worker-{ssrc}");
                 if let Err(err) = runtime.spawn_blocking(task_name, move || {
-                    let Ok((mut ctx, muxer_layer)) = MediaContext::init(ssrc, stream_config) else {
-                        return;
+                    let (mut ctx, muxer_layer) = match MediaContext::init(
+                        ssrc,
+                        stream_config,
+                        worker_runtime.cancel.clone(),
+                    ) {
+                        Ok(initialized) => initialized,
+                        Err(err) => {
+                            if worker_runtime.cancel.is_cancelled()
+                                || worker_runtime.is_shutting_down()
+                            {
+                                debug!(
+                                    "media worker setup ended: stage=initialize, outcome=cancelled, stream_id={}, ssrc={}",
+                                    worker_stream_id, ssrc
+                                );
+                            } else {
+                                mark_outputs_failed(&worker_stream_id);
+                                error!(
+                                    "media worker failed: stage=initialize, outcome=failed, stream_id={}, ssrc={}, reason={err}",
+                                    worker_stream_id, ssrc
+                                );
+                            }
+                            return;
+                        }
                     };
                     let result = ctx.invoke(muxer_layer);
-                    let failed = result.is_err();
+                    let cancelled = matches!(
+                        result,
+                        Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::Cancelled
+                        ))
+                    );
+                    let failed = result.is_err() && !cancelled;
                     if failed {
                         mark_outputs_failed(&worker_stream_id);
                     }
@@ -80,6 +107,19 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
                         ),
                         Ok(MediaCompletion::InputClosed) => debug!(
                             "media worker completed: stage=context, outcome=input_closed, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Ok(MediaCompletion::Cancelled)
+                        | Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::Cancelled,
+                        )) => debug!(
+                            "media worker completed: stage=demux, outcome=cancelled, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::StartupDeadline,
+                        )) => error!(
+                            "media worker failed: stage=startup_io, outcome=deadline_exceeded, stream_id={}, ssrc={}",
                             worker_stream_id, ssrc
                         ),
                         Err(MediaRunError::Ffmpeg {

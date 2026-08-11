@@ -1,7 +1,8 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::fmp4::clone_packet_for_mp4;
 use crate::media::context::format::{
-    FmtMuxer, HlsPart, MuxPacket, MuxPacketSender, can_start_fragmented_output, write_callback,
+    FmtMuxer, HlsPart, MuxPacket, MuxPacketSender, PlannedStreamMap, can_start_fragmented_output,
+    copy_output_plan, write_callback,
 };
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
@@ -12,16 +13,14 @@ use log::error;
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE,
     AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO,
-    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational,
-    AVStream, av_dict_set, av_free, av_guess_format, av_interleaved_write_frame, av_malloc,
-    av_packet_rescale_ts, av_packet_unref, av_rescale_q, av_write_frame, av_write_trailer,
-    avcodec_parameters_copy, avformat_alloc_context, avformat_new_stream, avformat_write_header,
-    avio_alloc_context, avio_context_free, avio_flush,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket, AVRational, AVStream, av_dict_set, av_free,
+    av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_rescale_ts, av_packet_unref,
+    av_rescale_q, av_write_frame, av_write_trailer, avformat_alloc_context, avformat_new_stream,
+    avformat_write_header, avio_alloc_context, avio_context_free, avio_flush,
 };
 use rsmpeg::ffi::{
     AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
 };
-use std::collections::HashMap;
 use std::ffi::{CString, c_int, c_void};
 use std::ptr;
 use std::sync::Arc;
@@ -41,7 +40,7 @@ pub struct HlsFmp4Context {
     pub io_buf: *mut u8,
     out_buf_ptr: *mut Vec<u8>,
 
-    in_timebase_map: HashMap<c_int, AVRational>,
+    stream_map: PlannedStreamMap,
     v_idx: c_int,
     started: bool,
     fragment_started_with_key: bool,
@@ -140,9 +139,7 @@ impl FmtMuxer for HlsFmp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-            let mut in_timebase_map = HashMap::with_capacity(8);
-            let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
-            let v_idx = copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
+            let (stream_map, v_idx) = copy_output_plan(demuxer_context, out_fmt_ctx)?;
 
             let ret = avformat_write_header(out_fmt_ctx, &mut options);
             // 释放选项字典
@@ -169,7 +166,7 @@ impl FmtMuxer for HlsFmp4Context {
                 avio_ctx,
                 io_buf,
                 out_buf_ptr,
-                in_timebase_map,
+                stream_map,
                 v_idx,
                 started: false,
                 fragment_started_with_key: false,
@@ -191,7 +188,7 @@ impl FmtMuxer for HlsFmp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, _timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            match self.in_timebase_map.get(&pkt.stream_index) {
+            match self.stream_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
                         "fMP4 write failed,stream index error: {}",
@@ -199,9 +196,9 @@ impl FmtMuxer for HlsFmp4Context {
                     );
                     return Ok(());
                 }
-                Some(&in_tb) => {
-                    let packet_time_us = packet_time_us(pkt, in_tb);
-                    let packet_end_us = packet_end_us(pkt, in_tb, packet_time_us);
+                Some(planned) => {
+                    let packet_time_us = packet_time_us(pkt, planned.input_time_base);
+                    let packet_end_us = packet_end_us(pkt, planned.input_time_base, packet_time_us);
                     let is_keyframe =
                         self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if !can_start_fragmented_output(
@@ -225,13 +222,18 @@ impl FmtMuxer for HlsFmp4Context {
                         self.fragment_end_us = packet_end_us;
                         self.segment_start_us = packet_time_us;
                     }
-                    let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
+                    let out_st = *(*self.fmt_ctx).streams.add(planned.output_index as usize);
                     let codecpar = (*out_st).codecpar;
                     let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
                         && !(*codecpar).extradata.is_null()
                         && (*codecpar).extradata_size > 0;
                     let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
-                    av_packet_rescale_ts(cloned.as_mut_ptr(), in_tb, (*out_st).time_base);
+                    (*cloned.as_mut_ptr()).stream_index = planned.output_index;
+                    av_packet_rescale_ts(
+                        cloned.as_mut_ptr(),
+                        planned.input_time_base,
+                        (*out_st).time_base,
+                    );
 
                     (*cloned.as_mut_ptr()).pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
@@ -365,57 +367,17 @@ fn packet_end_us(pkt: &AVPacket, time_base: AVRational, start_us: i64) -> i64 {
     };
     start_us.saturating_add(duration_us.max(0))
 }
-pub fn copy_streams(
-    base_time_map: &mut HashMap<i32, AVRational>,
-    in_fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
-    out_fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
-) -> GlobalResult<c_int> {
-    unsafe {
-        let nb_streams = (*in_fmt_ctx).nb_streams;
-        let mut v_idx = -1;
-
-        for i in 0..nb_streams {
-            let in_st = *(*in_fmt_ctx).streams.offset(i as isize);
-            let codecpar = (*in_st).codecpar;
-
-            // 只处理视频和音频流
-            if !matches!(
-                (*codecpar).codec_type,
-                AVMediaType_AVMEDIA_TYPE_VIDEO | AVMediaType_AVMEDIA_TYPE_AUDIO
-            ) {
-                continue;
-            }
-            if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                v_idx = i as c_int;
-            }
-
-            // 创建输出流
-            let out_st = avformat_new_stream(out_fmt_ctx, ptr::null_mut());
-            if out_st.is_null() {
-                return Err(GlobalError::new_sys_error(
-                    "avformat_new_stream failed",
-                    |msg| error!("msg"),
-                ));
-            }
-
-            // 复制编解码器参数
-            avcodec_parameters_copy((*out_st).codecpar, codecpar);
-
-            // 保存输入流的时间基
-            base_time_map.insert(i as c_int, (*in_st).time_base);
-        }
-
-        Ok(v_idx)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::media::context::format::demuxer::{AvioResource, ParamRepairState};
+    use crate::media::rtp::RtpReadControl;
+    use base::tokio_util::sync::CancellationToken;
     use rsmpeg::avformat::{AVFormatContextInput, AVIOContextContainer, AVIOContextCustom};
     use rsmpeg::avutil::AVMem;
     use rsmpeg::ffi::{AVSampleFormat_AV_SAMPLE_FMT_FLTP, av_new_packet};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn assert_demuxable(init: &Bytes, media: &[u8]) {
         let mut input = Vec::with_capacity(init.len() + media.len());
@@ -499,8 +461,17 @@ mod tests {
                     io_buf: ptr::null_mut(),
                     avio_ctx: ptr::null_mut(),
                 },
-                params: Vec::<ParamRepairState>::new(),
+                params: vec![ParamRepairState {
+                    ready: true,
+                    ..Default::default()
+                }],
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
             };
+            demuxer.freeze_output_plan(true, &[true]);
             let sender = MuxPacketSender::new(16);
             let mut receiver = sender.subscribe();
             let mut muxer = HlsFmp4Context::init_context(&demuxer, sender).unwrap();

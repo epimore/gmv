@@ -25,10 +25,6 @@ impl MuxerEvent {
         }
     }
 
-    pub fn is_open(&self) -> bool {
-        matches!(self, Self::Open(_))
-    }
-
     pub fn handle_event(
         self,
         muxer_context: &mut MuxerContext,

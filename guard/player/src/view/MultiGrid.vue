@@ -92,7 +92,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch, type ComponentPublicInstance } from 'vue';
-import type { GmvAiBox, GmvCloudRecordRange, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvStreamProfile, GmvStreamProfileOption, GmvStreamProfileVerification, GmvViewCapabilities } from '../core/types';
+import type { GmvAiBox, GmvCloudRecordRange, GmvDeviceStatus, GmvMediaMode, GmvOsdItem, GmvOutputAudioMode, GmvPlayerControlsConfig, GmvPlayerOutputOption, GmvPtzCommand, GmvSource, GmvSourceAudioState, GmvStreamProfile, GmvStreamProfileOption, GmvStreamProfileVerification, GmvViewCapabilities } from '../core/types';
 import GmvPlayerView from './GmvPlayerView.vue';
 
 export interface GmvGridCell {
@@ -109,6 +109,10 @@ export interface GmvGridCell {
   mediaNodeId?: string;
   sessionNodeId?: string;
   audioCodec?: string;
+  sourceAudioState?: GmvSourceAudioState;
+  outputAudioMode?: GmvOutputAudioMode;
+  audioSampleRate?: number;
+  audioChannels?: number;
   poster?: string;
   osd?: GmvOsdItem[];
   aiBoxes?: GmvAiBox[];

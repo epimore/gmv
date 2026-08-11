@@ -147,6 +147,13 @@ message QueryStreamResponse {
   uint64 queue_drop_count = 25;
   string audio_codec = 26;
   string mime_codec = 27;
+  AudioTrackState source_audio_state = 28;
+  OutputAudioMode output_audio_mode = 29;
+  bool audio_recovery_eligible = 30;
+  bool late_track_watch = 31;
+  uint32 audio_sample_rate = 32;
+  uint32 audio_channels = 33;
+  uint64 output_generation = 34;
 }
 
 enum MediaReadinessStage {
@@ -223,6 +230,30 @@ message OutputInfo {
   string audio_codec = 8;
   string mime_codec = 9;
   gmv.common.v1.ErrorDetail failure = 10;
+  AudioTrackState source_audio_state = 11;
+  OutputAudioMode output_audio_mode = 12;
+  bool audio_recovery_eligible = 13;
+  bool late_track_watch = 14;
+  uint32 audio_sample_rate = 15;
+  uint32 audio_channels = 16;
+  uint64 generation = 17;
+}
+
+enum AudioTrackState {
+  AUDIO_TRACK_STATE_UNSPECIFIED = 0;
+  AUDIO_TRACK_STATE_NOT_EXPECTED = 1;
+  AUDIO_TRACK_STATE_DECLARED_UNOBSERVED = 2;
+  AUDIO_TRACK_STATE_DETECTED_UNREADY = 3;
+  AUDIO_TRACK_STATE_READY = 4;
+  AUDIO_TRACK_STATE_UNAVAILABLE = 5;
+  AUDIO_TRACK_STATE_FAILED = 6;
+}
+
+enum OutputAudioMode {
+  OUTPUT_AUDIO_MODE_UNSPECIFIED = 0;
+  OUTPUT_AUDIO_MODE_NONE = 1;
+  OUTPUT_AUDIO_MODE_SILENT_PLACEHOLDER = 2;
+  OUTPUT_AUDIO_MODE_REAL = 3;
 }
 
 enum OutputState {

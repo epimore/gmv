@@ -213,6 +213,13 @@ pub struct StreamOutputSummary {
     pub video_codec: String,
     pub audio_codec: String,
     pub mime_codec: String,
+    pub source_audio_state: String,
+    pub output_audio_mode: String,
+    pub audio_recovery_eligible: bool,
+    pub late_track_watch: bool,
+    pub audio_sample_rate: u32,
+    pub audio_channels: u32,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]

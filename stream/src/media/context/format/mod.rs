@@ -1,10 +1,15 @@
-use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::demuxer::{DemuxerContext, OutputTrackSource};
 use axum::body::Bytes;
-use base::exception::GlobalResult;
+use base::exception::{GlobalError, GlobalResult};
+use base::log::error;
 use base::tokio::sync::{broadcast, watch};
 use parking_lot::Mutex;
-use rsmpeg::ffi::AVPacket;
-use std::collections::VecDeque;
+use rsmpeg::ffi::{
+    AVCodecID_AV_CODEC_ID_AAC, AVMediaType, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, AVSampleFormat_AV_SAMPLE_FMT_FLTP,
+    av_channel_layout_default, av_mallocz, avcodec_parameters_copy, avformat_new_stream,
+};
+use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_int, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,6 +27,108 @@ pub mod muxer;
 mod ps;
 pub mod rtp;
 pub mod ts;
+
+pub const OUTPUT_AAC_SAMPLE_RATE: i32 = 48_000;
+pub const OUTPUT_AAC_CHANNELS: i32 = 1;
+pub const OUTPUT_AAC_BIT_RATE: i64 = 48_000;
+
+#[derive(Clone, Copy, Debug)]
+pub struct PlannedStream {
+    pub output_index: i32,
+    pub input_time_base: AVRational,
+    pub media_type: AVMediaType,
+}
+
+pub type PlannedStreamMap = HashMap<i32, PlannedStream>;
+
+pub unsafe fn copy_output_plan(
+    demuxer: &DemuxerContext,
+    output: *mut rsmpeg::ffi::AVFormatContext,
+) -> GlobalResult<(PlannedStreamMap, i32)> {
+    let mut mapping = HashMap::with_capacity(demuxer.output_plan.tracks.len());
+    let mut video_packet_index = -1;
+    for track in &demuxer.output_plan.tracks {
+        let output_stream = unsafe { avformat_new_stream(output, std::ptr::null()) };
+        if output_stream.is_null() {
+            return Err(GlobalError::new_sys_error(
+                "failed to create planned output stream",
+                |message| error!("{message}"),
+            ));
+        }
+        let input_time_base = match track.source {
+            OutputTrackSource::Input(index) => {
+                let input_stream = unsafe { *(*demuxer.avio.fmt_ctx).streams.add(index) };
+                if input_stream.is_null() || unsafe { (*input_stream).codecpar.is_null() } {
+                    return Err(GlobalError::new_sys_error(
+                        "planned input stream is unavailable",
+                        |message| error!("{message}"),
+                    ));
+                }
+                let ret = unsafe {
+                    avcodec_parameters_copy((*output_stream).codecpar, (*input_stream).codecpar)
+                };
+                if ret < 0 {
+                    return Err(GlobalError::new_sys_error(
+                        "failed to copy planned stream parameters",
+                        |message| error!("{message}: ffmpeg_code={ret}"),
+                    ));
+                }
+                unsafe { (*input_stream).time_base }
+            }
+            OutputTrackSource::TranscodedAac(_) | OutputTrackSource::SilentAac => {
+                unsafe { configure_fixed_aac_stream(output_stream)? };
+                AVRational {
+                    num: 1,
+                    den: OUTPUT_AAC_SAMPLE_RATE,
+                }
+            }
+        };
+        unsafe {
+            (*output_stream).time_base = input_time_base;
+            (*(*output_stream).codecpar).codec_tag = 0;
+        }
+        let output_index = unsafe { (*output_stream).index };
+        mapping.insert(
+            track.packet_index,
+            PlannedStream {
+                output_index,
+                input_time_base,
+                media_type: track.media_type,
+            },
+        );
+        if track.media_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
+            video_packet_index = track.packet_index;
+        }
+    }
+    Ok((mapping, video_packet_index))
+}
+
+unsafe fn configure_fixed_aac_stream(stream: *mut rsmpeg::ffi::AVStream) -> GlobalResult<()> {
+    let codecpar = unsafe { (*stream).codecpar };
+    unsafe {
+        (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+        (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+        (*codecpar).format = AVSampleFormat_AV_SAMPLE_FMT_FLTP as i32;
+        (*codecpar).bit_rate = OUTPUT_AAC_BIT_RATE;
+        (*codecpar).sample_rate = OUTPUT_AAC_SAMPLE_RATE;
+        (*codecpar).channels = OUTPUT_AAC_CHANNELS;
+        (*codecpar).channel_layout = 4;
+        av_channel_layout_default(&mut (*codecpar).ch_layout, OUTPUT_AAC_CHANNELS);
+        (*codecpar).frame_size = 1024;
+        let extradata = av_mallocz(2 + 64) as *mut u8;
+        if extradata.is_null() {
+            return Err(GlobalError::new_sys_error(
+                "failed to allocate silent AAC configuration",
+                |message| error!("{message}"),
+            ));
+        }
+        *extradata = 0x11;
+        *extradata.add(1) = 0x88;
+        (*codecpar).extradata = extradata;
+        (*codecpar).extradata_size = 2;
+    }
+    Ok(())
+}
 
 pub struct MuxPacket {
     pub data: Bytes,

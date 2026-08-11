@@ -135,6 +135,26 @@ describe("GmvPlayerView make-before-break", () => {
     wrapper.unmount();
   });
 
+  it("reconnects when the output generation changes on the same URL", async () => {
+    const url = "http://127.0.0.1/live.flv";
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{ ...source(url)[0], hasAudio: true, generation: 1 }],
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    wrapper.findAll("video")[0].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    await wrapper.setProps({
+      sources: [{ ...source(url)[0], hasAudio: true, generation: 2 }],
+    });
+
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    expect(players[0].destroy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("截图从当前活动视频帧生成 PNG 并触发浏览器下载", async () => {
     const drawImage = vi.fn();
     vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({

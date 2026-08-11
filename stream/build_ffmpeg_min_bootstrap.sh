@@ -9,6 +9,7 @@ set -euo pipefail
 FFMPEG_VERSION="${FFMPEG_VERSION:-6.1}"
 JOBS="${JOBS:-$(nproc)}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
+FORCE_REBUILD="${FORCE_REBUILD:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GMV_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -49,6 +50,7 @@ for library in "${REQUIRED_STATIC_LIBS[@]}"; do
 done
 
 if [[ "$FORCE_REDOWNLOAD" == "0" ]] \
+  && [[ "$FORCE_REBUILD" == "0" ]] \
   && [[ -f "$PREFIX/include/libavformat/avformat.h" ]] \
   && [[ "$complete_install" == "1" ]] \
   && ! compgen -G "$PREFIX/lib/*.so*" >/dev/null; then
@@ -145,10 +147,10 @@ echo "[5/7] configure"
   --enable-decoder=aac \
   --enable-decoder=pcm_alaw \
   --enable-decoder=pcm_mulaw \
+  --enable-decoder=g723_1 \
+  --enable-decoder=g729 \
   \
   --enable-encoder=aac \
-  --enable-encoder=pcm_alaw \
-  --enable-encoder=pcm_mulaw \
   \
   --enable-parser=h264 \
   --enable-parser=hevc \

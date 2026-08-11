@@ -147,12 +147,14 @@ import type {
   GmvDeviceStatus,
   GmvMediaMode,
   GmvOsdItem,
+  GmvOutputAudioMode,
   GmvPlayerControlAction,
   GmvPlayerControlsConfig,
   GmvPlayerControlsState,
   GmvPlayerOutputOption,
   GmvPtzCommand,
   GmvSource,
+  GmvSourceAudioState,
   GmvStreamProfile,
   GmvStreamProfileOption,
   GmvStreamProfileVerification,
@@ -181,6 +183,10 @@ const props = withDefaults(
     mediaNodeId?: string;
     sessionNodeId?: string;
     audioCodec?: string;
+    sourceAudioState?: GmvSourceAudioState;
+    outputAudioMode?: GmvOutputAudioMode;
+    audioSampleRate?: number;
+    audioChannels?: number;
     poster?: string;
     osd?: GmvOsdItem[];
     aiBoxes?: GmvAiBox[];
@@ -368,8 +374,24 @@ const outputFormatLabel = computed(() => {
 const resolutionText = computed(() => mediaStats.width && mediaStats.height ? `${mediaStats.width}×${mediaStats.height}` : '-');
 const videoInfoText = computed(() => [formatVideoCodec(currentSource.value?.codec), resolutionText.value].filter((item) => item !== '-').join(' · ') || '-');
 const audioInfoText = computed(() => {
+  if (props.sourceAudioState === 'declared_unobserved') {
+    return props.outputAudioMode === 'silent_placeholder' ? '音频检测中 · 静音占位' : '音频检测中 · 画面继续';
+  }
+  if (props.sourceAudioState === 'detected_unready') {
+    return props.outputAudioMode === 'silent_placeholder' ? '音频参数收集中 · 静音占位' : '音频参数收集中 · 画面继续';
+  }
+  if (props.sourceAudioState === 'unavailable') return '音频暂不可用 · 画面继续';
+  if (props.sourceAudioState === 'failed') return '音频异常 · 画面继续';
+  if (props.sourceAudioState === 'not_expected' && props.outputAudioMode === 'none') return '无音频';
   if (currentSource.value?.hasAudio === false) return '无音频';
-  if (props.audioCodec) return props.audioCodec.toUpperCase();
+  if (props.audioCodec) {
+    const profile = [
+      props.audioCodec.toUpperCase(),
+      props.audioSampleRate ? `${props.audioSampleRate / 1000} kHz` : '',
+      props.audioChannels === 1 ? '单声道' : props.audioChannels === 2 ? '立体声' : '',
+    ].filter(Boolean);
+    return profile.join(' · ');
+  }
   return currentSource.value?.hasAudio ? '有音频' : '自动探测';
 });
 const statusViewersText = computed(() => props.viewers === undefined ? statusLabel.value : `${statusLabel.value} · ${props.viewers} 人观看`);
@@ -634,7 +656,8 @@ function sameSourceContract(left: GmvSource | undefined, right: GmvSource): bool
     && left.protocol === right.protocol
     && left.codec === right.codec
     && left.mimeCodec === right.mimeCodec
-    && left.hasAudio === right.hasAudio;
+    && left.hasAudio === right.hasAudio
+    && left.generation === right.generation;
 }
 
 function destroyPlayer() {

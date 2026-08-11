@@ -2081,6 +2081,13 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "video_codec",
             "audio_codec",
             "mime_codec",
+            "source_audio_state",
+            "output_audio_mode",
+            "audio_recovery_eligible",
+            "late_track_watch",
+            "audio_sample_rate",
+            "audio_channels",
+            "generation",
         ],
         "/streams/{stream_id}/outputs" => &[
             "operation_id",
@@ -10752,6 +10759,13 @@ mod tests {
         assert!(output_properties.get("video_codec").is_some());
         assert!(output_properties.get("audio_codec").is_some());
         assert!(output_properties.get("mime_codec").is_some());
+        assert!(output_properties.get("source_audio_state").is_some());
+        assert!(output_properties.get("output_audio_mode").is_some());
+        assert!(output_properties.get("audio_recovery_eligible").is_some());
+        assert!(output_properties.get("late_track_watch").is_some());
+        assert!(output_properties.get("audio_sample_rate").is_some());
+        assert!(output_properties.get("audio_channels").is_some());
+        assert!(output_properties.get("generation").is_some());
 
         let mqtt = mqtt_action_payload_schemas();
         assert!(

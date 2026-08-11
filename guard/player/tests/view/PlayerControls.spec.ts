@@ -386,7 +386,7 @@ describe("PlayerControls", () => {
     expect(wrapper.find('.overflow-menu [aria-label="媒体输出格式"]').exists()).toBe(true);
     expect(wrapper.findAll(".overflow-menu > button").map((item) => item.text())).toEqual([
       "信息",
-      "声音",
+      "静音",
       "录像",
     ]);
     wrapper.unmount();

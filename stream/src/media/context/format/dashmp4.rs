@@ -1,6 +1,8 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::fmp4::{CmafFmp4Context, clone_packet_for_mp4};
-use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender, fmp4, write_callback};
+use crate::media::context::format::{
+    FmtMuxer, MuxPacket, MuxPacketSender, PlannedStreamMap, copy_output_plan, write_callback,
+};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use axum::body::Bytes;
 use base::exception::{GlobalError, GlobalResult};
@@ -30,7 +32,7 @@ pub struct DashCmafMp4Context {
     pub io_buf: *mut u8,
     out_buf_ptr: *mut Vec<u8>,
 
-    in_timebase_map: HashMap<c_int, AVRational>,
+    stream_map: PlannedStreamMap,
     v_idx: c_int,
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
@@ -122,9 +124,7 @@ impl FmtMuxer for DashCmafMp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-            let mut in_timebase_map = HashMap::with_capacity(8);
-            let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
-            let v_idx = fmp4::copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
+            let (stream_map, v_idx) = copy_output_plan(demuxer_context, out_fmt_ctx)?;
 
             let ret = avformat_write_header(out_fmt_ctx, &mut options);
             // 释放选项字典
@@ -154,7 +154,7 @@ impl FmtMuxer for DashCmafMp4Context {
                 avio_ctx,
                 io_buf,
                 out_buf_ptr,
-                in_timebase_map,
+                stream_map,
                 v_idx,
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
@@ -169,7 +169,7 @@ impl FmtMuxer for DashCmafMp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            match self.in_timebase_map.get(&pkt.stream_index) {
+            match self.stream_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
                         "dash MP4 write failed,stream index error: {}",
@@ -177,14 +177,19 @@ impl FmtMuxer for DashCmafMp4Context {
                     );
                     return Ok(());
                 }
-                Some(&in_tb) => {
-                    let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
+                Some(planned) => {
+                    let out_st = *(*self.fmt_ctx).streams.add(planned.output_index as usize);
                     let codecpar = (*out_st).codecpar;
                     let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
                         && !(*codecpar).extradata.is_null()
                         && (*codecpar).extradata_size > 0;
                     let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
-                    av_packet_rescale_ts(cloned.as_mut_ptr(), in_tb, (*out_st).time_base);
+                    (*cloned.as_mut_ptr()).stream_index = planned.output_index;
+                    av_packet_rescale_ts(
+                        cloned.as_mut_ptr(),
+                        planned.input_time_base,
+                        (*out_st).time_base,
+                    );
                     (*cloned.as_mut_ptr()).pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
                     if ret < 0 {

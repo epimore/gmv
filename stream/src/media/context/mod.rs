@@ -1,9 +1,11 @@
-use crate::media::context::codec::CodecContext;
+use crate::media::context::codec::{AUDIO_STALL_GRACE_US, CodecContext};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
-use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::demuxer::{
+    DemuxerContext, OutputTrackSource, SYNTHETIC_AUDIO_PACKET_INDEX,
+};
 use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
@@ -13,32 +15,33 @@ use crate::media::context::utils::extradata::{self, dump_stream_info};
 use crate::media::context::utils::time_scale::{
     ProcessResult, TimelineNormalizer, repair_missing_timestamps,
 };
-use crate::media::rtp::RtpPacketBuffer;
+use crate::media::rtp::{RtpInterruptReason, RtpPacketBuffer, RtpReadControl};
 use crate::media::show_ffmpeg_error_msg;
 use crate::state::layer::muxer_layer::MuxerLayer;
 use crate::state::msg::StreamConfig;
 use crate::state::register::{
-    ActualMediaProfile, OutputMediaMetadata, OutputRuntimeState, Register,
+    ActualMediaProfile, AudioRuntimeMetadata, AudioSourceRuntimeState, OutputAudioRuntimeMode,
+    OutputMediaMetadata, OutputRuntimeState, Register,
 };
 use base::bus::mpsc::TypedReceiver;
 use base::bytes::BytesMut;
 use base::chrono::Local;
-use base::err::BaseErrorCode;
 use base::exception::typed::common::MessageBusError;
 use base::exception::{GlobalError, GlobalResult};
+use base::tokio_util::sync::CancellationToken;
 use gmv_domain::info::media_info_ext::MediaExt;
 use gmv_protocol::common::v1::ErrorDetail;
-use log::{debug, error, warn};
+use log::{debug, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_PKT_FLAG_KEY, AVERROR_EOF, AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO,
-    av_rescale_q,
+    AV_PKT_FLAG_KEY, AVERROR, AVERROR_EOF, AVERROR_EXIT, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, EAGAIN, av_rescale_q,
 };
 use rsmpeg::ffi::{AVMediaType, AVPacket};
 use std::collections::VecDeque;
 use std::ffi::c_int;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 mod codec;
 pub mod event;
@@ -50,13 +53,32 @@ pub mod utils;
 /// 通过av_lockmgr_register注册全局锁管理器，处理编解码器初始化等非线程安全操作
 /// FFmpeg 6.0+默认启用pthreads支持，但仍需注意部分API（如avcodec_open2）需手动同步
 const FIX_MAX_READ_FRAME: usize = 128;
+const TRACK_DISCOVERY_MAX_DURATION: Duration = Duration::from_secs(2);
 const TOPOLOGY_SETTLE_PACKETS: usize = 8;
 const TOPOLOGY_SETTLE_BYTES: usize = 8 * 1024;
+const AAC_MIME_CODEC: &str = "mp4a.40.2";
+
+fn initial_track_window_complete(packet_count: usize, elapsed: Duration) -> bool {
+    packet_count >= FIX_MAX_READ_FRAME || elapsed >= TRACK_DISCOVERY_MAX_DURATION
+}
+
+fn initial_audio_output_available(
+    ready_audio_present: bool,
+    rejected_audio_stream: bool,
+    codec_has_output_audio: bool,
+) -> bool {
+    (ready_audio_present && !rejected_audio_stream) || codec_has_output_audio
+}
+
+fn passthrough_audio_is_stalled(last_audio_us: Option<i64>, master_clock_us: i64) -> bool {
+    last_audio_us.is_some_and(|last| master_clock_us.saturating_sub(last) > AUDIO_STALL_GRACE_US)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaCompletion {
     Eof,
     InputClosed,
+    Cancelled,
 }
 
 #[derive(Debug)]
@@ -66,6 +88,7 @@ pub enum MediaRunError {
         code: c_int,
         message: String,
     },
+    Interrupted(RtpInterruptReason),
     Pipeline(GlobalError),
 }
 
@@ -75,11 +98,33 @@ impl From<GlobalError> for MediaRunError {
     }
 }
 
-fn classify_read_frame(ret: c_int, stage: &'static str) -> Result<bool, MediaRunError> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadFrameState {
+    Packet,
+    WouldBlock,
+    Eof,
+}
+
+fn classify_read_frame(
+    ret: c_int,
+    stage: &'static str,
+    read_control: &RtpReadControl,
+) -> Result<ReadFrameState, MediaRunError> {
     if ret >= 0 {
-        Ok(true)
+        Ok(ReadFrameState::Packet)
+    } else if ret == AVERROR(EAGAIN) {
+        Ok(ReadFrameState::WouldBlock)
     } else if ret == AVERROR_EOF {
-        Ok(false)
+        Ok(ReadFrameState::Eof)
+    } else if ret == AVERROR_EXIT {
+        match read_control.interrupt_reason() {
+            Some(reason) => Err(MediaRunError::Interrupted(reason)),
+            None => Err(MediaRunError::Ffmpeg {
+                stage,
+                code: ret,
+                message: show_ffmpeg_error_msg(ret),
+            }),
+        }
     } else {
         Err(MediaRunError::Ffmpeg {
             stage,
@@ -89,63 +134,6 @@ fn classify_read_frame(ret: c_int, stage: &'static str) -> Result<bool, MediaRun
     }
 }
 
-pub struct RtpState {
-    pub first_unwrapped: i64,
-    pub timestamp: u32, // 读取rtp包的timestamp
-    pub marker: bool,   // 读取rtp包的mark
-
-    pub last_32: u32,        // 上一次 RTP timestamp（32-bit）
-    pub last_unwrapped: i64, // 上一次展开 timestamp，用于累积 diff
-}
-impl RtpState {
-    pub fn new() -> Self {
-        Self {
-            first_unwrapped: 0,
-            timestamp: 0,
-            marker: false,
-            last_32: 0,
-            last_unwrapped: 0,
-        }
-    }
-
-    /// 更新 RTP 状态，返回当前展开 timestamp 和帧间差值
-    /// `clock_rate` 用于最大 diff 限制
-    pub fn update(&mut self, cur_ts: u32, clock_rate: u32) -> (i64, i64) {
-        let cur_unwrapped = if self.last_unwrapped == 0 {
-            // 第一帧
-            cur_ts as i64
-        } else {
-            let mut diff = (cur_ts as i64).wrapping_sub(self.last_32 as i64);
-
-            // wrap-around 检测
-            if diff < 0 && (self.last_32.wrapping_sub(cur_ts) > 0x8000_0000) {
-                diff = (cur_ts as i64 + (1i64 << 32)) - self.last_32 as i64;
-            }
-
-            // 最大 diff 限制，防止异常跳变
-            let max_diff = clock_rate as i64 * 3; // 3 秒最大 diff
-            if diff < 0 {
-                diff = 0;
-            } else if diff > max_diff {
-                diff = max_diff;
-            }
-
-            self.last_unwrapped + diff
-        };
-
-        let duration_ticks = if self.last_unwrapped == 0 {
-            0
-        } else {
-            cur_unwrapped - self.last_unwrapped
-        };
-
-        // 更新状态
-        self.last_unwrapped = cur_unwrapped;
-        self.last_32 = cur_ts;
-
-        (cur_unwrapped, duration_ticks)
-    }
-}
 pub struct MediaContext {
     pub ssrc: u32,
     pub stream_id: Option<Arc<str>>,
@@ -155,25 +143,21 @@ pub struct MediaContext {
     pub muxer_context: MuxerContext,
     pub context_event_rx: TypedReceiver<ContextEvent>,
     pub demuxer_context: DemuxerContext,
-    pub rtp_state: *mut RtpState,
     actual_media_profile: Option<ActualMediaProfile>,
-}
-impl Drop for MediaContext {
-    fn drop(&mut self) {
-        unsafe {
-            if !self.rtp_state.is_null() {
-                // 回收 RtpState
-                drop(Box::from_raw(self.rtp_state));
-                self.rtp_state = std::ptr::null_mut();
-            }
-        }
-    }
+    muxer_layer: Option<MuxerLayer>,
+    pending_audio_generation: bool,
+    output_generation: u64,
+    passthrough_audio_last_us: Option<i64>,
+    passthrough_audio_stalled: bool,
 }
 //idr帧及以后开始缓存
 struct InitCacheInfo {
     //(rtp_ts累计,duration_ticks,pkt)
     pkts: VecDeque<AVPacket>,
     timeline_normalizer: TimelineNormalizer,
+    ready_at_discovery: Vec<bool>,
+    audio_observed_at_discovery: bool,
+    discovery_snapshot_taken: bool,
 }
 
 #[derive(Default)]
@@ -278,40 +262,26 @@ impl MediaContext {
         (false, 0)
     }
 
-    /// 判断是否有音频流
-    fn has_audio_stream(&self) -> (bool, usize) {
-        unsafe {
-            let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-            if fmt_ctx.is_null() {
-                return (false, 0);
-            }
-
-            let nb_streams = (*fmt_ctx).nb_streams as usize;
-            for i in 0..nb_streams {
-                let stream = *(*fmt_ctx).streams.add(i);
-                let codecpar = (*stream).codecpar;
-
-                if !codecpar.is_null() && (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO {
-                    return (true, i);
-                }
-            }
-        }
-        (false, 0)
-    }
-
     pub fn init(
         ssrc: u32,
         stream_config: StreamConfig,
+        cancel: CancellationToken,
     ) -> GlobalResult<(MediaContext, MuxerLayer)> {
-        let rtp_buffer =
-            RtpPacketBuffer::init(ssrc, stream_config.rtp_rx, &stream_config.media_ext);
-        // Box → raw pointer
-        let rtp_state_ptr = Box::into_raw(Box::new(RtpState::new()));
+        let read_control = Arc::new(RtpReadControl::new(
+            cancel,
+            stream_config.startup_io_deadline,
+        ));
+        let rtp_buffer = RtpPacketBuffer::init(
+            ssrc,
+            stream_config.rtp_rx,
+            &stream_config.media_ext,
+            read_control.clone(),
+        );
         let demuxer_context = DemuxerContext::start_demuxer(
             ssrc,
             &stream_config.media_ext,
             rtp_buffer,
-            rtp_state_ptr,
+            read_control,
         )?;
         let converter = stream_config.converter;
 
@@ -324,8 +294,12 @@ impl MediaContext {
             context_event_rx: stream_config.context_event_rx,
             muxer_context: Default::default(),
             demuxer_context,
-            rtp_state: rtp_state_ptr,
             actual_media_profile: None,
+            muxer_layer: None,
+            pending_audio_generation: false,
+            output_generation: 1,
+            passthrough_audio_last_us: None,
+            passthrough_audio_stalled: false,
         };
         Ok((context, converter.muxer))
     }
@@ -336,6 +310,9 @@ impl MediaContext {
         let mut cache_info = InitCacheInfo {
             pkts: VecDeque::new(),
             timeline_normalizer: TimelineNormalizer::new(0),
+            ready_at_discovery: Vec::new(),
+            audio_observed_at_discovery: false,
+            discovery_snapshot_taken: false,
         };
         for i in 0..self.demuxer_context.params.len() {
             unsafe {
@@ -347,11 +324,37 @@ impl MediaContext {
         let mut topology_settle = TopologySettleState::default();
 
         let mut counter = 0;
-        while counter < FIX_MAX_READ_FRAME {
+        let mut discovery_started_at = None;
+        let mut discovery_complete = false;
+        let mut read_backoff = Duration::from_millis(5);
+        loop {
             let mut pkt = std::mem::zeroed::<AVPacket>();
             let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
-            if !classify_read_frame(ret, "fix_basic_stream_info")? {
-                break;
+            match classify_read_frame(
+                ret,
+                "fix_basic_stream_info",
+                &self.demuxer_context.read_control,
+            )? {
+                ReadFrameState::Packet => {
+                    read_backoff = Duration::from_millis(5);
+                    self.demuxer_context.read_control.mark_startup_complete();
+                    discovery_started_at.get_or_insert_with(Instant::now);
+                }
+                ReadFrameState::WouldBlock => {
+                    if discovery_started_at.is_some_and(|started_at| {
+                        started_at.elapsed() >= TRACK_DISCOVERY_MAX_DURATION
+                    }) {
+                        discovery_complete = true;
+                        Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
+                        if !cache_info.pkts.is_empty() {
+                            break;
+                        }
+                    }
+                    std::thread::sleep(read_backoff);
+                    read_backoff = (read_backoff * 2).min(Duration::from_millis(20));
+                    continue;
+                }
+                ReadFrameState::Eof => break,
             }
             counter += 1;
 
@@ -437,10 +440,23 @@ impl MediaContext {
                     let codecpar = stream.as_ref()?.codecpar.as_ref()?;
                     Some((codecpar.codec_type, params[idx].ready))
                 }));
-            if should_cache && supported_params_ready && topology_settle.is_stable() {
+            if !discovery_complete
+                && discovery_started_at.is_some_and(|started_at| {
+                    initial_track_window_complete(counter, started_at.elapsed())
+                })
+            {
+                discovery_complete = true;
+                Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
+            }
+            if should_cache
+                && (discovery_complete || (supported_params_ready && topology_settle.is_stable()))
+            {
+                Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
                 break;
             }
         }
+
+        Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
 
         if cache_info.timeline_normalizer.global_base_us == i64::MAX {
             cache_info.timeline_normalizer.global_base_us = 0
@@ -448,6 +464,84 @@ impl MediaContext {
         dump_stream_info(&self.demuxer_context);
 
         Ok(cache_info)
+    }
+
+    fn snapshot_initial_tracks(cache: &mut InitCacheInfo, demuxer: &DemuxerContext) {
+        if cache.discovery_snapshot_taken {
+            return;
+        }
+        cache.ready_at_discovery = demuxer.params.iter().map(|param| param.ready).collect();
+        cache.discovery_snapshot_taken = true;
+        unsafe {
+            cache.audio_observed_at_discovery = (0..demuxer.params.len()).any(|index| {
+                let stream = *(*demuxer.avio.fmt_ctx).streams.add(index);
+                !stream.is_null()
+                    && !(*stream).codecpar.is_null()
+                    && (*(*stream).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO
+            });
+        }
+    }
+
+    fn set_audio_runtime(
+        &self,
+        source_state: AudioSourceRuntimeState,
+        output_mode: OutputAudioRuntimeMode,
+        recovery_eligible: bool,
+        late_track_watch: bool,
+    ) {
+        let Some(stream_id) = self.stream_id.as_deref() else {
+            return;
+        };
+        let (sample_rate, channels) = self.output_audio_parameters(output_mode);
+        if !Register::try_set_audio_runtime(
+            stream_id,
+            AudioRuntimeMetadata {
+                source_state,
+                output_mode,
+                recovery_eligible,
+                late_track_watch,
+                sample_rate,
+                channels,
+                generation: self.output_generation,
+            },
+        ) {
+            debug!(
+                "audio runtime update ignored: action=audio_runtime, outcome=ignored, reason=stream_finalized, stream_id={stream_id}"
+            );
+        }
+    }
+
+    fn output_audio_parameters(&self, output_mode: OutputAudioRuntimeMode) -> (u32, u32) {
+        if output_mode == OutputAudioRuntimeMode::None {
+            return (0, 0);
+        }
+        let Some(track) = self
+            .demuxer_context
+            .output_plan
+            .tracks
+            .iter()
+            .find(|track| track.media_type == AVMediaType_AVMEDIA_TYPE_AUDIO)
+        else {
+            return (0, 0);
+        };
+        match track.source {
+            OutputTrackSource::TranscodedAac(_) | OutputTrackSource::SilentAac => (48_000, 1),
+            OutputTrackSource::Input(index) => unsafe {
+                let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+                if fmt_ctx.is_null() || index >= (*fmt_ctx).nb_streams as usize {
+                    return (0, 0);
+                }
+                let stream = *(*fmt_ctx).streams.add(index);
+                if stream.is_null() || (*stream).codecpar.is_null() {
+                    return (0, 0);
+                }
+                let codecpar = (*stream).codecpar;
+                (
+                    (*codecpar).sample_rate.max(0) as u32,
+                    (*codecpar).ch_layout.nb_channels.max(0) as u32,
+                )
+            },
+        }
     }
 
     pub fn invoke(&mut self, muxer_layer: MuxerLayer) -> Result<MediaCompletion, MediaRunError> {
@@ -459,11 +553,99 @@ impl MediaContext {
                 return Ok(MediaCompletion::Eof);
             }
             let mut normalizer = &mut cache_info.timeline_normalizer;
-            if let Some(codec) = &mut self.codec_context {
-                codec.prepare(&mut self.demuxer_context)?;
+            let source_audio_observed = cache_info.audio_observed_at_discovery;
+            let audio_expected =
+                self.media_ext.declaration.audio.is_active() || source_audio_observed;
+            let ready_audio_present =
+                cache_info
+                    .ready_at_discovery
+                    .iter()
+                    .enumerate()
+                    .any(|(index, ready)| {
+                        if !*ready {
+                            return false;
+                        }
+                        let stream = *(*self.demuxer_context.avio.fmt_ctx).streams.add(index);
+                        !stream.is_null()
+                            && !(*stream).codecpar.is_null()
+                            && (*(*stream).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO
+                    });
+            if audio_expected && !ready_audio_present && self.codec_context.is_none() {
+                self.codec_context = Some(CodecContext::fixed_aac());
             }
+            if let Some(codec) = &mut self.codec_context {
+                codec.prepare(
+                    &mut self.demuxer_context,
+                    audio_expected,
+                    &cache_info.ready_at_discovery,
+                )?;
+            }
+            let rejected_audio_stream = self
+                .codec_context
+                .as_ref()
+                .and_then(CodecContext::rejected_audio_stream);
+            let source_audio_usable = ready_audio_present && rejected_audio_stream.is_none();
+            let output_audio_available = initial_audio_output_available(
+                ready_audio_present,
+                rejected_audio_stream.is_some(),
+                self.codec_context
+                    .as_ref()
+                    .is_some_and(CodecContext::has_output_audio),
+            );
+            let planned_audio_expected = audio_expected && output_audio_available;
+            let mut output_ready_at_discovery = cache_info.ready_at_discovery.clone();
+            if let Some(index) = rejected_audio_stream {
+                if let Some(ready) = output_ready_at_discovery.get_mut(index as usize) {
+                    *ready = false;
+                }
+            }
+            self.demuxer_context
+                .freeze_output_plan(planned_audio_expected, &output_ready_at_discovery);
+            if let Some(index) = self
+                .codec_context
+                .as_ref()
+                .and_then(CodecContext::transcoded_stream_index)
+            {
+                self.demuxer_context
+                    .output_plan
+                    .mark_transcoded_audio(index);
+            }
+            let output_audio_mode = if self.demuxer_context.output_plan.has_silent_audio() {
+                OutputAudioRuntimeMode::SilentPlaceholder
+            } else if source_audio_usable {
+                OutputAudioRuntimeMode::Real
+            } else {
+                OutputAudioRuntimeMode::None
+            };
+            let source_audio_state = if rejected_audio_stream.is_some() {
+                AudioSourceRuntimeState::Failed
+            } else if source_audio_usable {
+                AudioSourceRuntimeState::Ready
+            } else if audio_expected && !output_audio_available {
+                AudioSourceRuntimeState::Failed
+            } else if source_audio_observed {
+                AudioSourceRuntimeState::DetectedUnready
+            } else if self.media_ext.declaration.audio.is_active() {
+                AudioSourceRuntimeState::DeclaredUnobserved
+            } else {
+                AudioSourceRuntimeState::NotExpected
+            };
+            let initial_recovery_eligible = match output_audio_mode {
+                OutputAudioRuntimeMode::SilentPlaceholder => true,
+                OutputAudioRuntimeMode::Real => self
+                    .codec_context
+                    .as_ref()
+                    .is_none_or(|codec| !codec.has_real_audio() || codec.has_silent_audio()),
+                OutputAudioRuntimeMode::None => false,
+            };
+            self.set_audio_runtime(
+                source_audio_state,
+                output_audio_mode,
+                initial_recovery_eligible,
+                true,
+            );
             let media_param = extradata::parse_media_param(&self.demuxer_context);
-            let actual_media_profile = ActualMediaProfile {
+            let mut actual_media_profile = ActualMediaProfile {
                 video_codec: media_param
                     .video
                     .as_ref()
@@ -475,6 +657,9 @@ impl MediaContext {
                     .map(|audio| audio.codec.clone())
                     .unwrap_or_default(),
             };
+            if self.demuxer_context.output_plan.has_fixed_aac() {
+                actual_media_profile.audio_codec = AAC_MIME_CODEC.to_string();
+            }
             if let Some(stream_id) = self.stream_id.as_deref() {
                 if !Register::try_set_actual_media_profile(stream_id, actual_media_profile.clone())
                 {
@@ -482,8 +667,14 @@ impl MediaContext {
                 }
             }
             self.actual_media_profile = Some(actual_media_profile);
+            self.muxer_layer = Some(muxer_layer.clone());
             //初始化muxer
-            self.muxer_context = MuxerContext::init(&self.demuxer_context, muxer_layer)?;
+            let (muxer_context, muxer_failures) =
+                MuxerContext::init_collect(&self.demuxer_context, muxer_layer);
+            self.muxer_context = muxer_context;
+            for (muxer, error) in muxer_failures {
+                self.fail_muxer(muxer, "output_format_unsupported", error)?;
+            }
             //消费缓存数据，以关键帧开始
             while let Some(mut pkt) = cache_info.pkts.pop_front() {
                 match self.context_event_rx.try_recv() {
@@ -501,6 +692,7 @@ impl MediaContext {
             }
             let mut pkt = std::mem::zeroed::<AVPacket>();
             let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
+            let mut read_backoff = Duration::from_millis(5);
 
             //write body
             loop {
@@ -513,13 +705,16 @@ impl MediaContext {
                     Err(_) => {}
                 }
                 let ret = rsmpeg::ffi::av_read_frame(fmt_ctx, &mut pkt);
-                if !classify_read_frame(ret, "read_frame")? {
-                    break;
+                match classify_read_frame(ret, "read_frame", &self.demuxer_context.read_control)? {
+                    ReadFrameState::Packet => read_backoff = Duration::from_millis(5),
+                    ReadFrameState::WouldBlock => {
+                        std::thread::sleep(read_backoff);
+                        read_backoff = (read_backoff * 2).min(Duration::from_millis(20));
+                        continue;
+                    }
+                    ReadFrameState::Eof => break,
                 }
-                if let Err(error) = self.ensure_output_topology_unchanged() {
-                    rsmpeg::ffi::av_packet_unref(&mut pkt);
-                    return Err(error.into());
-                }
+                self.observe_packet_track(&pkt, &mut normalizer)?;
                 if pkt.stream_index < 0
                     || pkt.stream_index as usize >= self.demuxer_context.params.len()
                 {
@@ -527,10 +722,6 @@ impl MediaContext {
                     continue;
                 }
 
-                // let rtp_state = &mut *self.rtp_state;
-                // let first_unwrapped = rtp_state.first_unwrapped;
-                // let (cur_unwrapped, duration_ticks) =
-                //     rtp_state.update(rtp_state.timestamp, self.media_ext.clock_rate as u32);
                 let process_result = self.process(&mut normalizer, &mut pkt);
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 process_result?;
@@ -539,17 +730,45 @@ impl MediaContext {
             self.finish_pipeline()?;
         }
 
-        fn rpt_diff_u32(a: u32, b: u32) -> u32 {
-            if a >= b { a - b } else { b.wrapping_sub(a) }
-        }
         Ok(MediaCompletion::Eof)
     }
 
     fn finish_pipeline(&mut self) -> GlobalResult<()> {
+        let mut audio_flush_failed = false;
         let packets = match &mut self.codec_context {
-            Some(codec) => codec.flush()?,
+            Some(codec) => match codec.flush() {
+                Ok(packets) => packets,
+                Err(_) => {
+                    audio_flush_failed = true;
+                    codec.degrade_to_silence();
+                    Vec::new()
+                }
+            },
             None => Vec::new(),
         };
+        if audio_flush_failed {
+            warn!(
+                "audio track degraded: stage=flush, outcome=video_continues, stream_id={}, ssrc={}",
+                self.stream_id.as_deref().unwrap_or("unknown"),
+                self.ssrc
+            );
+            self.set_audio_runtime(
+                AudioSourceRuntimeState::Failed,
+                if self
+                    .codec_context
+                    .as_ref()
+                    .is_some_and(CodecContext::has_silent_audio)
+                {
+                    OutputAudioRuntimeMode::SilentPlaceholder
+                } else {
+                    OutputAudioRuntimeMode::None
+                },
+                self.codec_context
+                    .as_ref()
+                    .is_some_and(CodecContext::has_silent_audio),
+                false,
+            );
+        }
         for packet in packets {
             Self::handle_pkt_muxer(
                 self,
@@ -567,22 +786,158 @@ impl MediaContext {
         pkt: &mut AVPacket,
     ) -> GlobalResult<()> {
         if let (Some(master_clock_us), res) = normalizer.process(pkt, self.ssrc) {
-            // 暂不实现处理codec
-            // &mut self.codec_context.as_mut().map(|cc|Self::handle_codec(cc));
-            // 暂不实现处理filter
-            // Self::handle_filter(&mut self.filter_context);
-            // 调用 muxer 其中master_clock_us需要转换为秒，供录制进度信息
-            if self
+            let media_type = if pkt.stream_index >= 0 {
+                let stream = *(*self.demuxer_context.avio.fmt_ctx)
+                    .streams
+                    .add(pkt.stream_index as usize);
+                if !stream.is_null() && !(*stream).codecpar.is_null() {
+                    Some((*(*stream).codecpar).codec_type)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let is_video = media_type == Some(AVMediaType_AVMEDIA_TYPE_VIDEO);
+            let codec_handles_packet = self
                 .codec_context
                 .as_ref()
-                .is_some_and(|codec| codec.handles(pkt))
+                .is_some_and(|codec| codec.handles(pkt));
+            if media_type == Some(AVMediaType_AVMEDIA_TYPE_AUDIO)
+                && !codec_handles_packet
+                && self
+                    .demuxer_context
+                    .output_plan
+                    .contains_packet_index(pkt.stream_index)
             {
+                self.passthrough_audio_last_us = Some(master_clock_us);
+                if self.passthrough_audio_stalled {
+                    self.passthrough_audio_stalled = false;
+                    self.set_audio_runtime(
+                        AudioSourceRuntimeState::Ready,
+                        OutputAudioRuntimeMode::Real,
+                        true,
+                        true,
+                    );
+                }
+            }
+            // 调用 muxer 其中master_clock_us需要转换为秒，供录制进度信息
+            if is_video && pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 && self.pending_audio_generation
+            {
+                self.activate_late_audio_generation()?;
+            }
+            if codec_handles_packet {
+                self.codec_context
+                    .as_mut()
+                    .expect("codec context checked")
+                    .note_real_audio(master_clock_us);
                 let packets = self
                     .codec_context
                     .as_mut()
                     .expect("codec context checked")
-                    .process(pkt)?;
-                for packet in packets {
+                    .process(pkt);
+                match packets {
+                    Ok(packets) => {
+                        for packet in packets {
+                            Self::handle_pkt_muxer(
+                                self,
+                                res,
+                                &packet,
+                                (packet.pts.max(0) as u64) / 48_000,
+                            )?;
+                        }
+                    }
+                    Err(_) => {
+                        warn!(
+                            "audio track degraded: stage=normalize, outcome=silent_placeholder, stream_id={}, ssrc={}",
+                            self.stream_id.as_deref().unwrap_or("unknown"),
+                            self.ssrc
+                        );
+                        self.codec_context
+                            .as_mut()
+                            .expect("codec context checked")
+                            .degrade_to_silence();
+                        let silent_available = self
+                            .codec_context
+                            .as_ref()
+                            .is_some_and(CodecContext::has_silent_audio);
+                        self.set_audio_runtime(
+                            AudioSourceRuntimeState::Failed,
+                            if silent_available {
+                                OutputAudioRuntimeMode::SilentPlaceholder
+                            } else {
+                                OutputAudioRuntimeMode::None
+                            },
+                            silent_available,
+                            silent_available,
+                        );
+                    }
+                }
+            } else {
+                Self::handle_pkt_muxer(self, res, pkt, (master_clock_us / 1_000_000) as u64)?;
+            }
+            if is_video {
+                if !self.passthrough_audio_stalled
+                    && passthrough_audio_is_stalled(self.passthrough_audio_last_us, master_clock_us)
+                {
+                    self.passthrough_audio_stalled = true;
+                    self.set_audio_runtime(
+                        AudioSourceRuntimeState::Unavailable,
+                        OutputAudioRuntimeMode::Real,
+                        true,
+                        true,
+                    );
+                }
+                let mut silent_audio_failed = false;
+                let real_audio_before = self
+                    .codec_context
+                    .as_ref()
+                    .is_some_and(CodecContext::has_real_audio);
+                let silent_packets = match self.codec_context.as_mut() {
+                    Some(codec) => match codec.silence_until(master_clock_us) {
+                        Ok(packets) => packets,
+                        Err(_) => {
+                            warn!(
+                                "audio track degraded: stage=silent_aac, outcome=audio_disabled, stream_id={}, ssrc={}",
+                                self.stream_id.as_deref().unwrap_or("unknown"),
+                                self.ssrc
+                            );
+                            codec.disable_audio();
+                            silent_audio_failed = true;
+                            Vec::new()
+                        }
+                    },
+                    None => Vec::new(),
+                };
+                if real_audio_before
+                    && self
+                        .codec_context
+                        .as_ref()
+                        .is_some_and(|codec| !codec.has_real_audio())
+                {
+                    let silent_available = self
+                        .codec_context
+                        .as_ref()
+                        .is_some_and(CodecContext::has_silent_audio);
+                    self.set_audio_runtime(
+                        AudioSourceRuntimeState::Unavailable,
+                        if silent_available {
+                            OutputAudioRuntimeMode::SilentPlaceholder
+                        } else {
+                            OutputAudioRuntimeMode::None
+                        },
+                        silent_available,
+                        silent_available,
+                    );
+                } else if silent_audio_failed {
+                    self.set_audio_runtime(
+                        AudioSourceRuntimeState::Failed,
+                        OutputAudioRuntimeMode::None,
+                        false,
+                        false,
+                    );
+                }
+                for packet in silent_packets {
                     Self::handle_pkt_muxer(
                         self,
                         res,
@@ -590,46 +945,176 @@ impl MediaContext {
                         (packet.pts.max(0) as u64) / 48_000,
                     )?;
                 }
-            } else {
-                Self::handle_pkt_muxer(self, res, &pkt, (master_clock_us / 1000_000) as u64)?;
             }
         }
         Ok(())
     }
 
-    unsafe fn ensure_output_topology_unchanged(&self) -> GlobalResult<()> {
-        let fmt_ctx = self.demuxer_context.avio.fmt_ctx;
-        let initialized_stream_count = self.demuxer_context.params.len();
-        let current_stream_count = (*fmt_ctx).nb_streams as usize;
-        for idx in initialized_stream_count..current_stream_count {
-            let stream = *(*fmt_ctx).streams.add(idx);
-            let Some(stream) = stream.as_ref() else {
-                continue;
-            };
-            let Some(codecpar) = stream.codecpar.as_ref() else {
-                continue;
-            };
-            if is_supported_av(codecpar.codec_type) {
-                return Err(GlobalError::new_biz_error(
-                    BaseErrorCode::InvalidState.code(),
-                    &format!(
-                        "stream topology changed after muxer initialization: previous_stream_count={}, current_stream_count={}",
-                        initialized_stream_count, current_stream_count
-                    ),
-                    |msg| error!("{msg}"),
-                ));
+    unsafe fn observe_packet_track(
+        &mut self,
+        pkt: &AVPacket,
+        normalizer: &mut TimelineNormalizer,
+    ) -> GlobalResult<()> {
+        unsafe {
+            sync_discovered_streams(&mut self.demuxer_context, normalizer);
+            if pkt.stream_index < 0
+                || pkt.stream_index as usize >= self.demuxer_context.params.len()
+            {
+                return Ok(());
+            }
+            let index = pkt.stream_index as usize;
+            let stream = *(*self.demuxer_context.avio.fmt_ctx).streams.add(index);
+            if stream.is_null() || (*stream).codecpar.is_null() {
+                return Ok(());
+            }
+            if !self.demuxer_context.params[index].ready && pkt.size > 0 && !pkt.data.is_null() {
+                let ready = repair_basic_stream_info(
+                    stream,
+                    pkt,
+                    &self.media_ext,
+                    &mut self.demuxer_context.params[index],
+                );
+                self.demuxer_context.params[index].ready = ready;
+            }
+            if self.demuxer_context.params[index].ready
+                && (*(*stream).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO
+            {
+                let output_has_audio = self.demuxer_context.output_plan.has_audio();
+                if self.codec_context.is_none() {
+                    self.codec_context = Some(CodecContext::fixed_aac());
+                }
+                if !output_has_audio {
+                    let placeholder_result = self
+                        .codec_context
+                        .as_mut()
+                        .expect("codec context initialized")
+                        .enable_late_placeholder();
+                    if placeholder_result.is_err() {
+                        self.set_audio_runtime(
+                            AudioSourceRuntimeState::Failed,
+                            OutputAudioRuntimeMode::None,
+                            false,
+                            false,
+                        );
+                        return Ok(());
+                    }
+                }
+                let recovered_output_index = if self.demuxer_context.output_plan.has_silent_audio()
+                {
+                    SYNTHETIC_AUDIO_PACKET_INDEX
+                } else {
+                    pkt.stream_index
+                };
+                let mut activation_error = None;
+                let activated = match self.codec_context.as_mut() {
+                    Some(codec) => match codec.observe_ready_audio(
+                        &mut self.demuxer_context,
+                        pkt.stream_index,
+                        recovered_output_index,
+                    ) {
+                        Ok(activated) => activated,
+                        Err(error) => {
+                            codec.degrade_to_silence();
+                            activation_error = Some(error);
+                            false
+                        }
+                    },
+                    None => false,
+                };
+                if let Some(error) = activation_error {
+                    self.set_audio_runtime(
+                        AudioSourceRuntimeState::Failed,
+                        OutputAudioRuntimeMode::SilentPlaceholder,
+                        true,
+                        true,
+                    );
+                    warn!(
+                        "late audio activation failed: action=audio_recovery, outcome=silent_placeholder, stream_id={}, ssrc={}, reason={error}",
+                        self.stream_id.as_deref().unwrap_or("unknown"),
+                        self.ssrc
+                    );
+                }
+                if activated {
+                    if output_has_audio {
+                        self.set_audio_runtime(
+                            AudioSourceRuntimeState::Ready,
+                            OutputAudioRuntimeMode::Real,
+                            true,
+                            true,
+                        );
+                    } else {
+                        self.pending_audio_generation = true;
+                        self.set_audio_runtime(
+                            AudioSourceRuntimeState::DetectedUnready,
+                            OutputAudioRuntimeMode::None,
+                            true,
+                            true,
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn activate_late_audio_generation(&mut self) -> GlobalResult<()> {
+        let Some(muxer_layer) = self.muxer_layer.clone() else {
+            return Ok(());
+        };
+        let previous_plan = self.demuxer_context.output_plan.clone();
+        self.demuxer_context.output_plan.add_silent_audio();
+        match MuxerContext::init(&self.demuxer_context, muxer_layer) {
+            Ok(new_muxer) => {
+                let mut old_muxer = std::mem::replace(&mut self.muxer_context, new_muxer);
+                Self::handle_pkt_muxer_end(&mut old_muxer);
+                self.output_generation = self.output_generation.saturating_add(1);
+                self.pending_audio_generation = false;
+                if let Some(profile) = self.actual_media_profile.as_mut() {
+                    profile.audio_codec = AAC_MIME_CODEC.to_string();
+                    if let Some(stream_id) = self.stream_id.as_deref() {
+                        if !Register::try_set_actual_media_profile(stream_id, profile.clone()) {
+                            debug!(
+                                "media profile update ignored: action=media_profile, outcome=ignored, reason=stream_finalized, stream_id={stream_id}"
+                            );
+                        }
+                    }
+                }
+                self.set_audio_runtime(
+                    AudioSourceRuntimeState::Ready,
+                    OutputAudioRuntimeMode::Real,
+                    true,
+                    true,
+                );
+                self.sync_output_readiness()?;
+                debug!(
+                    "media output generation replaced: stage=late_audio, outcome=ready, stream_id={}, ssrc={}, generation={}",
+                    self.stream_id.as_deref().unwrap_or("unknown"),
+                    self.ssrc,
+                    self.output_generation
+                );
+            }
+            Err(error) => {
+                self.demuxer_context.output_plan = previous_plan;
+                self.pending_audio_generation = false;
+                if let Some(codec) = self.codec_context.as_mut() {
+                    codec.disable_audio();
+                }
+                self.set_audio_runtime(
+                    AudioSourceRuntimeState::Failed,
+                    OutputAudioRuntimeMode::None,
+                    false,
+                    false,
+                );
+                warn!(
+                    "late audio generation rejected: stage=muxer_init, outcome=video_continues, stream_id={}, ssrc={}, reason={error}",
+                    self.stream_id.as_deref().unwrap_or("unknown"),
+                    self.ssrc
+                );
             }
         }
         Ok(())
     }
-    fn handle_codec(codec: &mut CodecContext) {}
-    fn handle_filter(filter: &mut FilterContext) {}
 
-    // 1.写入头信息
-    // 2.循环写入body
-    // 3.写入结束信息
-    // 问题如何传递信息【该使用写入结束信息】
-    // 回调
     fn handle_pkt_muxer(
         &mut self,
         epoch: ProcessResult,
@@ -803,20 +1288,6 @@ impl MediaContext {
             }
             ContextEvent::Muxer(m_event) => {
                 let muxer = m_event.muxer();
-                let refresh_result = if m_event.is_open() {
-                    match self.codec_context.as_ref() {
-                        Some(codec) => unsafe {
-                            codec.refresh_output_parameters(&mut self.demuxer_context)
-                        },
-                        None => Ok(()),
-                    }
-                } else {
-                    Ok(())
-                };
-                if let Err(error) = refresh_result {
-                    self.fail_muxer(muxer, "output_format_unsupported", error)?;
-                    return Ok(());
-                }
                 if let Err(error) =
                     m_event.handle_event(&mut self.muxer_context, &self.demuxer_context)
                 {
@@ -882,22 +1353,17 @@ fn set_output_ready(
     output_type: &str,
     profile: &ActualMediaProfile,
 ) -> GlobalResult<()> {
-    if Register::output_media_metadata(stream_id, output_type)
-        .is_some_and(|metadata| metadata.state == OutputRuntimeState::Ready)
-    {
+    let next_metadata = OutputMediaMetadata {
+        state: OutputRuntimeState::Ready,
+        video_codec: profile.video_codec.clone(),
+        audio_codec: profile.audio_codec.clone(),
+        mime_codec: output_mime_codec(output_type, profile),
+        failure: None,
+    };
+    if Register::output_media_metadata(stream_id, output_type).as_ref() == Some(&next_metadata) {
         return Ok(());
     }
-    let updated = Register::try_set_output_media_metadata(
-        stream_id,
-        output_type,
-        OutputMediaMetadata {
-            state: OutputRuntimeState::Ready,
-            video_codec: profile.video_codec.clone(),
-            audio_codec: profile.audio_codec.clone(),
-            mime_codec: output_mime_codec(output_type, profile),
-            failure: None,
-        },
-    )?;
+    let updated = Register::try_set_output_media_metadata(stream_id, output_type, next_metadata)?;
     if !updated {
         debug!(
             "output ready state update ignored: action=output_metadata, outcome=ignored, reason=stream_finalized, stream_id={stream_id}, output_type={output_type}"
@@ -927,20 +1393,71 @@ fn output_mime_codec(output_type: &str, profile: &ActualMediaProfile) -> String 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base::tokio_util::sync::CancellationToken;
     use rsmpeg::ffi::AVMediaType_AVMEDIA_TYPE_DATA;
 
     #[test]
     fn read_frame_classifies_packet_eof_and_failure() {
-        assert!(classify_read_frame(0, "test").unwrap());
-        assert!(!classify_read_frame(AVERROR_EOF, "test").unwrap());
+        let control = RtpReadControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(60),
+        );
+        assert_eq!(
+            classify_read_frame(0, "test", &control).unwrap(),
+            ReadFrameState::Packet
+        );
+        assert_eq!(
+            classify_read_frame(AVERROR(EAGAIN), "test", &control).unwrap(),
+            ReadFrameState::WouldBlock
+        );
+        assert_eq!(
+            classify_read_frame(AVERROR_EOF, "test", &control).unwrap(),
+            ReadFrameState::Eof
+        );
 
-        match classify_read_frame(-1, "demux") {
+        match classify_read_frame(-1, "demux", &control) {
             Err(MediaRunError::Ffmpeg { stage, code, .. }) => {
                 assert_eq!(stage, "demux");
                 assert_eq!(code, -1);
             }
             _ => panic!("non-EOF FFmpeg result must remain a failure"),
         }
+    }
+
+    #[test]
+    fn initial_track_window_is_bounded_by_packets_or_two_seconds() {
+        assert!(!initial_track_window_complete(
+            FIX_MAX_READ_FRAME - 1,
+            TRACK_DISCOVERY_MAX_DURATION - Duration::from_millis(1),
+        ));
+        assert!(initial_track_window_complete(
+            FIX_MAX_READ_FRAME,
+            Duration::ZERO,
+        ));
+        assert!(initial_track_window_complete(
+            1,
+            TRACK_DISCOVERY_MAX_DURATION,
+        ));
+    }
+
+    #[test]
+    fn ready_aac_passthrough_is_available_without_codec_context() {
+        assert!(initial_audio_output_available(true, false, false));
+        assert!(!initial_audio_output_available(true, true, false));
+        assert!(initial_audio_output_available(false, false, true));
+    }
+
+    #[test]
+    fn passthrough_audio_stall_uses_shared_grace_period() {
+        assert!(!passthrough_audio_is_stalled(
+            Some(1_000_000),
+            1_000_000 + AUDIO_STALL_GRACE_US,
+        ));
+        assert!(passthrough_audio_is_stalled(
+            Some(1_000_000),
+            1_000_001 + AUDIO_STALL_GRACE_US,
+        ));
+        assert!(!passthrough_audio_is_stalled(None, i64::MAX));
     }
 
     #[test]
@@ -1008,7 +1525,7 @@ mod tests {
     fn output_mime_uses_actual_audio_and_video_codec_strings() {
         let profile = ActualMediaProfile {
             video_codec: "hev1.1.6.L78".to_string(),
-            audio_codec: "mp4a.40.2".to_string(),
+            audio_codec: AAC_MIME_CODEC.to_string(),
         };
 
         assert_eq!(

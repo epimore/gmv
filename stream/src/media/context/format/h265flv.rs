@@ -1,4 +1,7 @@
-use crate::media::context::format::demuxer::{DemuxerContext, H265ParameterSets};
+use crate::media::context::format::OUTPUT_AAC_SAMPLE_RATE;
+use crate::media::context::format::demuxer::{
+    DemuxerContext, H265ParameterSets, OutputTrackSource, SYNTHETIC_AUDIO_PACKET_INDEX,
+};
 use crate::media::context::format::{FmtMuxer, MuxPacket, MuxPacketSender};
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalError, GlobalResult};
@@ -590,6 +593,20 @@ impl FmtMuxer for H265FlvContext {
             let nb = (*fmt_ctx).nb_streams as usize;
 
             for i in 0..nb {
+                let planned_source = demuxer_context.output_plan.tracks.iter().find_map(|track| {
+                    match track.source {
+                        OutputTrackSource::Input(index)
+                        | OutputTrackSource::TranscodedAac(index)
+                            if index == i =>
+                        {
+                            Some(track.source)
+                        }
+                        _ => None,
+                    }
+                });
+                let Some(planned_source) = planned_source else {
+                    continue;
+                };
                 let stream = *(*fmt_ctx).streams.add(i);
                 let codecpar = (*stream).codecpar;
                 let time_base = (*stream).time_base;
@@ -651,24 +668,38 @@ impl FmtMuxer for H265FlvContext {
                         }
                     }
                     AVMediaType_AVMEDIA_TYPE_AUDIO => {
-                        let extradata = if (*codecpar).extradata_size > 0 {
-                            std::slice::from_raw_parts(
-                                (*codecpar).extradata,
-                                (*codecpar).extradata_size as usize,
-                            )
-                            .to_vec()
-                        } else {
-                            Vec::new()
-                        };
-
-                        let audio_info = AudioStreamInfo {
-                            stream_index: i as i32,
-                            codec_id: (*codecpar).codec_id,
-                            sample_rate: (*codecpar).sample_rate as u32,
-                            channels: (*codecpar).ch_layout.nb_channels as u32,
-                            extradata,
-                            time_base,
-                        };
+                        let audio_info =
+                            if matches!(planned_source, OutputTrackSource::TranscodedAac(_)) {
+                                AudioStreamInfo {
+                                    stream_index: i as i32,
+                                    codec_id: AVCodecID_AV_CODEC_ID_AAC,
+                                    sample_rate: OUTPUT_AAC_SAMPLE_RATE as u32,
+                                    channels: 1,
+                                    extradata: vec![0x11, 0x88],
+                                    time_base: AVRational {
+                                        num: 1,
+                                        den: OUTPUT_AAC_SAMPLE_RATE,
+                                    },
+                                }
+                            } else {
+                                let extradata = if (*codecpar).extradata_size > 0 {
+                                    std::slice::from_raw_parts(
+                                        (*codecpar).extradata,
+                                        (*codecpar).extradata_size as usize,
+                                    )
+                                    .to_vec()
+                                } else {
+                                    Vec::new()
+                                };
+                                AudioStreamInfo {
+                                    stream_index: i as i32,
+                                    codec_id: (*codecpar).codec_id,
+                                    sample_rate: (*codecpar).sample_rate as u32,
+                                    channels: (*codecpar).ch_layout.nb_channels as u32,
+                                    extradata,
+                                    time_base,
+                                }
+                            };
 
                         ctx.audio_streams.insert(i as i32, audio_info);
                         info!(
@@ -681,6 +712,22 @@ impl FmtMuxer for H265FlvContext {
                     }
                     _ => {}
                 }
+            }
+            if demuxer_context.output_plan.has_silent_audio() {
+                ctx.audio_streams.insert(
+                    SYNTHETIC_AUDIO_PACKET_INDEX,
+                    AudioStreamInfo {
+                        stream_index: SYNTHETIC_AUDIO_PACKET_INDEX,
+                        codec_id: AVCodecID_AV_CODEC_ID_AAC,
+                        sample_rate: OUTPUT_AAC_SAMPLE_RATE as u32,
+                        channels: 1,
+                        extradata: vec![0x11, 0x88],
+                        time_base: AVRational {
+                            num: 1,
+                            den: OUTPUT_AAC_SAMPLE_RATE,
+                        },
+                    },
+                );
             }
         }
 

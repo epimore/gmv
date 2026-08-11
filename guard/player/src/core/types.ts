@@ -5,6 +5,8 @@ export type GmvPlaybackRateMode = 'local-file' | 'remote-stream' | 'disabled';
 export type GmvDeviceStatus = 'online' | 'offline' | 'playing' | 'reconnecting' | 'error' | 'idle';
 export type GmvStreamProfile = 'main' | 'sub';
 export type GmvStreamProfileVerification = 'confirmed' | 'unverified' | 'unspecified';
+export type GmvSourceAudioState = 'not_expected' | 'declared_unobserved' | 'detected_unready' | 'ready' | 'unavailable' | 'failed' | 'unspecified';
+export type GmvOutputAudioMode = 'none' | 'silent_placeholder' | 'real' | 'unspecified';
 
 export interface GmvSource {
   protocol: GmvProtocol;
@@ -16,6 +18,7 @@ export interface GmvSource {
   label?: string;
   rateMode?: GmvPlaybackRateMode;
   startupTimeoutMs?: number;
+  generation?: number;
 }
 
 export interface GmvPlayerCoreOptions {

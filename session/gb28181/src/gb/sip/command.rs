@@ -102,6 +102,11 @@ pub(super) fn connected_target(device_id: &str) -> GlobalResult<(String, u16, Pr
     ))
 }
 
+fn device_supports_gb_2022(device_id: &str) -> bool {
+    Register::get_connected_device_session(device_id)
+        .is_some_and(|session| sdp::supports_gb_2022(session.gb_version.as_deref()))
+}
+
 async fn send_native_message_and_wait(request: CreateDeviceMessageRequest) -> GlobalResult<()> {
     let device_id = request.device_id.clone();
     send_native_message_on_device_and_wait(&device_id, request).await
@@ -1280,7 +1285,16 @@ async fn parse_media_ext_or_close(
     let result = sdp::validate_invite_answer_sdp(&accepted.remote_sdp, expected_ssrc)
         .and_then(|()| sdp::parse_media_ext(accepted.remote_sdp.as_bytes()));
     match result {
-        Ok(ext) => Ok(ext),
+        Ok(ext) => {
+            if Register::get_connected_device_session(device_id).is_some_and(|session| {
+                session.gb_version.as_deref() == Some("2.0") && sdp::uses_gb_2022_extension(&ext)
+            }) {
+                warn!(
+                    "GB version mismatch: action=parse_answer_sdp, outcome=accepted_compatibly, reason=gb_version_mismatch, device_id={device_id}, declared_version=2.0"
+                );
+            }
+            Ok(ext)
+        }
         Err(err) => {
             close_invite_after_answer_error(
                 device_id,
@@ -1320,7 +1334,7 @@ where
         trans_mode,
         &ssrc,
         stream_profile,
-        true,
+        device_supports_gb_2022(device_id),
     );
     let accepted = invite_play_and_wait(
         InvitePlayRequest {
@@ -1425,7 +1439,14 @@ where
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
     let sdp = sdp::playback(
-        channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, true,
+        channel_id,
+        media_ip,
+        media_port,
+        trans_mode,
+        &ssrc,
+        st,
+        et,
+        device_supports_gb_2022(device_id),
     );
     let accepted = invite_play_and_wait(
         InvitePlayRequest {
@@ -1476,7 +1497,15 @@ where
     let ssrc_u32 = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
     let protocol = transport_protocol(trans_mode, proto);
     let sdp = sdp::download(
-        channel_id, media_ip, media_port, trans_mode, &ssrc, st, et, speed, true,
+        channel_id,
+        media_ip,
+        media_port,
+        trans_mode,
+        &ssrc,
+        st,
+        et,
+        speed,
+        device_supports_gb_2022(device_id),
     );
     let accepted = invite_play_and_wait(
         InvitePlayRequest {

@@ -32,7 +32,8 @@ use gmv_protocol::session::v1::{
 };
 use gmv_protocol::stream::v1::stream_control_client::StreamControlClient;
 use gmv_protocol::stream::v1::{
-    CloseOutputRequest, CreateOutputRequest, GetPlaybackEndpointsRequest, OutputInfo, OutputState,
+    AudioTrackState, CloseOutputRequest, CreateOutputRequest, GetPlaybackEndpointsRequest,
+    OutputAudioMode, OutputInfo, OutputState,
 };
 use uuid::Uuid;
 
@@ -3615,6 +3616,32 @@ fn stream_output_summary(output: OutputInfo) -> StreamOutputSummary {
         video_codec: output.video_codec,
         audio_codec: output.audio_codec,
         mime_codec: output.mime_codec,
+        source_audio_state: match AudioTrackState::try_from(output.source_audio_state)
+            .unwrap_or(AudioTrackState::Unspecified)
+        {
+            AudioTrackState::NotExpected => "not_expected",
+            AudioTrackState::DeclaredUnobserved => "declared_unobserved",
+            AudioTrackState::DetectedUnready => "detected_unready",
+            AudioTrackState::Ready => "ready",
+            AudioTrackState::Unavailable => "unavailable",
+            AudioTrackState::Failed => "failed",
+            AudioTrackState::Unspecified => "unspecified",
+        }
+        .to_string(),
+        output_audio_mode: match OutputAudioMode::try_from(output.output_audio_mode)
+            .unwrap_or(OutputAudioMode::Unspecified)
+        {
+            OutputAudioMode::None => "none",
+            OutputAudioMode::SilentPlaceholder => "silent_placeholder",
+            OutputAudioMode::Real => "real",
+            OutputAudioMode::Unspecified => "unspecified",
+        }
+        .to_string(),
+        audio_recovery_eligible: output.audio_recovery_eligible,
+        late_track_watch: output.late_track_watch,
+        audio_sample_rate: output.audio_sample_rate,
+        audio_channels: output.audio_channels,
+        generation: output.generation,
     }
 }
 
@@ -3761,6 +3788,7 @@ mod tests {
             audio_codec: "mp4a.40.2".to_string(),
             mime_codec: "video/mp4; codecs=\"hvc1.1.6.L123.B0, mp4a.40.2\"".to_string(),
             failure: None,
+            ..Default::default()
         });
 
         assert_eq!(summary.state, StreamOutputState::Ready);

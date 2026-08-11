@@ -1,4 +1,3 @@
-use crate::media::context::RtpState;
 use crate::media::{DEFAULT_IO_BUF_SIZE, rtp, rw, show_ffmpeg_error_msg};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
@@ -23,9 +22,7 @@ use std::ops::Range;
 use std::ptr;
 use std::sync::Arc;
 
-/// 不会 free RtpState（因为它只是一个裸指针）。
-/// RtpState 的内存必须由 MediaContext 或上层独占释放。
-type OpaquePtr = *mut (rtp::RtpPacketBuffer, *mut RtpState);
+type OpaquePtr = *mut rtp::RtpPacketBuffer;
 
 /// Wrapper that owns FFmpeg resources for an input (fmt_ctx + avio_ctx + io_buf + opaque)
 pub struct AvioResource {
@@ -71,6 +68,78 @@ pub struct DemuxerContext {
     pub avio: AvioResource,
     /// we own `*mut AVCodecParameters` pointers and must free them in Drop
     pub params: Vec<ParamRepairState>,
+    pub read_control: Arc<rtp::RtpReadControl>,
+    pub output_plan: OutputTrackPlan,
+}
+
+pub const SYNTHETIC_AUDIO_PACKET_INDEX: i32 = i32::MAX - 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OutputTrackSource {
+    Input(usize),
+    TranscodedAac(usize),
+    SilentAac,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputTrack {
+    pub packet_index: i32,
+    pub source: OutputTrackSource,
+    pub media_type: rsmpeg::ffi::AVMediaType,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct OutputTrackPlan {
+    pub tracks: Vec<OutputTrack>,
+}
+
+impl OutputTrackPlan {
+    pub fn has_audio(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.media_type == AVMediaType_AVMEDIA_TYPE_AUDIO)
+    }
+
+    pub fn has_silent_audio(&self) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.source == OutputTrackSource::SilentAac)
+    }
+
+    pub fn has_fixed_aac(&self) -> bool {
+        self.tracks.iter().any(|track| {
+            matches!(
+                track.source,
+                OutputTrackSource::TranscodedAac(_) | OutputTrackSource::SilentAac
+            )
+        })
+    }
+
+    pub fn mark_transcoded_audio(&mut self, input_index: usize) {
+        if let Some(track) = self.tracks.iter_mut().find(|track| {
+            track.media_type == AVMediaType_AVMEDIA_TYPE_AUDIO
+                && track.source == OutputTrackSource::Input(input_index)
+        }) {
+            track.source = OutputTrackSource::TranscodedAac(input_index);
+        }
+    }
+
+    pub fn contains_packet_index(&self, packet_index: i32) -> bool {
+        self.tracks
+            .iter()
+            .any(|track| track.packet_index == packet_index)
+    }
+
+    pub fn add_silent_audio(&mut self) {
+        if self.has_audio() {
+            return;
+        }
+        self.tracks.push(OutputTrack {
+            packet_index: SYNTHETIC_AUDIO_PACKET_INDEX,
+            source: OutputTrackSource::SilentAac,
+            media_type: AVMediaType_AVMEDIA_TYPE_AUDIO,
+        });
+    }
 }
 
 fn extend_param_repair_states(
@@ -84,26 +153,108 @@ fn extend_param_repair_states(
     previous_count..params.len()
 }
 
+fn ready_for_initial_output(
+    media_type: rsmpeg::ffi::AVMediaType,
+    index: usize,
+    currently_ready: bool,
+    ready_at_discovery: &[bool],
+) -> bool {
+    match media_type {
+        AVMediaType_AVMEDIA_TYPE_VIDEO => index < ready_at_discovery.len() && currently_ready,
+        AVMediaType_AVMEDIA_TYPE_AUDIO => ready_at_discovery.get(index).copied().unwrap_or(false),
+        _ => false,
+    }
+}
+
 impl DemuxerContext {
     pub(in crate::media::context) fn sync_params(&mut self) -> Range<usize> {
         let stream_count = unsafe { (*self.avio.fmt_ctx).nb_streams as usize };
-        extend_param_repair_states(&mut self.params, stream_count)
+        let added = extend_param_repair_states(&mut self.params, stream_count);
+        for index in added.clone() {
+            self.params[index] =
+                unsafe { ParamRepairState::from_stream(*(*self.avio.fmt_ctx).streams.add(index)) };
+        }
+        added
+    }
+
+    pub(in crate::media::context) unsafe fn freeze_output_plan(
+        &mut self,
+        audio_expected: bool,
+        ready_at_discovery: &[bool],
+    ) {
+        let fmt_ctx = self.avio.fmt_ctx;
+        let mut video_selected = false;
+        let mut audio_selected = false;
+        let mut tracks = Vec::with_capacity(2);
+        for index in 0..self.params.len() {
+            let stream = unsafe { *(*fmt_ctx).streams.add(index) };
+            if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
+                continue;
+            }
+            let media_type = unsafe { (*(*stream).codecpar).codec_type };
+            if !ready_for_initial_output(
+                media_type,
+                index,
+                self.params[index].ready,
+                ready_at_discovery,
+            ) {
+                continue;
+            }
+            let selected = match media_type {
+                AVMediaType_AVMEDIA_TYPE_VIDEO if !video_selected => {
+                    video_selected = true;
+                    true
+                }
+                AVMediaType_AVMEDIA_TYPE_AUDIO if !audio_selected => {
+                    audio_selected = true;
+                    true
+                }
+                _ => false,
+            };
+            if selected {
+                tracks.push(OutputTrack {
+                    packet_index: index as i32,
+                    source: OutputTrackSource::Input(index),
+                    media_type,
+                });
+            }
+        }
+        if audio_expected && !audio_selected {
+            tracks.push(OutputTrack {
+                packet_index: SYNTHETIC_AUDIO_PACKET_INDEX,
+                source: OutputTrackSource::SilentAac,
+                media_type: AVMediaType_AVMEDIA_TYPE_AUDIO,
+            });
+        }
+        self.output_plan = OutputTrackPlan { tracks };
     }
 }
-// pub struct ParamStream {
-//     // pub codecpar: *mut AVCodecParameters,
-//     pub repair: ParamRepairState,
-// }
-// impl Drop for ParamStream {
-//     fn drop(&mut self) {
-//         if !self.codecpar.is_null() {
-//             let mut p = self.codecpar;
-//             unsafe {
-//                 avcodec_parameters_free(&mut p);
-//             }
-//         }
-//     }
-// }
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ParameterEvidence {
+    #[default]
+    Unknown,
+    ProtocolConstraint,
+    Sdp,
+    Demux,
+    Bitstream,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TrackParameterEvidence {
+    pub codec: ParameterEvidence,
+    pub sample_rate: ParameterEvidence,
+    pub channels: ParameterEvidence,
+    pub extradata: ParameterEvidence,
+    pub time_base: ParameterEvidence,
+}
+
+impl TrackParameterEvidence {
+    pub(crate) fn promote(target: &mut ParameterEvidence, evidence: ParameterEvidence) {
+        if evidence > *target {
+            *target = evidence;
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct ParamRepairState {
@@ -111,6 +262,34 @@ pub struct ParamRepairState {
     pub h265_ps: Option<H265ParameterSets>,
     pub aac_asc: Option<[u8; 2]>,
     pub ready: bool,
+    pub(crate) evidence: TrackParameterEvidence,
+}
+
+impl ParamRepairState {
+    unsafe fn from_stream(stream: *mut AVStream) -> Self {
+        let mut state = Self::default();
+        if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
+            return state;
+        }
+        let codecpar = unsafe { (*stream).codecpar };
+        if unsafe { (*codecpar).codec_id } != AVCodecID_AV_CODEC_ID_NONE {
+            state.evidence.codec = ParameterEvidence::Demux;
+        }
+        if unsafe { (*codecpar).sample_rate } > 0 {
+            state.evidence.sample_rate = ParameterEvidence::Demux;
+        }
+        if unsafe { (*codecpar).ch_layout.nb_channels } > 0 || unsafe { (*codecpar).channels } > 0 {
+            state.evidence.channels = ParameterEvidence::Demux;
+        }
+        if unsafe { (*codecpar).extradata_size } > 0 && !unsafe { (*codecpar).extradata.is_null() }
+        {
+            state.evidence.extradata = ParameterEvidence::Demux;
+        }
+        if unsafe { (*stream).time_base.num } > 0 && unsafe { (*stream).time_base.den } > 0 {
+            state.evidence.time_base = ParameterEvidence::Demux;
+        }
+        state
+    }
 }
 
 #[derive(Default)]
@@ -127,7 +306,9 @@ pub struct H265ParameterSets {
 }
 
 /// Helper: create an AVFormatContext and set custom IO flag
-unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> {
+unsafe fn alloc_fmt_ctx_with_custom_io(
+    read_control: &Arc<rtp::RtpReadControl>,
+) -> GlobalResult<*mut AVFormatContext> {
     unsafe {
         let fmt_ctx = avformat_alloc_context();
         if fmt_ctx.is_null() {
@@ -138,6 +319,9 @@ unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> {
         }
         // mark we will use custom IO
         (*fmt_ctx).flags |= AVFMT_FLAG_CUSTOM_IO as c_int;
+        (*fmt_ctx).interrupt_callback.callback = Some(rw::interrupt_rtp_read);
+        (*fmt_ctx).interrupt_callback.opaque =
+            Arc::as_ptr(read_control).cast_mut().cast::<c_void>();
         Ok(fmt_ctx)
     }
 }
@@ -145,7 +329,6 @@ unsafe fn alloc_fmt_ctx_with_custom_io() -> GlobalResult<*mut AVFormatContext> {
 /// Helper: allocate AVIOContext with boxed opaque tuple; returns (pb, boxed_ptr, buf_ptr)
 unsafe fn alloc_avio_for_rtp(
     rtp_buffer: rtp::RtpPacketBuffer,
-    rtp_state: *mut RtpState,
 ) -> GlobalResult<(*mut AVIOContext, *mut c_void, *mut u8)> {
     unsafe {
         // allocate IO buffer
@@ -157,8 +340,7 @@ unsafe fn alloc_avio_for_rtp(
             ));
         }
 
-        // Box the tuple and leak into raw pointer; opaque owns the rtp buffer and ptr to rtp_state
-        let boxed = Box::new((rtp_buffer, rtp_state));
+        let boxed = Box::new(rtp_buffer);
         let opaque = Box::into_raw(boxed) as *mut c_void;
 
         // create avio ctx
@@ -189,123 +371,22 @@ unsafe fn alloc_avio_for_rtp(
     }
 }
 
-/// Helper: open input with given format and dict opts (dict ownership: caller frees)
-unsafe fn open_input_with_format(
+/// Probe once. The custom AVIO and interrupt callback own waiting and cancellation.
+unsafe fn find_stream_info(
     fmt_ctx: *mut AVFormatContext,
-    input_fmt: *mut rsmpeg::ffi::AVInputFormat,
     dict_opts: *mut AVDictionary,
 ) -> Result<(), GlobalError> {
     unsafe {
-        let ret = avformat_open_input(
-            &mut (fmt_ctx as *mut _),
-            ptr::null(),
-            input_fmt,
-            &mut (dict_opts as *mut _),
-        );
+        let ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
         if ret < 0 {
-            let ffmpeg_error = show_ffmpeg_error_msg(ret);
+            let detail = show_ffmpeg_error_msg(ret);
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),
-                &ffmpeg_error,
+                &format!("failed to find stream info: {detail}"),
                 |msg| error!("{msg}"),
             ));
         }
         Ok(())
-    }
-}
-
-/// Helper: find stream info with retries
-unsafe fn find_stream_info_with_retry(
-    fmt_ctx: *mut AVFormatContext,
-    dict_opts: *mut AVDictionary,
-    media_ext: &MediaExt,
-) -> Result<(), GlobalError> {
-    unsafe {
-        let mut retry_count = 0usize;
-        let max_retries = 3usize;
-        let mut ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
-        let mut not_the_codec = false;
-        if ret >= 0 {
-            not_the_codec = !check_codec(fmt_ctx, media_ext);
-        }
-        while (ret < 0 || not_the_codec) && retry_count < max_retries {
-            info!(
-                "avformat_find_stream_info failed (attempt {}), retrying...",
-                retry_count + 1
-            );
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
-            if ret >= 0 {
-                not_the_codec = !check_codec(fmt_ctx, media_ext);
-            }
-            retry_count += 1;
-        }
-        if ret < 0 {
-            // Not fatal in all cases, but here we treat as error (you can relax to Ok)
-            return Err(GlobalError::new_sys_error(
-                "Failed to find stream info after max_retries attempts",
-                |msg| error!("{msg}"),
-            ));
-        }
-        Ok(())
-    }
-}
-
-fn check_codec(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) -> bool {
-    unsafe {
-        let nb_streams = (*fmt_ctx).nb_streams as usize;
-        if nb_streams < 1 {
-            return false;
-        }
-        for i in 0..nb_streams {
-            let stream = *(*fmt_ctx).streams;
-            if stream.is_null() {
-                return false;
-            }
-            let st = *(*fmt_ctx).streams.add(i);
-            if st.is_null() {
-                return false;
-            }
-            // 判断当前流是视频还是音频，并与 media_ext 中的参数进行比对，不一致则返回错误
-            let codecpar = (*st).codecpar;
-            if codecpar.is_null() {
-                return false;
-            }
-            let is_video_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO;
-            let is_audio_stream = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO;
-            if is_video_stream {
-                if let Some(ref v_codec) = media_ext.video_params.codec_id {
-                    let expected_id = map_video_codec_id(v_codec);
-                    if expected_id != AVCodecID_AV_CODEC_ID_NONE
-                        && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE
-                        && (*codecpar).codec_id != expected_id
-                    {
-                        warn!(
-                            "视频流 codec_id 不一致: demuxer={}, media_ext={}",
-                            (*codecpar).codec_id,
-                            expected_id
-                        );
-                        return false;
-                    }
-                }
-            } else if is_audio_stream {
-                if let Some(ref a_codec) = media_ext.audio_params.codec_id {
-                    let expected_id = map_audio_codec_id(a_codec);
-                    if expected_id != AVCodecID_AV_CODEC_ID_NONE
-                        && (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE
-                        && (*codecpar).codec_id != expected_id
-                    {
-                        warn!(
-                            "音频流 codec_id 不一致: demuxer={}, media_ext={}",
-                            (*codecpar).codec_id,
-                            expected_id
-                        );
-                        return false;
-                    }
-                }
-            }
-        }
-        true
     }
 }
 
@@ -319,9 +400,7 @@ unsafe fn cleanup_early(io_ctx: *mut AVIOContext, opaque_ptr: *mut c_void, io_bu
             (*io_ctx).opaque = ptr::null_mut();
             let mut local_io = io_ctx;
             avio_context_free(&mut local_io); // sets to NULL
-        }
-        // free buffer if allocated
-        if !io_buf.is_null() {
+        } else if !io_buf.is_null() {
             av_free(io_buf as *mut c_void);
         }
         // drop boxed opaque if allocated
@@ -462,15 +541,56 @@ fn input_sample_rate(media_ext: &MediaExt) -> i32 {
         })
         .filter(|rate| *rate > 0)
         .or_else(|| {
+            media_ext
+                .declaration
+                .audio
+                .clock_rate
+                .filter(|rate| *rate > 0)
+        })
+        .or_else(|| {
             if media_ext.audio_params.clock_rate > 0 {
                 Some(media_ext.audio_params.clock_rate)
-            } else if media_ext.clock_rate > 0 {
-                Some(media_ext.clock_rate)
             } else {
                 None
             }
         })
         .unwrap_or(8000)
+}
+
+unsafe fn log_audio_codec_mismatch(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) {
+    let Some(declared) = media_ext
+        .declaration
+        .audio
+        .codec
+        .as_deref()
+        .or(media_ext.audio_params.codec_id.as_deref())
+    else {
+        return;
+    };
+    if declared.eq_ignore_ascii_case("g711") {
+        return;
+    }
+    let declared_id = unsafe { map_audio_codec_id(declared) };
+    if declared_id == AVCodecID_AV_CODEC_ID_NONE {
+        return;
+    }
+    for index in 0..unsafe { (*fmt_ctx).nb_streams as usize } {
+        let stream = unsafe { *(*fmt_ctx).streams.add(index) };
+        if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
+            continue;
+        }
+        let codecpar = unsafe { (*stream).codecpar };
+        if unsafe { (*codecpar).codec_type } == AVMediaType_AVMEDIA_TYPE_AUDIO
+            && unsafe { (*codecpar).codec_id } != AVCodecID_AV_CODEC_ID_NONE
+            && unsafe { (*codecpar).codec_id } != declared_id
+        {
+            warn!(
+                "audio parameter mismatch: field=codec, declared={declared}, observed_id={}, outcome=observed_wins",
+                unsafe { (*codecpar).codec_id }
+            );
+            return;
+        }
+    }
 }
 
 /// The refactored start_demuxer broken into steps; returns DemuxerContext on success.
@@ -479,12 +599,12 @@ impl DemuxerContext {
         _ssrc: u32,
         media_ext: &MediaExt,
         rtp_buffer: rtp::RtpPacketBuffer,
-        rtp_state: *mut RtpState,
+        read_control: Arc<rtp::RtpReadControl>,
     ) -> GlobalResult<Self> {
         unsafe {
             // 0) pre-checks
             // allocate fmt_ctx
-            let in_fmt_ctx = alloc_fmt_ctx_with_custom_io()?;
+            let in_fmt_ctx = alloc_fmt_ctx_with_custom_io(&read_control)?;
 
             // 1) pick input format
             let fmt_name = pick_input_format(media_ext);
@@ -500,7 +620,7 @@ impl DemuxerContext {
             }
 
             // 2) alloc avio + boxed opaque
-            let (in_pb, in_opaque, in_io_buf) = match alloc_avio_for_rtp(rtp_buffer, rtp_state) {
+            let (in_pb, in_opaque, in_io_buf) = match alloc_avio_for_rtp(rtp_buffer) {
                 Ok(t) => t,
                 Err(e) => {
                     avformat_free_context(in_fmt_ctx);
@@ -529,20 +649,20 @@ impl DemuxerContext {
                     (*in_fmt_ctx).video_codec = codec;
                 }
             }
-            if let Some(a_id) = &media_ext.audio_params.codec_id {
+            if let Some(a_id) = &media_ext.audio_params.codec_id
+                && fmt_name != "mpeg"
+            {
                 let id = map_audio_codec_id(a_id);
                 if id != AVCodecID_AV_CODEC_ID_NONE {
                     (*in_fmt_ctx).audio_codec_id = id;
                     let codec = avcodec_find_decoder(id);
                     if codec.is_null() {
-                        cleanup_early(in_pb, in_opaque, in_io_buf);
-                        avformat_free_context(in_fmt_ctx);
-                        return Err(GlobalError::new_sys_error(
-                            &format!("Audio codec not found: {}", a_id),
-                            |msg| error!("{msg}"),
-                        ));
+                        warn!(
+                            "audio decoder unavailable: action=input_probe, outcome=video_continues, codec={a_id}"
+                        );
+                    } else {
+                        (*in_fmt_ctx).audio_codec = codec;
                     }
-                    (*in_fmt_ctx).audio_codec = codec;
                 }
             }
 
@@ -598,33 +718,48 @@ impl DemuxerContext {
                     |msg| error!("{msg}"),
                 ));
             }
-            // 6) find stream info (with retry)
-            if let Err(e) = find_stream_info_with_retry(in_fmt_ctx, dict_opts, media_ext) {
-                // close input and cleanup early: after avformat_close_input, pb is detached, but
-                avformat_close_input(&mut (in_fmt_ctx as *mut _));
-                return Err(e);
-            }
-
-            // 8) update probe cache & collect codecpar_list & stream mapping & reset_timestamp_state
-            let nb_streams = (*in_fmt_ctx).nb_streams as usize;
-            let params: Vec<ParamRepairState> =
-                (0..nb_streams).map(|_| Default::default()).collect();
-            rsmpeg::ffi::av_dict_free(&mut dict_opts);
-            // 9) Build AvioResource and return DemuxerContext
             let avio = AvioResource {
                 fmt_ctx: in_fmt_ctx,
                 io_buf: in_io_buf,
                 avio_ctx: in_pb,
             };
-            Ok(DemuxerContext { avio, params })
+            // 6) find stream info once; AVIO handles waiting and interruption.
+            if let Err(e) = find_stream_info(avio.fmt_ctx, dict_opts) {
+                rsmpeg::ffi::av_dict_free(&mut dict_opts);
+                drop(avio);
+                return Err(e);
+            }
+            log_audio_codec_mismatch(in_fmt_ctx, media_ext);
+
+            // 8) update probe cache & collect codecpar_list & stream mapping & reset_timestamp_state
+            let nb_streams = (*in_fmt_ctx).nb_streams as usize;
+            let params: Vec<ParamRepairState> = (0..nb_streams)
+                .map(|index| ParamRepairState::from_stream(*(*in_fmt_ctx).streams.add(index)))
+                .collect();
+            rsmpeg::ffi::av_dict_free(&mut dict_opts);
+            Ok(DemuxerContext {
+                avio,
+                params,
+                read_control,
+                output_plan: OutputTrackPlan::default(),
+            })
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ParamRepairState, extend_param_repair_states};
-    use rsmpeg::ffi::{AVOption, av_demuxer_iterate, av_opt_next};
+    use super::{
+        OutputTrack, OutputTrackPlan, OutputTrackSource, ParamRepairState,
+        extend_param_repair_states, map_audio_codec_id, ready_for_initial_output,
+    };
+    use rsmpeg::ffi::{
+        AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729,
+        AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_PCM_ALAW,
+        AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN,
+        AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVOption,
+        av_demuxer_iterate, av_opt_next, avcodec_find_decoder, avcodec_find_encoder,
+    };
     use std::ffi::CStr;
     use std::ptr;
 
@@ -641,6 +776,94 @@ mod tests {
         assert!(!params[1].ready);
         assert_eq!(extend_param_repair_states(&mut params, 1), 2..2);
         assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn silent_audio_track_is_added_once_for_late_generation() {
+        let mut plan = OutputTrackPlan::default();
+
+        plan.add_silent_audio();
+        plan.add_silent_audio();
+
+        assert!(plan.has_audio());
+        assert!(plan.has_silent_audio());
+        assert_eq!(plan.tracks.len(), 1);
+    }
+
+    #[test]
+    fn transcoded_audio_keeps_input_packet_index_but_uses_fixed_output_profile() {
+        let mut plan = OutputTrackPlan {
+            tracks: vec![OutputTrack {
+                packet_index: 1,
+                source: OutputTrackSource::Input(1),
+                media_type: AVMediaType_AVMEDIA_TYPE_AUDIO,
+            }],
+        };
+
+        plan.mark_transcoded_audio(1);
+
+        assert_eq!(plan.tracks[0].source, OutputTrackSource::TranscodedAac(1));
+        assert!(plan.contains_packet_index(1));
+        assert!(plan.has_fixed_aac());
+        assert!(!plan.has_silent_audio());
+    }
+
+    #[test]
+    fn discovered_video_can_finish_parameter_repair_after_audio_window_freezes() {
+        let snapshot = [false, false];
+
+        assert!(ready_for_initial_output(
+            AVMediaType_AVMEDIA_TYPE_VIDEO,
+            0,
+            true,
+            &snapshot,
+        ));
+        assert!(!ready_for_initial_output(
+            AVMediaType_AVMEDIA_TYPE_AUDIO,
+            1,
+            true,
+            &snapshot,
+        ));
+        assert!(!ready_for_initial_output(
+            AVMediaType_AVMEDIA_TYPE_VIDEO,
+            2,
+            true,
+            &snapshot,
+        ));
+    }
+
+    #[test]
+    fn gb_audio_codec_names_map_without_conflating_g722_and_g7221() {
+        unsafe {
+            assert_eq!(map_audio_codec_id("g7221"), AVCodecID_AV_CODEC_ID_SIREN);
+            assert_eq!(map_audio_codec_id("siren"), AVCodecID_AV_CODEC_ID_SIREN);
+            assert_eq!(map_audio_codec_id("g7231"), AVCodecID_AV_CODEC_ID_G723_1);
+            assert_eq!(map_audio_codec_id("g729"), AVCodecID_AV_CODEC_ID_G729);
+        }
+    }
+
+    #[test]
+    fn runtime_ffmpeg_contains_promised_audio_transcode_capabilities() {
+        unsafe {
+            for codec_id in [
+                AVCodecID_AV_CODEC_ID_H264,
+                AVCodecID_AV_CODEC_ID_HEVC,
+                AVCodecID_AV_CODEC_ID_AAC,
+                AVCodecID_AV_CODEC_ID_PCM_ALAW,
+                AVCodecID_AV_CODEC_ID_PCM_MULAW,
+                AVCodecID_AV_CODEC_ID_G723_1,
+                AVCodecID_AV_CODEC_ID_G729,
+            ] {
+                assert!(
+                    !avcodec_find_decoder(codec_id).is_null(),
+                    "required decoder missing for codec id {codec_id}"
+                );
+            }
+            assert!(
+                !avcodec_find_encoder(AVCodecID_AV_CODEC_ID_AAC).is_null(),
+                "required AAC encoder missing"
+            );
+        }
     }
 
     #[test]

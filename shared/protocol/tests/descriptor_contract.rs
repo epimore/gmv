@@ -609,6 +609,21 @@ fn stream_output_lifecycle_contract_is_stable() {
     assert_eq!(field_number("OutputInfo", "video_codec"), Some(7));
     assert_eq!(field_number("OutputInfo", "audio_codec"), Some(8));
     assert_eq!(field_number("OutputInfo", "mime_codec"), Some(9));
+    assert_eq!(field_number("OutputInfo", "source_audio_state"), Some(11));
+    assert_eq!(field_number("OutputInfo", "output_audio_mode"), Some(12));
+    assert_eq!(field_number("OutputInfo", "generation"), Some(17));
+    assert_eq!(
+        field_number("QueryStreamResponse", "source_audio_state"),
+        Some(28)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "output_audio_mode"),
+        Some(29)
+    );
+    assert_eq!(
+        field_number("QueryStreamResponse", "output_generation"),
+        Some(34)
+    );
     assert_eq!(
         field_number("StreamJsonRequest", "subscription_id"),
         Some(2)

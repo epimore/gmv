@@ -1,9 +1,11 @@
-use crate::media::context::RtpState;
 use base::bytes::{Bytes, BytesMut};
-use crossbeam_channel::{Receiver, RecvTimeoutError};
+use base::tokio_util::sync::CancellationToken;
+use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
 use gmv_domain::info::media_info_ext::MediaExt;
 use std::collections::VecDeque;
 use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 pub struct RtpPacket {
@@ -25,6 +27,53 @@ const GAP_WAIT_SECOND_MS: u64 = 15;
 const GAP_WAIT_STEP_MS: u64 = 10;
 const SEQ_HALF_RANGE: u16 = 32768;
 const START_CODE: &[u8; 4] = &[0, 0, 0, 1];
+const AVIO_RECV_TIMEOUT: Duration = Duration::from_millis(20);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RtpInterruptReason {
+    Cancelled,
+    StartupDeadline,
+}
+
+pub struct RtpReadControl {
+    cancel: CancellationToken,
+    startup_deadline: Instant,
+    startup_complete: AtomicBool,
+}
+
+impl RtpReadControl {
+    pub fn new(cancel: CancellationToken, startup_deadline: Instant) -> Self {
+        Self {
+            cancel,
+            startup_deadline,
+            startup_complete: AtomicBool::new(false),
+        }
+    }
+
+    pub fn interrupt_reason(&self) -> Option<RtpInterruptReason> {
+        if self.cancel.is_cancelled() {
+            Some(RtpInterruptReason::Cancelled)
+        } else if !self.startup_complete.load(Ordering::Acquire)
+            && Instant::now() >= self.startup_deadline
+        {
+            Some(RtpInterruptReason::StartupDeadline)
+        } else {
+            None
+        }
+    }
+
+    pub fn mark_startup_complete(&self) {
+        self.startup_complete.store(true, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RtpReadOutcome {
+    Data(usize),
+    WouldBlock,
+    Interrupted(RtpInterruptReason),
+    Closed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PayloadKind {
@@ -164,13 +213,19 @@ pub struct RtpPacketBuffer {
     h264_fu: Option<BytesMut>,
     h265_fu: Option<BytesMut>,
     aac_adts: AacAdtsConfig,
+    control: Arc<RtpReadControl>,
 }
 
 impl RtpPacketBuffer {
-    pub fn init(ssrc: u32, packet_rx: Receiver<RtpPacket>, media_ext: &MediaExt) -> Self {
+    pub fn init(
+        ssrc: u32,
+        packet_rx: Receiver<RtpPacket>,
+        media_ext: &MediaExt,
+        control: Arc<RtpReadControl>,
+    ) -> Self {
         let payload_kind = PayloadKind::from_media_ext(media_ext);
         let queue_window = reorder_window(payload_kind);
-        let mut buffer = Self {
+        Self {
             ssrc,
             first_read_rtp_sn: u16::MAX,
             queue: std::array::from_fn(|_| None),
@@ -188,63 +243,59 @@ impl RtpPacketBuffer {
             h264_fu: None,
             h265_fu: None,
             aac_adts: AacAdtsConfig::from_media_ext(media_ext),
-        };
-        buffer.calculate_index();
-        buffer
-    }
-
-    fn calculate_index(&mut self) {
-        while self.queue_count < self.queue_window && !self.input_closed {
-            match self.packet_rx.recv() {
-                Ok(pkt) => self.enqueue_initial(pkt),
-                Err(_) => self.input_closed = true,
-            }
+            control,
         }
     }
 
-    pub fn consume_packet(
-        &mut self,
-        max_consume_len: usize,
-        buf: *mut u8,
-        rtp_state: *mut RtpState,
-    ) -> Option<usize> {
+    pub fn consume_packet(&mut self, max_consume_len: usize, buf: *mut u8) -> RtpReadOutcome {
         if max_consume_len == 0 {
-            return Some(0);
+            return RtpReadOutcome::Data(0);
+        }
+        if let Some(reason) = self.control.interrupt_reason() {
+            return RtpReadOutcome::Interrupted(reason);
         }
 
         if let Some(copy_len) = self.consume_remaining(max_consume_len, buf) {
-            return Some(copy_len);
+            return RtpReadOutcome::Data(copy_len);
         }
         if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
-            return Some(copy_len);
+            return RtpReadOutcome::Data(copy_len);
         }
 
+        let mut waited_for_input = false;
         loop {
-            self.reduce_packet();
+            if let Some(reason) = self.control.interrupt_reason() {
+                return RtpReadOutcome::Interrupted(reason);
+            }
+            if !waited_for_input && self.queue_count == 0 && !self.input_closed {
+                self.receive_one_with_timeout();
+                waited_for_input = true;
+            }
+            self.drain_available_packets();
             let input_closed = self.input_closed;
             let Some((pkt, lost_before)) = self.take_next_packet(input_closed) else {
                 if input_closed && self.queue_count == 0 {
                     self.finish_access_unit(false);
-                    return self.consume_ready_au(max_consume_len, buf);
+                    return self
+                        .consume_ready_au(max_consume_len, buf)
+                        .map_or(RtpReadOutcome::Closed, RtpReadOutcome::Data);
                 }
-                return None;
+                return self
+                    .control
+                    .interrupt_reason()
+                    .map_or(RtpReadOutcome::WouldBlock, RtpReadOutcome::Interrupted);
             };
-            unsafe {
-                (*rtp_state).timestamp = pkt.timestamp;
-                (*rtp_state).marker = pkt.marker;
-            }
-
             self.process_packet(pkt, lost_before);
             if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
-                return Some(copy_len);
+                return RtpReadOutcome::Data(copy_len);
             }
 
             if input_closed && self.queue_count == 0 {
                 self.finish_access_unit(false);
                 if let Some(copy_len) = self.consume_ready_au(max_consume_len, buf) {
-                    return Some(copy_len);
+                    return RtpReadOutcome::Data(copy_len);
                 }
-                return None;
+                return RtpReadOutcome::Closed;
             }
         }
     }
@@ -426,11 +477,29 @@ impl RtpPacketBuffer {
         matches!(self.payload_kind, PayloadKind::H264 | PayloadKind::H265)
     }
 
-    fn reduce_packet(&mut self) {
+    fn receive_one_with_timeout(&mut self) {
+        match self.packet_rx.recv_timeout(AVIO_RECV_TIMEOUT) {
+            Ok(pkt) => self.enqueue_initial(pkt),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => self.input_closed = true,
+        }
+    }
+
+    fn drain_available_packets(&mut self) {
         while self.queue_count < self.queue_window && !self.input_closed {
-            match self.packet_rx.recv() {
-                Ok(pkt) => self.enqueue(pkt),
-                Err(_) => self.input_closed = true,
+            match self.packet_rx.try_recv() {
+                Ok(pkt) => {
+                    if self.queue_count == 0 && self.first_read_rtp_sn == u16::MAX {
+                        self.enqueue_initial(pkt);
+                    } else {
+                        self.enqueue(pkt);
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    self.input_closed = true;
+                    break;
+                }
             }
         }
     }
@@ -595,6 +664,9 @@ impl RtpPacketBuffer {
     ) -> bool {
         let deadline = gap_started_at + Duration::from_millis(phase_ms);
         loop {
+            if self.control.interrupt_reason().is_some() {
+                return false;
+            }
             if self.has_packet(expected_seq) {
                 return true;
             }
@@ -614,9 +686,14 @@ impl RtpPacketBuffer {
                 return false;
             }
 
-            match self.packet_rx.recv_timeout(deadline.duration_since(now)) {
+            let wait = deadline.duration_since(now).min(AVIO_RECV_TIMEOUT);
+            match self.packet_rx.recv_timeout(wait) {
                 Ok(pkt) => self.enqueue(pkt),
-                Err(RecvTimeoutError::Timeout) => return self.has_packet(expected_seq),
+                Err(RecvTimeoutError::Timeout) => {
+                    if Instant::now() >= deadline {
+                        return self.has_packet(expected_seq);
+                    }
+                }
                 Err(RecvTimeoutError::Disconnected) => {
                     self.input_closed = true;
                     return false;
@@ -961,7 +1038,18 @@ fn append_adts_frame(out: &mut BytesMut, frame: &[u8], cfg: AacAdtsConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::media::context::RtpState;
+    use base::tokio_util::sync::CancellationToken;
+
+    fn read_control(deadline: Instant) -> Arc<RtpReadControl> {
+        Arc::new(RtpReadControl::new(CancellationToken::new(), deadline))
+    }
+
+    fn data_len(outcome: RtpReadOutcome) -> usize {
+        match outcome {
+            RtpReadOutcome::Data(len) => len,
+            other => panic!("expected data, got {other:?}"),
+        }
+    }
 
     fn packet(seq: u16, payload: &'static [u8]) -> RtpPacket {
         RtpPacket {
@@ -982,26 +1070,26 @@ mod tests {
 
         let mut media_ext = MediaExt::default();
         media_ext.type_name = "PS".to_string();
-        let mut buffer = RtpPacketBuffer::init(200_000_037, rx, &media_ext);
-        let mut state = RtpState::new();
+        let mut buffer = RtpPacketBuffer::init(
+            200_000_037,
+            rx,
+            &media_ext,
+            read_control(Instant::now() + Duration::from_secs(60)),
+        );
         let mut output = [0u8; 32];
 
-        let first = buffer
-            .consume_packet(output.len(), output.as_mut_ptr(), &mut state)
-            .unwrap();
+        let first = data_len(buffer.consume_packet(output.len(), output.as_mut_ptr()));
         assert_eq!(&output[..first], b"first");
-        let second = buffer
-            .consume_packet(output.len(), output.as_mut_ptr(), &mut state)
-            .unwrap();
+        let second = data_len(buffer.consume_packet(output.len(), output.as_mut_ptr()));
         assert_eq!(&output[..second], b"second");
 
         assert_eq!(
-            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
-            None
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::Closed
         );
         assert_eq!(
-            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
-            None
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::Closed
         );
         assert!(buffer.input_closed);
         assert_eq!(buffer.queue_count, 0);
@@ -1012,15 +1100,54 @@ mod tests {
         let (tx, rx) = crossbeam_channel::bounded(1);
         drop(tx);
 
-        let mut buffer = RtpPacketBuffer::init(200_000_037, rx, &MediaExt::default());
-        let mut state = RtpState::new();
+        let mut buffer = RtpPacketBuffer::init(
+            200_000_037,
+            rx,
+            &MediaExt::default(),
+            read_control(Instant::now() + Duration::from_secs(60)),
+        );
         let mut output = [0u8; 8];
 
         assert_eq!(
-            buffer.consume_packet(output.len(), output.as_mut_ptr(), &mut state),
-            None
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::Closed
         );
         assert!(buffer.input_closed);
+    }
+
+    #[test]
+    fn active_input_without_packet_is_would_block() {
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        let mut buffer = RtpPacketBuffer::init(
+            200_000_037,
+            rx,
+            &MediaExt::default(),
+            read_control(Instant::now() + Duration::from_secs(60)),
+        );
+        let mut output = [0u8; 8];
+
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::WouldBlock
+        );
+        assert!(!buffer.input_closed);
+    }
+
+    #[test]
+    fn startup_deadline_interrupts_empty_input() {
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        let mut buffer = RtpPacketBuffer::init(
+            200_000_037,
+            rx,
+            &MediaExt::default(),
+            read_control(Instant::now()),
+        );
+        let mut output = [0u8; 8];
+
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::Interrupted(RtpInterruptReason::StartupDeadline)
+        );
     }
 }
 

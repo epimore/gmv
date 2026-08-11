@@ -28,14 +28,14 @@ use gmv_protocol::guard::v1::{
     guard_control_client::GuardControlClient, node_to_guard_message,
 };
 use gmv_protocol::stream::v1::{
-    CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
+    AudioTrackState, CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
     ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
     GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaReadinessStage, MediaTransport,
-    MediaTransportState, OutputInfo, OutputState, QueryStreamRequest, QueryStreamResponse,
-    ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse, StartReceiveRequest,
-    StartReceiveResponse, StopReceivePhase, StopReceiveRequest, StopReceiveResponse,
-    StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState, StreamUnitResponse,
-    ViewerFormatCount, stream_control_server::StreamControl,
+    MediaTransportState, OutputAudioMode, OutputInfo, OutputState, QueryStreamRequest,
+    QueryStreamResponse, ReleaseSubscriptionOutputsRequest, ReleaseSubscriptionOutputsResponse,
+    StartReceiveRequest, StartReceiveResponse, StopReceivePhase, StopReceiveRequest,
+    StopReceiveResponse, StreamBoolResponse, StreamJsonRequest, StreamJsonResponse, StreamState,
+    StreamUnitResponse, ViewerFormatCount, stream_control_server::StreamControl,
 };
 use tonic::transport::Channel;
 
@@ -45,7 +45,8 @@ use crate::io::media_endpoint::{
     ConnectMediaEndpoint, MediaConnectionState, MediaEndpointManager, ReserveMediaEndpoint,
 };
 use crate::state::register::{
-    FinalizeStreamResult, OutputRuntimeState, Register, StreamRuntimeObservation,
+    AudioSourceRuntimeState, FinalizeStreamResult, OutputAudioRuntimeMode, OutputRuntimeState,
+    Register, StreamRuntimeObservation,
 };
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
@@ -691,6 +692,10 @@ impl OutputRuntime {
         let metadata = use_media_runtime
             .then(|| Register::output_media_metadata(&self.stream_id, &self.output_type))
             .flatten();
+        let audio_runtime = use_media_runtime
+            .then(|| Register::audio_runtime(&self.stream_id))
+            .flatten()
+            .unwrap_or_default();
         OutputInfo {
             output_id: self.output_id.clone(),
             stream_id: self.stream_id.clone(),
@@ -713,6 +718,13 @@ impl OutputRuntime {
                 .as_ref()
                 .map(|metadata| metadata.mime_codec.clone())
                 .unwrap_or_default(),
+            source_audio_state: audio_track_state(audio_runtime.source_state) as i32,
+            output_audio_mode: output_audio_mode(audio_runtime.output_mode) as i32,
+            audio_recovery_eligible: audio_runtime.recovery_eligible,
+            late_track_watch: audio_runtime.late_track_watch,
+            audio_sample_rate: audio_runtime.sample_rate,
+            audio_channels: audio_runtime.channels,
+            generation: audio_runtime.generation,
             failure: metadata.and_then(|metadata| metadata.failure),
         }
     }
@@ -724,6 +736,25 @@ fn output_state(state: OutputRuntimeState) -> OutputState {
         OutputRuntimeState::Ready => OutputState::Ready,
         OutputRuntimeState::Failed => OutputState::Failed,
         OutputRuntimeState::Closed => OutputState::Closed,
+    }
+}
+
+fn audio_track_state(state: AudioSourceRuntimeState) -> AudioTrackState {
+    match state {
+        AudioSourceRuntimeState::NotExpected => AudioTrackState::NotExpected,
+        AudioSourceRuntimeState::DeclaredUnobserved => AudioTrackState::DeclaredUnobserved,
+        AudioSourceRuntimeState::DetectedUnready => AudioTrackState::DetectedUnready,
+        AudioSourceRuntimeState::Ready => AudioTrackState::Ready,
+        AudioSourceRuntimeState::Unavailable => AudioTrackState::Unavailable,
+        AudioSourceRuntimeState::Failed => AudioTrackState::Failed,
+    }
+}
+
+fn output_audio_mode(mode: OutputAudioRuntimeMode) -> OutputAudioMode {
+    match mode {
+        OutputAudioRuntimeMode::None => OutputAudioMode::None,
+        OutputAudioRuntimeMode::SilentPlaceholder => OutputAudioMode::SilentPlaceholder,
+        OutputAudioRuntimeMode::Real => OutputAudioMode::Real,
     }
 }
 
@@ -1344,6 +1375,11 @@ impl StreamControlAdapter {
             .media_tx
             .as_ref()
             .and_then(|_| Register::actual_media_profile(&request.stream_id));
+        let audio_runtime = self
+            .media_tx
+            .as_ref()
+            .and_then(|_| Register::audio_runtime(&request.stream_id))
+            .unwrap_or_default();
         let readiness_stage = if state == StreamState::Failed
             || primary_output_metadata
                 .as_ref()
@@ -1422,6 +1458,13 @@ impl StreamControlAdapter {
             mime_codec: primary_output_metadata
                 .map(|metadata| metadata.mime_codec)
                 .unwrap_or_default(),
+            source_audio_state: audio_track_state(audio_runtime.source_state) as i32,
+            output_audio_mode: output_audio_mode(audio_runtime.output_mode) as i32,
+            audio_recovery_eligible: audio_runtime.recovery_eligible,
+            late_track_watch: audio_runtime.late_track_watch,
+            audio_sample_rate: audio_runtime.sample_rate,
+            audio_channels: audio_runtime.channels,
+            output_generation: audio_runtime.generation,
         }
     }
 

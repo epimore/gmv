@@ -111,6 +111,8 @@ pub struct MediaExt {
     pub stream_number: Option<u8>, //gb28181自定义属性，流编号:0-主码流（高清流）1-子码率（标清流）
     pub video_params: VideoParams,
     pub audio_params: AudioParams,
+    #[serde(default)]
+    pub declaration: MediaDeclaration,
 }
 impl MediaExt {
     pub fn codec_from_psm(&self, codec_id: i32) {
@@ -132,6 +134,42 @@ impl MediaExt {
             info!("codec: {}", codec);
         }
     }
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum MediaDeclarationState {
+    #[default]
+    Absent,
+    Active,
+    Rejected,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(crate = "base::serde")]
+pub struct MediaSectionDeclaration {
+    pub state: MediaDeclarationState,
+    pub payload_type: Option<u8>,
+    pub codec: Option<String>,
+    pub clock_rate: Option<i32>,
+    pub channels: Option<i32>,
+    pub embedded_in_ps: bool,
+}
+
+impl MediaSectionDeclaration {
+    pub fn is_active(&self) -> bool {
+        self.state == MediaDeclarationState::Active
+    }
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(crate = "base::serde")]
+pub struct MediaDeclaration {
+    pub video: MediaSectionDeclaration,
+    pub audio: MediaSectionDeclaration,
 }
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
@@ -224,8 +262,8 @@ impl Default for AudioParams {
             codec_id: None,
             bitrate: None,
             sample_rate: None,
-            channel_count: 1,
-            clock_rate: 8000,
+            channel_count: 0,
+            clock_rate: 0,
         }
     }
 }
@@ -235,7 +273,7 @@ impl AudioParams {
             "1" => self.codec_id = Some("g711".to_string()),
             "2" => self.codec_id = Some("g723".to_string()),
             "3" => self.codec_id = Some("g729".to_string()),
-            "4" => self.codec_id = Some("g722".to_string()),
+            "4" => self.codec_id = Some("g7221".to_string()),
             "5" => self.codec_id = Some("svac".to_string()),
             "6" => self.codec_id = Some("aac".to_string()),
             _ => warn!("Unknown audio codec: {}", item),
@@ -253,8 +291,38 @@ impl AudioParams {
     pub fn map_sample_rate(&mut self, item: &str) {
         if let Some(rate) = SAMPLE_RATE_MAP.get(item) {
             self.sample_rate = Some(rate.to_string());
+            self.clock_rate = rate
+                .parse::<f64>()
+                .ok()
+                .map(|rate| (rate * 1000.0).round() as i32)
+                .unwrap_or_default();
         } else {
             warn!("Unknown sample rate: {}", item);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioParams;
+
+    #[test]
+    fn unknown_audio_parameters_do_not_fabricate_rate_or_channels() {
+        let params = AudioParams::default();
+
+        assert_eq!(params.clock_rate, 0);
+        assert_eq!(params.channel_count, 0);
+    }
+
+    #[test]
+    fn gb_f_audio_codec_four_is_g7221_siren() {
+        let mut params = AudioParams::default();
+
+        params.map_audio_codec("4");
+        params.map_sample_rate("3");
+
+        assert_eq!(params.codec_id.as_deref(), Some("g7221"));
+        assert_eq!(params.sample_rate.as_deref(), Some("16"));
+        assert_eq!(params.clock_rate, 16_000);
     }
 }

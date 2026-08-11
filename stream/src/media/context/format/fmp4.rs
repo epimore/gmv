@@ -1,6 +1,7 @@
 use crate::media::context::format::demuxer::DemuxerContext;
 use crate::media::context::format::{
-    FmtMuxer, MuxPacket, MuxPacketSender, can_start_fragmented_output, write_callback,
+    FmtMuxer, MuxPacket, MuxPacketSender, PlannedStreamMap, can_start_fragmented_output,
+    copy_output_plan, write_callback,
 };
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::{Bytes, BytesMut};
@@ -12,18 +13,15 @@ use rsmpeg::avcodec::AVPacket as OwnedAvPacket;
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_CUSTOM_IO,
     AVFMT_FLAG_FLUSH_PACKETS, AVFMT_FLAG_NOBUFFER, AVFMT_NOFILE, AVFormatContext, AVIOContext,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_SUBTITLE,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVRational, AVStream, av_dict_set, av_free,
+    AVMediaType_AVMEDIA_TYPE_SUBTITLE, AVPacket, AVRational, AVStream, av_dict_set, av_free,
     av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts,
-    av_rescale_q, av_write_frame, av_write_trailer, avcodec_parameters_copy,
-    avformat_alloc_context, avformat_new_stream, avformat_write_header, avio_alloc_context,
-    avio_context_free, avio_flush,
+    av_rescale_q, av_write_frame, av_write_trailer, avformat_alloc_context, avformat_write_header,
+    avio_alloc_context, avio_context_free, avio_flush,
 };
 use rsmpeg::ffi::{
     AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
 };
 use rtp_types::prelude::PayloadLength;
-use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_int, c_uint, c_void};
 use std::ptr;
 use std::slice;
@@ -42,7 +40,7 @@ pub struct CmafFmp4Context {
     pub io_buf: *mut u8,
     out_buf_ptr: *mut Vec<u8>,
 
-    in_timebase_map: HashMap<c_int, AVRational>,
+    stream_map: PlannedStreamMap,
     v_idx: c_int,
     started: bool,
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
@@ -135,9 +133,7 @@ impl FmtMuxer for CmafFmp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-            let mut in_timebase_map = HashMap::with_capacity(8);
-            let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
-            let v_idx = copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
+            let (stream_map, v_idx) = copy_output_plan(demuxer_context, out_fmt_ctx)?;
 
             let ret = avformat_write_header(out_fmt_ctx, &mut options);
             // 释放选项字典
@@ -164,7 +160,7 @@ impl FmtMuxer for CmafFmp4Context {
                 avio_ctx,
                 io_buf,
                 out_buf_ptr,
-                in_timebase_map,
+                stream_map,
                 v_idx,
                 started: false,
                 fragment_started_with_key: false,
@@ -179,7 +175,7 @@ impl FmtMuxer for CmafFmp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            match self.in_timebase_map.get(&pkt.stream_index) {
+            match self.stream_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
                         "fMP4 write failed,stream index error: {}",
@@ -187,7 +183,7 @@ impl FmtMuxer for CmafFmp4Context {
                     );
                     return Ok(());
                 }
-                Some(&in_tb) => {
+                Some(planned) => {
                     let is_keyframe =
                         self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if !can_start_fragmented_output(
@@ -203,7 +199,7 @@ impl FmtMuxer for CmafFmp4Context {
                         self.fragment_started_with_key = self.v_idx < 0 || is_keyframe;
                         self.fragment_start_timestamp = timestamp;
                     }
-                    let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
+                    let out_st = *(*self.fmt_ctx).streams.add(planned.output_index as usize);
                     let strip_aac_adts = {
                         let codecpar = (*out_st).codecpar;
                         (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
@@ -211,9 +207,14 @@ impl FmtMuxer for CmafFmp4Context {
                             && (*codecpar).extradata_size > 0
                     };
                     let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
+                    (*cloned.as_mut_ptr()).stream_index = planned.output_index;
 
                     // 写入当前帧
-                    av_packet_rescale_ts(cloned.as_mut_ptr(), in_tb, (*out_st).time_base);
+                    av_packet_rescale_ts(
+                        cloned.as_mut_ptr(),
+                        planned.input_time_base,
+                        (*out_st).time_base,
+                    );
 
                     (*cloned.as_mut_ptr()).pos = -1;
                     let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
@@ -354,10 +355,16 @@ fn adts_payload_offset(data: &[u8]) -> Result<Option<usize>, &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{adts_payload_offset, clone_packet_for_mp4};
+    use super::{CmafFmp4Context, adts_payload_offset, clone_packet_for_mp4};
+    use crate::media::context::format::demuxer::{AvioResource, DemuxerContext};
+    use crate::media::context::format::{FmtMuxer, MuxPacketSender};
+    use crate::media::rtp::RtpReadControl;
+    use base::tokio_util::sync::CancellationToken;
     use rsmpeg::avcodec::AVPacket as OwnedAvPacket;
-    use rsmpeg::ffi::av_new_packet;
+    use rsmpeg::ffi::{av_new_packet, avformat_alloc_context};
     use std::slice;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     fn adts_frame(payload: &[u8], has_crc: bool, raw_data_blocks: u8) -> Vec<u8> {
         let header_len = if has_crc { 9 } else { 7 };
@@ -392,6 +399,32 @@ mod tests {
         unsafe {
             let packet = packet.as_mut_ptr();
             slice::from_raw_parts((*packet).data, (*packet).size as usize)
+        }
+    }
+
+    #[test]
+    fn silent_aac_plan_writes_valid_fmp4_init_without_source_audio_parameters() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            assert!(!fmt_ctx.is_null());
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx,
+                    io_buf: std::ptr::null_mut(),
+                    avio_ctx: std::ptr::null_mut(),
+                },
+                params: Vec::new(),
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
+            };
+            demuxer.output_plan.add_silent_audio();
+
+            let muxer = CmafFmp4Context::init_context(&demuxer, MuxPacketSender::new(4)).unwrap();
+
+            assert_eq!(&muxer.init_segment[4..8], b"ftyp");
         }
     }
 
@@ -454,49 +487,5 @@ mod tests {
             adts_payload_offset(&packet),
             Err("ADTS frame with multiple raw data blocks is unsupported")
         );
-    }
-}
-
-pub fn copy_streams(
-    base_time_map: &mut HashMap<i32, AVRational>,
-    in_fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
-    out_fmt_ctx: *mut rsmpeg::ffi::AVFormatContext,
-) -> GlobalResult<c_int> {
-    unsafe {
-        let nb_streams = (*in_fmt_ctx).nb_streams;
-        let mut v_idx = -1;
-
-        for i in 0..nb_streams {
-            let in_st = *(*in_fmt_ctx).streams.offset(i as isize);
-            let codecpar = (*in_st).codecpar;
-
-            // 只处理视频和音频流
-            if !matches!(
-                (*codecpar).codec_type,
-                AVMediaType_AVMEDIA_TYPE_VIDEO | AVMediaType_AVMEDIA_TYPE_AUDIO
-            ) {
-                continue;
-            }
-            if (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO {
-                v_idx = i as c_int;
-            }
-
-            // 创建输出流
-            let out_st = avformat_new_stream(out_fmt_ctx, ptr::null_mut());
-            if out_st.is_null() {
-                return Err(GlobalError::new_sys_error(
-                    "avformat_new_stream failed",
-                    |msg| error!("msg"),
-                ));
-            }
-
-            // 复制编解码器参数
-            avcodec_parameters_copy((*out_st).codecpar, codecpar);
-
-            // 保存输入流的时间基
-            base_time_map.insert(i as c_int, (*in_st).time_base);
-        }
-
-        Ok(v_idx)
     }
 }

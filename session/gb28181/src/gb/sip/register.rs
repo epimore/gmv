@@ -1,5 +1,13 @@
 use gmv_pjsip::{SipAssociation, SipRuntimeEvent, SipRuntimeEventKind};
 
+pub fn normalize_gb_version(value: Option<&str>) -> Option<String> {
+    match value.map(str::trim) {
+        Some("2.0") => Some("2.0".to_string()),
+        Some("3.0") => Some("3.0".to_string()),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct GbRegisterEvent {
     pub device_id: String,
@@ -45,7 +53,7 @@ impl GbRegisterEvent {
             username: Some(device_id),
             association,
             user_agent: event.user_agent.clone(),
-            gb_version: event.gb_version.clone(),
+            gb_version: normalize_gb_version(event.gb_version.as_deref()),
         })
     }
 
@@ -55,5 +63,18 @@ impl GbRegisterEvent {
 
     pub fn is_register(&self) -> bool {
         self.expires != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_gb_version;
+
+    #[test]
+    fn only_supported_gb_versions_are_persisted() {
+        assert_eq!(normalize_gb_version(Some(" 2.0 ")).as_deref(), Some("2.0"));
+        assert_eq!(normalize_gb_version(Some("3.0")).as_deref(), Some("3.0"));
+        assert_eq!(normalize_gb_version(Some("2016")), None);
+        assert_eq!(normalize_gb_version(None), None);
     }
 }

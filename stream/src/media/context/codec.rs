@@ -1,28 +1,39 @@
-use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::format::demuxer::{DemuxerContext, SYNTHETIC_AUDIO_PACKET_INDEX};
+use crate::media::context::format::{
+    OUTPUT_AAC_BIT_RATE, OUTPUT_AAC_CHANNELS, OUTPUT_AAC_SAMPLE_RATE,
+};
 use crate::state::layer::codec_layer::CodecLayer;
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::error;
+use base::log::{error, warn};
 use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
 use rsmpeg::avcodec::{AVCodec, AVCodecContext, AVPacket as OwnedPacket};
 use rsmpeg::avutil::{AVAudioFifo, AVFrame, AVRational, av_get_default_channel_layout};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{
-    AV_CODEC_FLAG_GLOBAL_HEADER, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
+    AV_CODEC_FLAG_GLOBAL_HEADER, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_G723_1,
+    AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
     AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, FF_PROFILE_AAC_LOW,
-    av_packet_ref, av_samples_set_silence, avcodec_parameters_from_context,
-    avcodec_parameters_to_context,
+    av_packet_ref, av_samples_set_silence, avcodec_parameters_alloc, avcodec_parameters_copy,
+    avcodec_parameters_free, avcodec_parameters_to_context,
 };
 use rsmpeg::swresample::SwrContext;
 
-const AAC_SAMPLE_RATE: i32 = 48_000;
-const AAC_CHANNELS: i32 = 1;
-const AAC_BIT_RATE: i64 = 48_000;
+const AAC_SAMPLE_RATE: i32 = OUTPUT_AAC_SAMPLE_RATE;
+const AAC_CHANNELS: i32 = OUTPUT_AAC_CHANNELS;
+const AAC_BIT_RATE: i64 = OUTPUT_AAC_BIT_RATE;
+pub(crate) const AUDIO_STALL_GRACE_US: i64 = 500_000;
+const AUDIO_RECOVERY_FRAMES: usize = 8;
 
 pub struct CodecContext {
     target_audio: Option<OutputAudioCodec>,
     audio: Option<AacTranscoder>,
+    silent: Option<SilentAacSource>,
+    last_real_audio_us: Option<i64>,
+    recovery_frames: usize,
+    rejected_audio_stream: Option<i32>,
+    source_audio_parameters: Option<CodecParametersSnapshot>,
 }
 
 impl CodecContext {
@@ -34,10 +45,32 @@ impl CodecContext {
         target_audio.map(|target_audio| Self {
             target_audio: Some(target_audio),
             audio: None,
+            silent: None,
+            last_real_audio_us: None,
+            recovery_frames: 0,
+            rejected_audio_stream: None,
+            source_audio_parameters: None,
         })
     }
 
-    pub unsafe fn prepare(&mut self, demuxer: &mut DemuxerContext) -> GlobalResult<()> {
+    pub fn fixed_aac() -> Self {
+        Self {
+            target_audio: Some(OutputAudioCodec::Aac),
+            audio: None,
+            silent: None,
+            last_real_audio_us: None,
+            recovery_frames: 0,
+            rejected_audio_stream: None,
+            source_audio_parameters: None,
+        }
+    }
+
+    pub unsafe fn prepare(
+        &mut self,
+        demuxer: &mut DemuxerContext,
+        audio_expected: bool,
+        ready_at_discovery: &[bool],
+    ) -> GlobalResult<()> {
         unsafe {
             let fmt_ctx = demuxer.avio.fmt_ctx;
             let mut audio_stream = None;
@@ -57,7 +90,15 @@ impl CodecContext {
                         }
                     }
                     AVMediaType_AVMEDIA_TYPE_AUDIO => {
-                        if audio_stream.is_none() {
+                        if (*codecpar).codec_id != AVCodecID_AV_CODEC_ID_NONE
+                            && !supported_audio_source((*codecpar).codec_id)
+                        {
+                            self.rejected_audio_stream.get_or_insert(index as i32);
+                            continue;
+                        }
+                        if audio_stream.is_none()
+                            && ready_at_discovery.get(index).copied().unwrap_or(false)
+                        {
                             audio_stream = Some((index as i32, stream));
                         }
                     }
@@ -69,41 +110,159 @@ impl CodecContext {
                 return Ok(());
             }
             let Some((stream_index, stream)) = audio_stream else {
+                if audio_expected {
+                    self.silent = silent_aac_or_warn(SYNTHETIC_AUDIO_PACKET_INDEX);
+                }
                 return Ok(());
             };
             let codecpar = (*stream).codecpar;
             match (*codecpar).codec_id {
                 AVCodecID_AV_CODEC_ID_AAC => Ok(()),
-                AVCodecID_AV_CODEC_ID_PCM_ALAW | AVCodecID_AV_CODEC_ID_PCM_MULAW => {
-                    self.audio = Some(AacTranscoder::new(stream_index, stream)?);
+                AVCodecID_AV_CODEC_ID_PCM_ALAW
+                | AVCodecID_AV_CODEC_ID_PCM_MULAW
+                | AVCodecID_AV_CODEC_ID_G723_1
+                | AVCodecID_AV_CODEC_ID_G729 => {
+                    let transcode = CodecParametersSnapshot::copy(codecpar).and_then(|snapshot| {
+                        AacTranscoder::new(stream_index, stream_index, snapshot.as_ptr(), 0)
+                            .map(|audio| (audio, snapshot))
+                    });
+                    match transcode {
+                        Ok((audio, snapshot)) => {
+                            self.audio = Some(audio);
+                            self.source_audio_parameters = Some(snapshot);
+                            self.silent = silent_aac_or_warn(stream_index);
+                        }
+                        Err(error) => {
+                            warn!(
+                                "audio transcode initialization failed: action=audio_transcode, outcome=silent_placeholder, stream_index={stream_index}, reason={error}"
+                            );
+                            self.rejected_audio_stream = Some(stream_index);
+                            self.silent = silent_aac_or_warn(SYNTHETIC_AUDIO_PACKET_INDEX);
+                        }
+                    }
                     Ok(())
                 }
-                codec_id => Err(unsupported(
-                    "UNSUPPORTED_AUDIO_SOURCE_CODEC",
-                    format!("unsupported audio codec id {codec_id}"),
-                )),
+                _ => {
+                    self.rejected_audio_stream = Some(stream_index);
+                    if audio_expected {
+                        self.silent = silent_aac_or_warn(SYNTHETIC_AUDIO_PACKET_INDEX);
+                    }
+                    Ok(())
+                }
             }
         }
     }
 
-    pub unsafe fn refresh_output_parameters(
-        &self,
-        demuxer: &mut DemuxerContext,
-    ) -> GlobalResult<()> {
-        let Some(audio) = self.audio.as_ref() else {
-            return Ok(());
-        };
-        unsafe {
-            let fmt_ctx = demuxer.avio.fmt_ctx;
-            let stream = *(*fmt_ctx).streams.add(audio.stream_index as usize);
-            export_aac_parameters(stream, &audio.encoder)
+    pub fn rejected_audio_stream(&self) -> Option<i32> {
+        self.rejected_audio_stream
+    }
+
+    pub fn has_output_audio(&self) -> bool {
+        self.audio.is_some() || self.silent.is_some()
+    }
+
+    pub fn enable_late_placeholder(&mut self) -> GlobalResult<()> {
+        if self.silent.is_none() {
+            self.silent = Some(SilentAacSource::new(SYNTHETIC_AUDIO_PACKET_INDEX)?);
         }
+        Ok(())
     }
 
     pub fn handles(&self, packet: &AVPacket) -> bool {
         self.audio
             .as_ref()
             .is_some_and(|audio| audio.stream_index == packet.stream_index)
+    }
+
+    pub fn has_silent_audio(&self) -> bool {
+        self.silent.is_some()
+    }
+
+    pub fn has_real_audio(&self) -> bool {
+        self.audio.is_some()
+    }
+
+    pub fn transcoded_stream_index(&self) -> Option<usize> {
+        self.audio.as_ref().map(|audio| audio.stream_index as usize)
+    }
+
+    pub unsafe fn observe_ready_audio(
+        &mut self,
+        demuxer: &mut DemuxerContext,
+        source_index: i32,
+        output_index: i32,
+    ) -> GlobalResult<bool> {
+        if self.silent.is_none() || self.audio.is_some() {
+            return Ok(false);
+        }
+        self.recovery_frames = self.recovery_frames.saturating_add(1);
+        if self.recovery_frames < AUDIO_RECOVERY_FRAMES {
+            return Ok(false);
+        }
+        let stream = unsafe { *(*demuxer.avio.fmt_ctx).streams.add(source_index as usize) };
+        let next_pts = self
+            .silent
+            .as_ref()
+            .map_or(0, |silent| silent.next_packet_pts);
+        let new_snapshot = if self.source_audio_parameters.is_none() {
+            Some(CodecParametersSnapshot::copy(unsafe {
+                (*stream).codecpar
+            })?)
+        } else {
+            None
+        };
+        let source_parameters = self
+            .source_audio_parameters
+            .as_ref()
+            .or(new_snapshot.as_ref())
+            .expect("source audio parameters initialized");
+        self.audio = Some(unsafe {
+            AacTranscoder::new(
+                source_index,
+                output_index,
+                source_parameters.as_ptr(),
+                next_pts,
+            )?
+        });
+        if let Some(snapshot) = new_snapshot {
+            self.source_audio_parameters = Some(snapshot);
+        }
+        self.recovery_frames = 0;
+        Ok(true)
+    }
+
+    pub fn note_real_audio(&mut self, master_clock_us: i64) {
+        self.last_real_audio_us = Some(master_clock_us);
+    }
+
+    pub fn degrade_to_silence(&mut self) {
+        self.audio = None;
+        self.last_real_audio_us = None;
+        self.recovery_frames = 0;
+    }
+
+    pub fn disable_audio(&mut self) {
+        self.audio = None;
+        self.silent = None;
+        self.last_real_audio_us = None;
+        self.recovery_frames = 0;
+    }
+
+    pub fn silence_until(&mut self, master_clock_us: i64) -> GlobalResult<Vec<OwnedPacket>> {
+        if self.audio.is_some()
+            && self
+                .last_real_audio_us
+                .is_some_and(|last| master_clock_us.saturating_sub(last) > AUDIO_STALL_GRACE_US)
+        {
+            self.degrade_to_silence();
+        }
+        if self.audio.is_some() {
+            return Ok(Vec::new());
+        }
+        match self.silent.as_mut() {
+            Some(silent) => silent.emit_until(master_clock_us),
+            None => Ok(Vec::new()),
+        }
     }
 
     pub unsafe fn process(&mut self, packet: &AVPacket) -> GlobalResult<Vec<OwnedPacket>> {
@@ -123,8 +282,208 @@ impl CodecContext {
     }
 }
 
+fn supported_audio_source(codec_id: rsmpeg::ffi::AVCodecID) -> bool {
+    matches!(
+        codec_id,
+        AVCodecID_AV_CODEC_ID_AAC
+            | AVCodecID_AV_CODEC_ID_PCM_ALAW
+            | AVCodecID_AV_CODEC_ID_PCM_MULAW
+            | AVCodecID_AV_CODEC_ID_G723_1
+            | AVCodecID_AV_CODEC_ID_G729
+    ) && AVCodec::find_decoder(codec_id).is_some()
+}
+
+struct SilentAacSource {
+    encoder: AVCodecContext,
+    stream_index: i32,
+    next_frame_pts: i64,
+    next_packet_pts: i64,
+}
+
+fn silent_aac_or_warn(stream_index: i32) -> Option<SilentAacSource> {
+    match SilentAacSource::new(stream_index) {
+        Ok(source) => Some(source),
+        Err(error) => {
+            warn!(
+                "silent AAC source unavailable: action=audio_placeholder, outcome=audio_disabled, stream_index={stream_index}, reason={error}"
+            );
+            None
+        }
+    }
+}
+
+impl SilentAacSource {
+    fn new(stream_index: i32) -> GlobalResult<Self> {
+        let encoder_codec = AVCodec::find_encoder(AVCodecID_AV_CODEC_ID_AAC).ok_or_else(|| {
+            transcode_error(
+                "SILENT_AAC_INIT_FAILED",
+                "AAC encoder is unavailable".to_string(),
+            )
+        })?;
+        let sample_fmt = encoder_codec
+            .sample_fmts()
+            .and_then(|formats| formats.first().copied())
+            .ok_or_else(|| {
+                transcode_error(
+                    "SILENT_AAC_INIT_FAILED",
+                    "AAC encoder exposes no sample format".to_string(),
+                )
+            })?;
+        let mut encoder = AVCodecContext::new(&encoder_codec);
+        encoder.set_bit_rate(AAC_BIT_RATE);
+        encoder.set_sample_rate(AAC_SAMPLE_RATE);
+        encoder.set_channel_layout(av_get_default_channel_layout(AAC_CHANNELS) as u64);
+        encoder.set_channels(AAC_CHANNELS);
+        encoder.set_sample_fmt(sample_fmt);
+        encoder.set_time_base(AVRational {
+            num: 1,
+            den: AAC_SAMPLE_RATE,
+        });
+        unsafe {
+            (*encoder.as_mut_ptr()).profile = FF_PROFILE_AAC_LOW as i32;
+            (*encoder.as_mut_ptr()).flags |= AV_CODEC_FLAG_GLOBAL_HEADER as i32;
+        }
+        encoder.open(None).map_err(|error| {
+            transcode_error(
+                "SILENT_AAC_INIT_FAILED",
+                format!("open AAC encoder failed: {error}"),
+            )
+        })?;
+        let mut source = Self {
+            encoder,
+            stream_index,
+            next_frame_pts: -2048,
+            next_packet_pts: 0,
+        };
+        for _ in 0..2 {
+            drop(source.encode_silent_frame()?);
+        }
+        source.next_packet_pts = 0;
+        Ok(source)
+    }
+
+    fn emit_until(&mut self, master_clock_us: i64) -> GlobalResult<Vec<OwnedPacket>> {
+        let target_pts = master_clock_us
+            .max(0)
+            .saturating_mul(i64::from(AAC_SAMPLE_RATE))
+            / 1_000_000;
+        if target_pts.saturating_sub(self.next_packet_pts) > 12_000 {
+            self.next_packet_pts = target_pts - target_pts.rem_euclid(1024);
+            self.next_frame_pts = self.next_packet_pts;
+        }
+        let mut output = Vec::new();
+        for _ in 0..4 {
+            if self.next_packet_pts > target_pts.saturating_add(1024) {
+                break;
+            }
+            let packets = self.encode_silent_frame()?;
+            for mut packet in packets {
+                unsafe {
+                    (*packet.as_mut_ptr()).pts = self.next_packet_pts;
+                    (*packet.as_mut_ptr()).dts = self.next_packet_pts;
+                    (*packet.as_mut_ptr()).duration = 1024;
+                }
+                packet.set_stream_index(self.stream_index);
+                packet.set_pos(-1);
+                self.next_packet_pts = self.next_packet_pts.saturating_add(1024);
+                output.push(packet);
+            }
+        }
+        Ok(output)
+    }
+
+    fn encode_silent_frame(&mut self) -> GlobalResult<Vec<OwnedPacket>> {
+        let frame_size = self.encoder.frame_size.max(1);
+        let mut frame = AVFrame::new();
+        frame.set_format(self.encoder.sample_fmt);
+        frame.set_sample_rate(AAC_SAMPLE_RATE);
+        frame.set_channel_layout(self.encoder.channel_layout);
+        frame.set_nb_samples(frame_size);
+        frame.set_pts(self.next_frame_pts);
+        frame.alloc_buffer().map_err(|error| {
+            transcode_error(
+                "SILENT_AAC_FAILED",
+                format!("allocate silent AAC frame failed: {error}"),
+            )
+        })?;
+        let ret = unsafe {
+            av_samples_set_silence(
+                frame.extended_data,
+                0,
+                frame_size,
+                AAC_CHANNELS,
+                self.encoder.sample_fmt,
+            )
+        };
+        if ret < 0 {
+            return Err(transcode_error(
+                "SILENT_AAC_FAILED",
+                format!("initialize silent AAC frame failed: {ret}"),
+            ));
+        }
+        self.next_frame_pts = self.next_frame_pts.saturating_add(i64::from(frame_size));
+        self.encoder.send_frame(Some(&frame)).map_err(|error| {
+            transcode_error(
+                "SILENT_AAC_FAILED",
+                format!("send silent AAC frame failed: {error}"),
+            )
+        })?;
+        let mut output = Vec::new();
+        loop {
+            match self.encoder.receive_packet() {
+                Ok(packet) => output.push(packet),
+                Err(RsmpegError::EncoderDrainError | RsmpegError::EncoderFlushedError) => break,
+                Err(error) => {
+                    return Err(transcode_error(
+                        "SILENT_AAC_FAILED",
+                        format!("receive silent AAC packet failed: {error}"),
+                    ));
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
+struct CodecParametersSnapshot {
+    parameters: *mut rsmpeg::ffi::AVCodecParameters,
+}
+
+impl CodecParametersSnapshot {
+    unsafe fn copy(source: *const rsmpeg::ffi::AVCodecParameters) -> GlobalResult<Self> {
+        let parameters = unsafe { avcodec_parameters_alloc() };
+        if parameters.is_null() {
+            return Err(transcode_error(
+                "AUDIO_TRANSCODE_INIT_FAILED",
+                "allocate source codec parameter snapshot failed".to_string(),
+            ));
+        }
+        let ret = unsafe { avcodec_parameters_copy(parameters, source) };
+        if ret < 0 {
+            let mut parameters = parameters;
+            unsafe { avcodec_parameters_free(&mut parameters) };
+            return Err(transcode_error(
+                "AUDIO_TRANSCODE_INIT_FAILED",
+                format!("copy source codec parameters failed: {ret}"),
+            ));
+        }
+        Ok(Self { parameters })
+    }
+
+    fn as_ptr(&self) -> *const rsmpeg::ffi::AVCodecParameters {
+        self.parameters
+    }
+}
+
+impl Drop for CodecParametersSnapshot {
+    fn drop(&mut self) {
+        unsafe { avcodec_parameters_free(&mut self.parameters) };
+    }
+}
+
 struct AacTranscoder {
     stream_index: i32,
+    output_stream_index: i32,
     decoder: AVCodecContext,
     encoder: AVCodecContext,
     resampler: SwrContext,
@@ -134,13 +493,21 @@ struct AacTranscoder {
 }
 
 impl AacTranscoder {
-    unsafe fn new(stream_index: i32, stream: *mut rsmpeg::ffi::AVStream) -> GlobalResult<Self> {
+    unsafe fn new(
+        source_stream_index: i32,
+        output_stream_index: i32,
+        source_parameters: *const rsmpeg::ffi::AVCodecParameters,
+        next_pts: i64,
+    ) -> GlobalResult<Self> {
         unsafe {
-            let codecpar = (*stream).codecpar;
+            let codecpar = source_parameters;
             let decoder_codec = AVCodec::find_decoder((*codecpar).codec_id).ok_or_else(|| {
                 transcode_error(
                     "AUDIO_TRANSCODE_INIT_FAILED",
-                    "G.711 decoder is unavailable".to_string(),
+                    format!(
+                        "audio decoder is unavailable for codec id {}",
+                        (*codecpar).codec_id
+                    ),
                 )
             })?;
             let mut decoder = AVCodecContext::new(&decoder_codec);
@@ -154,7 +521,7 @@ impl AacTranscoder {
             decoder.open(None).map_err(|err| {
                 transcode_error(
                     "AUDIO_TRANSCODE_INIT_FAILED",
-                    format!("open G.711 decoder failed: {err}"),
+                    format!("open audio decoder failed: {err}"),
                 )
             })?;
 
@@ -230,15 +597,14 @@ impl AacTranscoder {
                 )
             })?;
 
-            export_aac_parameters(stream, &encoder)?;
-
             Ok(Self {
-                stream_index,
+                stream_index: source_stream_index,
+                output_stream_index,
                 decoder,
                 encoder,
                 resampler,
                 fifo: AVAudioFifo::new(sample_fmt, AAC_CHANNELS, 1),
-                next_pts: 0,
+                next_pts,
                 flushed: false,
             })
         }
@@ -256,7 +622,7 @@ impl AacTranscoder {
             self.decoder.send_packet(Some(&owned)).map_err(|err| {
                 transcode_error(
                     "AUDIO_TRANSCODE_FAILED",
-                    format!("send G.711 packet failed: {err}"),
+                    format!("send audio packet failed: {err}"),
                 )
             })?;
             let mut output = Vec::new();
@@ -276,7 +642,7 @@ impl AacTranscoder {
             Err(err) => {
                 return Err(transcode_error(
                     "AUDIO_TRANSCODE_FAILED",
-                    format!("flush G.711 decoder failed: {err}"),
+                    format!("flush audio decoder failed: {err}"),
                 ));
             }
         }
@@ -328,7 +694,7 @@ impl AacTranscoder {
                 Err(err) => {
                     return Err(transcode_error(
                         "AUDIO_TRANSCODE_FAILED",
-                        format!("decode G.711 frame failed: {err}"),
+                        format!("decode audio frame failed: {err}"),
                     ));
                 }
             }
@@ -350,7 +716,7 @@ impl AacTranscoder {
             .map_err(|err| {
                 transcode_error(
                     "AUDIO_TRANSCODE_FAILED",
-                    format!("resample G.711 frame failed: {err}"),
+                    format!("resample audio frame failed: {err}"),
                 )
             })?;
         if converted.nb_samples > 0 {
@@ -429,7 +795,7 @@ impl AacTranscoder {
         loop {
             match self.encoder.receive_packet() {
                 Ok(mut packet) => {
-                    packet.set_stream_index(self.stream_index);
+                    packet.set_stream_index(self.output_stream_index);
                     packet.set_pos(-1);
                     output.push(packet);
                 }
@@ -442,28 +808,6 @@ impl AacTranscoder {
                 }
             }
         }
-        Ok(())
-    }
-}
-
-unsafe fn export_aac_parameters(
-    stream: *mut rsmpeg::ffi::AVStream,
-    encoder: &AVCodecContext,
-) -> GlobalResult<()> {
-    unsafe {
-        let codecpar = (*stream).codecpar;
-        let ret = avcodec_parameters_from_context(codecpar, encoder.as_ptr());
-        if ret < 0 {
-            return Err(transcode_error(
-                "AUDIO_TRANSCODE_INIT_FAILED",
-                format!("export AAC parameters failed: {ret}"),
-            ));
-        }
-        (*codecpar).codec_tag = 0;
-        (*stream).time_base = AVRational {
-            num: 1,
-            den: AAC_SAMPLE_RATE,
-        };
         Ok(())
     }
 }
@@ -487,17 +831,22 @@ fn transcode_error(code: &str, detail: String) -> GlobalError {
 #[cfg(test)]
 mod tests {
     use std::ptr;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
+    use base::tokio_util::sync::CancellationToken;
     use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
     use rsmpeg::ffi::{
-        AVMediaType_AVMEDIA_TYPE_AUDIO, avformat_alloc_context, avformat_new_stream,
+        AVMediaType_AVMEDIA_TYPE_AUDIO, av_channel_layout_default, av_new_packet, av_packet_unref,
+        avformat_alloc_context, avformat_new_stream,
     };
 
     use super::*;
     use crate::media::context::format::demuxer::{AvioResource, ParamRepairState};
+    use crate::media::rtp::RtpReadControl;
 
     #[test]
-    fn refresh_output_parameters_restores_aac_after_demuxer_codec_update() {
+    fn transcoded_audio_recovers_without_mutating_source_parameters() {
         unsafe {
             let fmt_ctx = avformat_alloc_context();
             assert!(!fmt_ctx.is_null());
@@ -519,7 +868,15 @@ mod tests {
                     io_buf: ptr::null_mut(),
                     avio_ctx: ptr::null_mut(),
                 },
-                params: Vec::<ParamRepairState>::new(),
+                params: vec![ParamRepairState {
+                    ready: true,
+                    ..Default::default()
+                }],
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
             };
             let mut codec = CodecContext::init(
                 None,
@@ -528,14 +885,102 @@ mod tests {
                 }),
             )
             .unwrap();
-            codec.prepare(&mut demuxer).unwrap();
-            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_AAC);
+            codec.prepare(&mut demuxer, true, &[true]).unwrap();
+            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_PCM_ALAW);
+            assert_eq!(codec.transcoded_stream_index(), Some(0));
+            assert!(codec.has_silent_audio());
 
-            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_PCM_ALAW;
-            codec.refresh_output_parameters(&mut demuxer).unwrap();
+            codec.degrade_to_silence();
+            for _ in 0..AUDIO_RECOVERY_FRAMES {
+                codec.observe_ready_audio(&mut demuxer, 0, 7).unwrap();
+            }
+            assert_eq!(codec.audio.as_ref().unwrap().output_stream_index, 7);
+            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_PCM_ALAW);
+        }
+    }
 
-            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_AAC);
-            assert_eq!((*stream).time_base.den, AAC_SAMPLE_RATE);
+    #[test]
+    fn unsupported_siren_uses_silence_without_rejecting_video_pipeline() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = rsmpeg::ffi::AVCodecID_AV_CODEC_ID_SIREN;
+            (*codecpar).sample_rate = 16_000;
+            (*codecpar).channels = 1;
+            av_channel_layout_default(&mut (*codecpar).ch_layout, 1);
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx,
+                    io_buf: ptr::null_mut(),
+                    avio_ctx: ptr::null_mut(),
+                },
+                params: vec![ParamRepairState::default()],
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
+            };
+            let mut codec = CodecContext::fixed_aac();
+
+            codec.prepare(&mut demuxer, true, &[false]).unwrap();
+
+            assert_eq!(codec.rejected_audio_stream(), Some(0));
+            assert!(codec.has_silent_audio());
+            assert!(!codec.has_real_audio());
+        }
+    }
+
+    unsafe fn transcode_fixture(
+        codec_id: rsmpeg::ffi::AVCodecID,
+        frame: &[u8],
+        frame_count: usize,
+        bit_rate: i64,
+    ) -> usize {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = codec_id;
+            (*codecpar).sample_rate = 8_000;
+            (*codecpar).channels = 1;
+            (*codecpar).channel_layout = 4;
+            av_channel_layout_default(&mut (*codecpar).ch_layout, 1);
+            (*codecpar).block_align = frame.len() as i32;
+            (*codecpar).bit_rate = bit_rate;
+            let mut transcoder = AacTranscoder::new(0, 0, codecpar, 0).unwrap();
+            let mut output_count = 0;
+            for _ in 0..frame_count {
+                let mut packet = std::mem::zeroed::<AVPacket>();
+                assert_eq!(av_new_packet(&mut packet, frame.len() as i32), 0);
+                ptr::copy_nonoverlapping(frame.as_ptr(), packet.data, frame.len());
+                output_count += transcoder.process(&packet).unwrap().len();
+                av_packet_unref(&mut packet);
+            }
+            output_count += transcoder.flush().unwrap().len();
+            rsmpeg::ffi::avformat_free_context(fmt_ctx);
+            output_count
+        }
+    }
+
+    #[test]
+    fn promised_gb_audio_packets_decode_resample_and_encode_to_aac() {
+        unsafe {
+            let fixtures: [(rsmpeg::ffi::AVCodecID, Vec<u8>, usize, i64); 4] = [
+                (AVCodecID_AV_CODEC_ID_PCM_ALAW, vec![0xd5; 160], 8, 64_000),
+                (AVCodecID_AV_CODEC_ID_PCM_MULAW, vec![0xff; 160], 8, 64_000),
+                (AVCodecID_AV_CODEC_ID_G723_1, vec![0; 24], 6, 6_300),
+                (AVCodecID_AV_CODEC_ID_G729, vec![0; 10], 16, 8_000),
+            ];
+            for (codec_id, frame, frame_count, bit_rate) in fixtures {
+                assert!(
+                    transcode_fixture(codec_id, &frame, frame_count, bit_rate) > 0,
+                    "codec id {codec_id} produced no AAC packets"
+                );
+            }
         }
     }
 }
