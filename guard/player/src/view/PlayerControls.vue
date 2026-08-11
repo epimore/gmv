@@ -1,115 +1,50 @@
 <template>
-  <footer
-    v-if="renderControls"
-    ref="rootRef"
-    class="control-bar"
-    :class="{ 'is-hidden': !visible, 'has-primary-timeline': hasPrimaryTimeline }"
-    @pointermove.stop="notifyActivity"
-    @pointerenter="handlePointerEnter"
-    @pointerleave="handlePointerLeave"
-    @pointerdown.stop
-    @click.stop
-    @focusin="handleFocusIn"
-    @focusout="handleFocusOut"
-  >
+  <footer v-if="renderControls" ref="rootRef" class="control-bar"
+    :class="{ 'is-hidden': !visible, 'has-primary-timeline': hasPrimaryTimeline }" @pointermove.stop="notifyActivity"
+    @pointerenter="handlePointerEnter" @pointerleave="handlePointerLeave" @pointerdown.stop @click.stop
+    @focusin="handleFocusIn" @focusout="handleFocusOut">
     <div v-if="hasPrimaryTimeline" class="playback-timeline-row">
       <div class="timeline primary-timeline" :class="{ disabled: capabilities.playback === false }">
         <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
         <span class="timeline-track">
           <span class="timeline-rail" aria-hidden="true"></span>
-          <span
-            v-if="hoverTimelineTimeMs !== undefined"
-            class="timeline-tooltip"
-            :style="{ left: hoverTimelineLeft + '%' }"
-          >
+          <span v-if="hoverTimelineTimeMs !== undefined" class="timeline-tooltip"
+            :style="{ left: hoverTimelineLeft + '%' }">
             {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
           </span>
-          <input
-            v-if="timelineMode === 'playback'"
-            :value="state.seekMs"
-            type="range"
-            min="0"
-            :max="state.durationMs"
-            step="1000"
-            :disabled="capabilities.playback === false"
-            aria-label="回放进度"
-            @pointerdown="beginInteraction"
-            @pointermove="updateTimelineHover"
-            @pointerleave="clearTimelineHover"
-            @pointerup="endInteraction"
-            @pointercancel="endInteraction"
-            @change="emitSeek($event)"
-          />
+          <input v-if="timelineMode === 'playback'" :value="state.seekMs" type="range" min="0" :max="state.durationMs"
+            step="1000" :disabled="capabilities.playback === false" aria-label="回放进度" @pointerdown="beginInteraction"
+            @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover" @pointerup="endInteraction"
+            @pointercancel="endInteraction" @change="emitSeek($event)" />
           <template v-else>
             <span class="clip-selection" :style="clipSelectionStyle" aria-hidden="true"></span>
-            <input
-              class="clip-range clip-range-a"
-              :value="clipHandleAMs"
-              type="range"
-              min="0"
-              :max="state.durationMs"
-              step="1000"
-              :disabled="capabilities.playback === false"
-              aria-label="截取滑块一"
-              @pointerdown="beginInteraction"
-              @pointermove="updateTimelineHover"
-              @pointerleave="clearTimelineHover"
-              @pointerup="endInteraction"
-              @pointercancel="endInteraction"
-              @input="setClipHandleA"
-            />
-            <input
-              class="clip-range clip-range-b"
-              :value="clipHandleBMs"
-              type="range"
-              min="0"
-              :max="state.durationMs"
-              step="1000"
-              :disabled="capabilities.playback === false"
-              aria-label="截取滑块二"
-              @pointerdown="beginInteraction"
-              @pointermove="updateTimelineHover"
-              @pointerleave="clearTimelineHover"
-              @pointerup="endInteraction"
-              @pointercancel="endInteraction"
-              @input="setClipHandleB"
-            />
+            <input class="clip-range clip-range-a" :value="clipHandleAMs" type="range" min="0" :max="state.durationMs"
+              step="1000" :disabled="capabilities.playback === false" aria-label="截取滑块一" @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover" @pointerup="endInteraction"
+              @pointercancel="endInteraction" @input="setClipHandleA" />
+            <input class="clip-range clip-range-b" :value="clipHandleBMs" type="range" min="0" :max="state.durationMs"
+              step="1000" :disabled="capabilities.playback === false" aria-label="截取滑块二" @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover" @pointerup="endInteraction"
+              @pointercancel="endInteraction" @input="setClipHandleB" />
           </template>
           <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
-            <span
-              v-for="tick in timelineTicks"
-              :key="tick.ratio"
-              :style="{ left: tick.ratio * 100 + '%' }"
-            >
+            <span v-for="tick in timelineTicks" :key="tick.ratio" :style="{ left: tick.ratio * 100 + '%' }">
               {{ formatTimelineTick(tick.timeMs) }}
             </span>
           </span>
         </span>
         <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
         <span class="timeline-jump primary-timeline-jump">
-          <button
-            type="button"
-            :disabled="capabilities.playback === false || state.seekMs <= 0"
-            aria-label="向后跳跃"
-            @click="emitJump(-1)"
-          >
+          <button type="button" :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃"
+            @click="emitJump(-1)">
             后退
           </button>
-          <input
-            v-model.number="jumpSeconds"
-            type="number"
-            min="1"
-            :max="Math.max(1, Math.floor(state.durationMs / 1000))"
-            :disabled="capabilities.playback === false"
-            aria-label="跳跃秒数"
-          />
+          <input v-model.number="jumpSeconds" type="number" min="1"
+            :max="Math.max(1, Math.floor(state.durationMs / 1000))" :disabled="capabilities.playback === false"
+            aria-label="跳跃秒数" />
           <span>秒</span>
-          <button
-            type="button"
-            :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-            aria-label="向前跳跃"
-            @click="emitJump(1)"
-          >
+          <button type="button" :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+            aria-label="向前跳跃" @click="emitJump(1)">
             前进
           </button>
         </span>
@@ -117,119 +52,60 @@
     </div>
     <div class="control-items primary-controls">
       <template v-for="control in primaryActionItems" :key="control">
-        <button
-          v-if="control === 'play'"
-          type="button"
-          aria-label="切换播放状态"
-          @click="emitSimple('play-toggle')"
-        >
+        <button v-if="control === 'play'" type="button" aria-label="切换播放状态" @click="emitSimple('play-toggle')">
           {{ state.playbackState === "playing" ? "暂停" : "播放" }}
         </button>
-        <button
-          v-else-if="control === 'audio'"
-          type="button"
-          :disabled="capabilities.audio === false"
-          aria-label="切换声音"
-          @click="emitSimple('audio-toggle')"
-        >
-          {{ state.audioEnabled ? "静音" : "声音" }}
+        <button v-else-if="control === 'audio'" type="button" :disabled="capabilities.audio === false" aria-label="切换声音"
+          @click="emitSimple('audio-toggle')">
+          {{ state.audioEnabled ? "声音" : "静音" }}
         </button>
-        <button
-          v-else-if="control === 'snapshot'"
-          type="button"
-          :disabled="capabilities.snapshot === false"
-          aria-label="截图"
-          @click="emitSimple('snapshot')"
-        >
+        <button v-else-if="control === 'snapshot'" type="button" :disabled="capabilities.snapshot === false"
+          aria-label="截图" @click="emitSimple('snapshot')">
           截图
         </button>
-        <select
-          v-else-if="control === 'outputType'"
-          :value="state.selectedOutputType"
-          :disabled="outputSwitching || !outputOptions.length"
-          aria-label="媒体输出格式"
-          @change="emitOutputTypeChange($event)"
-        >
+        <select v-else-if="control === 'outputType'" :value="state.selectedOutputType"
+          :disabled="outputSwitching || !outputOptions.length" aria-label="媒体输出格式"
+          @change="emitOutputTypeChange($event)">
           <option v-for="option in outputOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
-        <button
-          v-else-if="control === 'info'"
-          type="button"
-          :class="{ active: state.infoOpen }"
-          aria-label="切换媒体信息"
-          :aria-expanded="state.infoOpen"
-          @click="emitSimple('info-toggle')"
-        >
+        <button v-else-if="control === 'info'" type="button" :class="{ active: state.infoOpen }" aria-label="切换媒体信息"
+          :aria-expanded="state.infoOpen" @click="emitSimple('info-toggle')">
           信息
         </button>
-        <button
-          v-else-if="control === 'fullscreen'"
-          type="button"
-          :disabled="!fullscreenSupported"
-          aria-label="切换全屏"
-          @click="emitSimple('fullscreen-toggle')"
-        >
+        <button v-else-if="control === 'fullscreen'" type="button" :disabled="!fullscreenSupported" aria-label="切换全屏"
+          @click="emitSimple('fullscreen-toggle')">
           {{ state.fullscreen ? "退出全屏" : "全屏" }}
         </button>
-        <button
-          v-else-if="control === 'ptz'"
-          type="button"
-          :class="{ active: state.ptzOpen }"
-          :disabled="capabilities.ptz === false"
-          aria-label="切换云台控制"
-          :aria-expanded="state.ptzOpen"
-          @click="emitSimple('ptz-toggle')"
-        >
+        <button v-else-if="control === 'ptz'" type="button" :class="{ active: state.ptzOpen }"
+          :disabled="capabilities.ptz === false" aria-label="切换云台控制" :aria-expanded="state.ptzOpen"
+          @click="emitSimple('ptz-toggle')">
           云台
         </button>
-        <button
-          v-else-if="control === 'record'"
-          type="button"
-          :disabled="capabilities.record === false"
-          aria-label="切换录像状态"
-          @click="emitSimple('record-toggle')"
-        >
+        <button v-else-if="control === 'record'" type="button" :disabled="capabilities.record === false"
+          aria-label="切换录像状态" @click="emitSimple('record-toggle')">
           {{ state.recording ? "停录像" : "录像" }}
         </button>
-        <button
-          v-else-if="control === 'cloudRecord'"
-          type="button"
-          aria-label="打开下载"
-          @click="emitSimple('cloud-record-request')"
-        >
+        <button v-else-if="control === 'cloudRecord'" type="button" aria-label="打开下载"
+          @click="emitSimple('cloud-record-request')">
           下载
         </button>
-        <select
-          v-else-if="control === 'streamProfile'"
-          :value="state.selectedStreamProfile"
-          :disabled="capabilities.streamProfile === false || streamProfileSwitching"
-          aria-label="切换主辅码流"
-          @change="emitStreamProfileChange($event)"
-        >
+        <select v-else-if="control === 'streamProfile'" :value="state.selectedStreamProfile"
+          :disabled="capabilities.streamProfile === false || streamProfileSwitching" aria-label="切换主辅码流"
+          @change="emitStreamProfileChange($event)">
           <option v-for="option in streamProfileOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
-        <select
-          v-else-if="control === 'streamSwitch'"
-          :value="state.selectedSourceUrl"
-          :disabled="capabilities.streamSwitch === false"
-          aria-label="切换码流"
-          @change="emitSourceChange($event)"
-        >
+        <select v-else-if="control === 'streamSwitch'" :value="state.selectedSourceUrl"
+          :disabled="capabilities.streamSwitch === false" aria-label="切换码流" @change="emitSourceChange($event)">
           <option v-for="source in sources" :key="source.url" :value="source.url">
             {{ source.label || source.protocol + ":" + (source.codec || "auto") }}
           </option>
         </select>
-        <select
-          v-else-if="control === 'playbackRate'"
-          :value="state.playbackRate"
-          :disabled="capabilities.playback === false"
-          aria-label="播放倍速"
-          @change="emitRateChange($event)"
-        >
+        <select v-else-if="control === 'playbackRate'" :value="state.playbackRate"
+          :disabled="capabilities.playback === false" aria-label="播放倍速" @change="emitRateChange($event)">
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
         <span v-else-if="control === 'playbackClip'" class="playback-clip-controls">
@@ -238,171 +114,87 @@
             <option value="clip">截取</option>
           </select>
           <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
-            <button
-              type="button"
-              :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
-              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'"
-              :aria-busy="clipRangeLocked"
-              @click="emitCloudRecordCreate()"
-            >
+            <button type="button" :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
+              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'" :aria-busy="clipRangeLocked"
+              @click="emitCloudRecordCreate()">
               <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
               <template v-else>DOWN</template>
             </button>
           </span>
         </span>
         <div v-else-if="control === 'presets'" class="preset-box">
-          <input
-            v-model="presetId"
-            :disabled="capabilities.presets === false"
-            aria-label="预置点编号"
-            placeholder="预置点"
-          />
-          <button
-            type="button"
-            :disabled="capabilities.presets === false"
-            @click="emitPreset('preset-call')"
-          >
+          <input v-model="presetId" :disabled="capabilities.presets === false" aria-label="预置点编号" placeholder="预置点" />
+          <button type="button" :disabled="capabilities.presets === false" @click="emitPreset('preset-call')">
             调用
           </button>
-          <button
-            type="button"
-            :disabled="capabilities.presets === false"
-            @click="emitPreset('preset-set')"
-          >
+          <button type="button" :disabled="capabilities.presets === false" @click="emitPreset('preset-set')">
             设置
           </button>
         </div>
       </template>
 
-      <button
-        v-if="overflowItems.length"
-        ref="moreButtonRef"
-        type="button"
-        class="more-button"
-        aria-label="更多操作"
-        aria-haspopup="true"
-        :aria-expanded="overflowOpen"
-        @click="toggleOverflow"
-      >
+      <button v-if="overflowItems.length" ref="moreButtonRef" type="button" class="more-button" aria-label="更多操作"
+        aria-haspopup="true" :aria-expanded="overflowOpen" @click="toggleOverflow">
         更多
       </button>
     </div>
 
     <div v-if="overflowOpen" class="overflow-menu" aria-label="更多播放器操作">
       <template v-for="control in overflowItems" :key="control">
-        <button
-          v-if="control === 'play'"
-          type="button"
-          aria-label="切换播放状态"
-          @click="emitSimple('play-toggle', true)"
-        >
+        <button v-if="control === 'play'" type="button" aria-label="切换播放状态" @click="emitSimple('play-toggle', true)">
           {{ state.playbackState === "playing" ? "暂停" : "播放" }}
         </button>
-        <button
-          v-else-if="control === 'audio'"
-          type="button"
-          :disabled="capabilities.audio === false"
-          aria-label="切换声音"
-          @click="emitSimple('audio-toggle', true)"
-        >
-          {{ state.audioEnabled ? "静音" : "声音" }}
+        <button v-else-if="control === 'audio'" type="button" :disabled="capabilities.audio === false" aria-label="切换声音"
+          @click="emitSimple('audio-toggle', true)">
+          {{ state.audioEnabled ? "声音" : "静音" }}
         </button>
-        <button
-          v-else-if="control === 'snapshot'"
-          type="button"
-          :disabled="capabilities.snapshot === false"
-          aria-label="截图"
-          @click="emitSimple('snapshot', true)"
-        >
+        <button v-else-if="control === 'snapshot'" type="button" :disabled="capabilities.snapshot === false"
+          aria-label="截图" @click="emitSimple('snapshot', true)">
           截图
         </button>
-        <select
-          v-else-if="control === 'outputType'"
-          :value="state.selectedOutputType"
-          :disabled="outputSwitching || !outputOptions.length"
-          aria-label="媒体输出格式"
-          @change="emitOutputTypeChange($event, true)"
-        >
+        <select v-else-if="control === 'outputType'" :value="state.selectedOutputType"
+          :disabled="outputSwitching || !outputOptions.length" aria-label="媒体输出格式"
+          @change="emitOutputTypeChange($event, true)">
           <option v-for="option in outputOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
-        <button
-          v-else-if="control === 'info'"
-          type="button"
-          :class="{ active: state.infoOpen }"
-          aria-label="切换媒体信息"
-          :aria-expanded="state.infoOpen"
-          @click="emitSimple('info-toggle', true)"
-        >
+        <button v-else-if="control === 'info'" type="button" :class="{ active: state.infoOpen }" aria-label="切换媒体信息"
+          :aria-expanded="state.infoOpen" @click="emitSimple('info-toggle', true)">
           信息
         </button>
-        <button
-          v-else-if="control === 'fullscreen'"
-          type="button"
-          :disabled="!fullscreenSupported"
-          aria-label="切换全屏"
-          @click="emitSimple('fullscreen-toggle', true)"
-        >
+        <button v-else-if="control === 'fullscreen'" type="button" :disabled="!fullscreenSupported" aria-label="切换全屏"
+          @click="emitSimple('fullscreen-toggle', true)">
           {{ state.fullscreen ? "退出全屏" : "全屏" }}
         </button>
-        <button
-          v-else-if="control === 'ptz'"
-          type="button"
-          :class="{ active: state.ptzOpen }"
-          :disabled="capabilities.ptz === false"
-          aria-label="切换云台控制"
-          :aria-expanded="state.ptzOpen"
-          @click="emitSimple('ptz-toggle', true)"
-        >
+        <button v-else-if="control === 'ptz'" type="button" :class="{ active: state.ptzOpen }"
+          :disabled="capabilities.ptz === false" aria-label="切换云台控制" :aria-expanded="state.ptzOpen"
+          @click="emitSimple('ptz-toggle', true)">
           云台
         </button>
-        <button
-          v-else-if="control === 'record'"
-          type="button"
-          :disabled="capabilities.record === false"
-          aria-label="切换录像状态"
-          @click="emitSimple('record-toggle', true)"
-        >
+        <button v-else-if="control === 'record'" type="button" :disabled="capabilities.record === false"
+          aria-label="切换录像状态" @click="emitSimple('record-toggle', true)">
           {{ state.recording ? "停录像" : "录像" }}
         </button>
-        <button
-          v-else-if="control === 'cloudRecord'"
-          type="button"
-          aria-label="打开下载"
-          @click="emitSimple('cloud-record-request', true)"
-        >
+        <button v-else-if="control === 'cloudRecord'" type="button" aria-label="打开下载"
+          @click="emitSimple('cloud-record-request', true)">
           下载
         </button>
-        <select
-          v-else-if="control === 'streamProfile'"
-          :value="state.selectedStreamProfile"
-          :disabled="capabilities.streamProfile === false || streamProfileSwitching"
-          aria-label="切换主辅码流"
-          @change="emitStreamProfileChange($event, true)"
-        >
+        <select v-else-if="control === 'streamProfile'" :value="state.selectedStreamProfile"
+          :disabled="capabilities.streamProfile === false || streamProfileSwitching" aria-label="切换主辅码流"
+          @change="emitStreamProfileChange($event, true)">
           <option v-for="option in streamProfileOptions" :key="option.value" :value="option.value">
             {{ option.label }}
           </option>
         </select>
-        <select
-          v-else-if="control === 'streamSwitch'"
-          :value="state.selectedSourceUrl"
-          :disabled="capabilities.streamSwitch === false"
-          aria-label="切换码流"
-          @change="emitSourceChange($event, true)"
-        >
+        <select v-else-if="control === 'streamSwitch'" :value="state.selectedSourceUrl"
+          :disabled="capabilities.streamSwitch === false" aria-label="切换码流" @change="emitSourceChange($event, true)">
           <option v-for="source in sources" :key="source.url" :value="source.url">
             {{ source.label || source.protocol + ":" + (source.codec || "auto") }}
           </option>
         </select>
-        <select
-          v-else-if="control === 'playbackRate'"
-          :value="state.playbackRate"
-          :disabled="capabilities.playback === false"
-          aria-label="播放倍速"
-          @change="emitRateChange($event, true)"
-        >
+        <select v-else-if="control === 'playbackRate'" :value="state.playbackRate"
+          :disabled="capabilities.playback === false" aria-label="播放倍速" @change="emitRateChange($event, true)">
           <option v-for="rate in playbackRates" :key="rate" :value="rate">{{ rate }}x</option>
         </select>
         <span v-else-if="control === 'playbackClip'" class="playback-clip-controls">
@@ -411,142 +203,65 @@
             <option value="clip">截取</option>
           </select>
           <span v-if="timelineMode === 'clip'" class="clip-down-tip" :title="clipRangeHint">
-            <button
-              type="button"
-              :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
-              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'"
-              :aria-busy="clipRangeLocked"
-              @click="emitCloudRecordCreate(true)"
-            >
+            <button type="button" :disabled="!clipRangeValid || clipRangeLocked || capabilities.playback === false"
+              :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'" :aria-busy="clipRangeLocked"
+              @click="emitCloudRecordCreate(true)">
               <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
               <template v-else>DOWN</template>
             </button>
           </span>
         </span>
-        <div
-          v-else-if="control === 'timeline'"
-          class="timeline"
-          :class="{ disabled: capabilities.playback === false }"
-        >
+        <div v-else-if="control === 'timeline'" class="timeline" :class="{ disabled: capabilities.playback === false }">
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineStartTimeMs) }}</span>
           <span class="timeline-track">
             <span class="timeline-rail" aria-hidden="true"></span>
-            <span
-              v-if="hoverTimelineTimeMs !== undefined"
-              class="timeline-tooltip"
-              :style="{ left: hoverTimelineLeft + '%' }"
-            >
+            <span v-if="hoverTimelineTimeMs !== undefined" class="timeline-tooltip"
+              :style="{ left: hoverTimelineLeft + '%' }">
               {{ formatTimelineTooltip(hoverTimelineTimeMs) }}
             </span>
-            <input
-              v-if="timelineMode === 'playback'"
-              :value="state.seekMs"
-              type="range"
-              min="0"
-              :max="state.durationMs"
-              step="1000"
-              :disabled="capabilities.playback === false"
-              aria-label="回放进度"
-              @pointerdown="beginInteraction"
-              @pointermove="updateTimelineHover"
-              @pointerleave="clearTimelineHover"
-              @pointerup="endInteraction"
-              @pointercancel="endInteraction"
-              @change="emitSeek($event, true)"
-            />
+            <input v-if="timelineMode === 'playback'" :value="state.seekMs" type="range" min="0" :max="state.durationMs"
+              step="1000" :disabled="capabilities.playback === false" aria-label="回放进度" @pointerdown="beginInteraction"
+              @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover" @pointerup="endInteraction"
+              @pointercancel="endInteraction" @change="emitSeek($event, true)" />
             <template v-else>
               <span class="clip-selection" :style="clipSelectionStyle" aria-hidden="true"></span>
-              <input
-                class="clip-range clip-range-a"
-                :value="clipHandleAMs"
-                type="range"
-                min="0"
-                :max="state.durationMs"
-                step="1000"
-                :disabled="capabilities.playback === false"
-                aria-label="截取滑块一"
-                @pointerdown="beginInteraction"
-                @pointermove="updateTimelineHover"
-                @pointerleave="clearTimelineHover"
-                @pointerup="endInteraction"
-                @pointercancel="endInteraction"
-                @input="setClipHandleA"
-              />
-              <input
-                class="clip-range clip-range-b"
-                :value="clipHandleBMs"
-                type="range"
-                min="0"
-                :max="state.durationMs"
-                step="1000"
-                :disabled="capabilities.playback === false"
-                aria-label="截取滑块二"
-                @pointerdown="beginInteraction"
-                @pointermove="updateTimelineHover"
-                @pointerleave="clearTimelineHover"
-                @pointerup="endInteraction"
-                @pointercancel="endInteraction"
-                @input="setClipHandleB"
-              />
+              <input class="clip-range clip-range-a" :value="clipHandleAMs" type="range" min="0" :max="state.durationMs"
+                step="1000" :disabled="capabilities.playback === false" aria-label="截取滑块一"
+                @pointerdown="beginInteraction" @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover"
+                @pointerup="endInteraction" @pointercancel="endInteraction" @input="setClipHandleA" />
+              <input class="clip-range clip-range-b" :value="clipHandleBMs" type="range" min="0" :max="state.durationMs"
+                step="1000" :disabled="capabilities.playback === false" aria-label="截取滑块二"
+                @pointerdown="beginInteraction" @pointermove="updateTimelineHover" @pointerleave="clearTimelineHover"
+                @pointerup="endInteraction" @pointercancel="endInteraction" @input="setClipHandleB" />
             </template>
             <span v-if="timelineTicks.length" class="timeline-ticks" aria-hidden="true">
-              <span
-                v-for="tick in timelineTicks"
-                :key="tick.ratio"
-                :style="{ left: tick.ratio * 100 + '%' }"
-              >
+              <span v-for="tick in timelineTicks" :key="tick.ratio" :style="{ left: tick.ratio * 100 + '%' }">
                 {{ formatTimelineTick(tick.timeMs) }}
               </span>
             </span>
           </span>
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
           <span class="timeline-jump">
-            <button
-              type="button"
-              :disabled="capabilities.playback === false || state.seekMs <= 0"
-              aria-label="向后跳跃"
-              @click="emitJump(-1, true)"
-            >
+            <button type="button" :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃"
+              @click="emitJump(-1, true)">
               后退
             </button>
-            <input
-              v-model.number="jumpSeconds"
-              type="number"
-              min="1"
-              :max="Math.max(1, Math.floor(state.durationMs / 1000))"
-              :disabled="capabilities.playback === false"
-              aria-label="跳跃秒数"
-            />
+            <input v-model.number="jumpSeconds" type="number" min="1"
+              :max="Math.max(1, Math.floor(state.durationMs / 1000))" :disabled="capabilities.playback === false"
+              aria-label="跳跃秒数" />
             <span>秒</span>
-            <button
-              type="button"
-              :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-              aria-label="向前跳跃"
-              @click="emitJump(1, true)"
-            >
+            <button type="button" :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+              aria-label="向前跳跃" @click="emitJump(1, true)">
               前进
             </button>
           </span>
         </div>
         <div v-else-if="control === 'presets'" class="preset-box">
-          <input
-            v-model="presetId"
-            :disabled="capabilities.presets === false"
-            aria-label="预置点编号"
-            placeholder="预置点"
-          />
-          <button
-            type="button"
-            :disabled="capabilities.presets === false"
-            @click="emitPreset('preset-call', true)"
-          >
+          <input v-model="presetId" :disabled="capabilities.presets === false" aria-label="预置点编号" placeholder="预置点" />
+          <button type="button" :disabled="capabilities.presets === false" @click="emitPreset('preset-call', true)">
             调用
           </button>
-          <button
-            type="button"
-            :disabled="capabilities.presets === false"
-            @click="emitPreset('preset-set', true)"
-          >
+          <button type="button" :disabled="capabilities.presets === false" @click="emitPreset('preset-set', true)">
             设置
           </button>
         </div>
@@ -823,14 +538,14 @@ function emitSimple(
     GmvPlayerControlAction,
     {
       type:
-        | "play-toggle"
-        | "audio-toggle"
-        | "snapshot"
-        | "info-toggle"
-        | "fullscreen-toggle"
-        | "ptz-toggle"
-        | "record-toggle"
-        | "cloud-record-request"
+      | "play-toggle"
+      | "audio-toggle"
+      | "snapshot"
+      | "info-toggle"
+      | "fullscreen-toggle"
+      | "ptz-toggle"
+      | "record-toggle"
+      | "cloud-record-request"
     }
   >["type"],
   fromOverflow = false,
@@ -1081,17 +796,17 @@ button.active {
   color: var(--muted);
 }
 
-.timeline > .timeline-boundary:first-child {
+.timeline>.timeline-boundary:first-child {
   grid-column: 1;
   grid-row: 1;
 }
 
-.timeline > .timeline-track {
+.timeline>.timeline-track {
   grid-column: 2;
   grid-row: 1;
 }
 
-.timeline > .timeline-track + .timeline-boundary {
+.timeline>.timeline-track+.timeline-boundary {
   grid-column: 3;
   grid-row: 1;
 }
@@ -1216,7 +931,7 @@ button.active {
   pointer-events: none;
 }
 
-.timeline-ticks > span {
+.timeline-ticks>span {
   position: absolute;
   transform: translateX(-50%);
   color: rgba(148, 163, 184, 0.86);
@@ -1309,8 +1024,8 @@ button.active {
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
 }
 
-.overflow-menu > button,
-.overflow-menu > select {
+.overflow-menu>button,
+.overflow-menu>select {
   width: 100%;
 }
 
