@@ -62,6 +62,19 @@ fn initial_track_window_complete(packet_count: usize, elapsed: Duration) -> bool
     packet_count >= FIX_MAX_READ_FRAME || elapsed >= TRACK_DISCOVERY_MAX_DURATION
 }
 
+fn usable_video_keyframe(is_keyframe: bool, parameters_ready: bool) -> bool {
+    is_keyframe && parameters_ready
+}
+
+fn initial_probe_can_finish(
+    media_start_ready: bool,
+    discovery_complete: bool,
+    supported_params_ready: bool,
+    topology_stable: bool,
+) -> bool {
+    media_start_ready && (discovery_complete || (supported_params_ready && topology_stable))
+}
+
 fn initial_audio_output_available(
     ready_audio_present: bool,
     rejected_audio_stream: bool,
@@ -404,10 +417,14 @@ impl MediaContext {
             if !param.ready {
                 param.ready = repair_basic_stream_info(st, &pkt, ext, param);
             }
+            let parameters_ready = param.ready;
             // 标记状态
             match (*codecpar).codec_type {
                 AVMediaType_AVMEDIA_TYPE_VIDEO => {
-                    if pkt.flags & AV_PKT_FLAG_KEY as i32 != 0 {
+                    if usable_video_keyframe(
+                        pkt.flags & AV_PKT_FLAG_KEY as i32 != 0,
+                        parameters_ready,
+                    ) {
                         video_keyframe_found = true;
                     }
                 }
@@ -448,9 +465,12 @@ impl MediaContext {
                 discovery_complete = true;
                 Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
             }
-            if should_cache
-                && (discovery_complete || (supported_params_ready && topology_settle.is_stable()))
-            {
+            if initial_probe_can_finish(
+                should_cache,
+                discovery_complete,
+                supported_params_ready,
+                topology_settle.is_stable(),
+            ) {
                 Self::snapshot_initial_tracks(&mut cache_info, &self.demuxer_context);
                 break;
             }
@@ -873,7 +893,11 @@ impl MediaContext {
                         );
                     }
                 }
-            } else {
+            } else if self
+                .demuxer_context
+                .output_plan
+                .contains_packet_index(pkt.stream_index)
+            {
                 Self::handle_pkt_muxer(self, res, pkt, (master_clock_us / 1_000_000) as u64)?;
             }
             if is_video {
@@ -1438,6 +1462,15 @@ mod tests {
             1,
             TRACK_DISCOVERY_MAX_DURATION,
         ));
+    }
+
+    #[test]
+    fn track_window_does_not_publish_video_before_parameters_and_keyframe_are_ready() {
+        assert!(!usable_video_keyframe(true, false));
+        assert!(!initial_probe_can_finish(false, true, false, false));
+
+        assert!(usable_video_keyframe(true, true));
+        assert!(initial_probe_can_finish(true, true, false, false));
     }
 
     #[test]

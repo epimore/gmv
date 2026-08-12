@@ -6,16 +6,16 @@ use gmv_domain::info::media_info_ext::MediaExt;
 use rsmpeg::ffi::{
     AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722,
     AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
-    AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary, AVFMT_FLAG_CUSTOM_IO,
-    AVFMT_FLAG_DISCARD_CORRUPT, AVFMT_FLAG_GENPTS, AVFMT_FLAG_IGNDTS, AVFMT_FLAG_IGNIDX,
-    AVFMT_FLAG_NOBUFFER, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO,
-    AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream, av_dict_free, av_find_input_format,
-    av_free, av_malloc, avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy,
-    avcodec_parameters_free, avformat_alloc_context, avformat_close_input,
-    avformat_find_stream_info, avformat_free_context, avformat_new_stream, avformat_open_input,
-    avio_alloc_context, avio_context_free,
+    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP2,
+    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW,
+    AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary,
+    AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_DISCARD_CORRUPT, AVFMT_FLAG_GENPTS, AVFMT_FLAG_IGNDTS,
+    AVFMT_FLAG_IGNIDX, AVFMT_FLAG_NOBUFFER, AVFormatContext, AVIOContext,
+    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream,
+    av_dict_free, av_find_input_format, av_free, av_malloc, avcodec_find_decoder,
+    avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free,
+    avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context,
+    avformat_new_stream, avformat_open_input, avio_alloc_context, avio_context_free,
 };
 use std::ffi::{CString, c_int, c_void};
 use std::ops::Range;
@@ -755,10 +755,11 @@ mod tests {
     };
     use rsmpeg::ffi::{
         AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729,
-        AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_PCM_ALAW,
-        AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN,
-        AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVOption,
-        av_demuxer_iterate, av_opt_next, avcodec_find_decoder, avcodec_find_encoder,
+        AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP2,
+        AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
+        AVCodecID_AV_CODEC_ID_SIREN, AVMediaType_AVMEDIA_TYPE_AUDIO,
+        AVMediaType_AVMEDIA_TYPE_VIDEO, AVOption, av_demuxer_iterate, av_opt_next,
+        avcodec_find_decoder, avcodec_find_encoder,
     };
     use std::ffi::CStr;
     use std::ptr;
@@ -849,6 +850,7 @@ mod tests {
                 AVCodecID_AV_CODEC_ID_H264,
                 AVCodecID_AV_CODEC_ID_HEVC,
                 AVCodecID_AV_CODEC_ID_AAC,
+                AVCodecID_AV_CODEC_ID_MP2,
                 AVCodecID_AV_CODEC_ID_PCM_ALAW,
                 AVCodecID_AV_CODEC_ID_PCM_MULAW,
                 AVCodecID_AV_CODEC_ID_G723_1,

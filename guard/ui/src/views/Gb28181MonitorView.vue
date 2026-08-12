@@ -1270,10 +1270,25 @@ function mediaStatePollDelay() {
   return Math.round(base * (0.9 + (Math.abs(hash) % 201) / 1_000));
 }
 
+function preservePlaybackToken(currentEndpoint: string, nextEndpoint: string) {
+  const endpoint = nextEndpoint || currentEndpoint;
+  const token = currentEndpoint
+    .split('?', 2)[1]
+    ?.split('&')
+    .find((parameter) => parameter.startsWith('gmv-token='));
+  if (!endpoint || !token) return endpoint;
+  const [base, query = ''] = endpoint.split('?', 2);
+  const parameters = query
+    .split('&')
+    .filter((parameter) => parameter && !parameter.startsWith('gmv-token='));
+  parameters.push(token);
+  return `${base}?${parameters.join('&')}`;
+}
+
 function applyOutputState(stream: StreamSummary, output: StreamOutputSummary): StreamSummary {
   return {
     ...stream,
-    endpoint: output.endpoint || stream.endpoint,
+    endpoint: preservePlaybackToken(stream.endpoint, output.endpoint),
     video_codec: output.video_codec || stream.video_codec,
     audio_codec: output.audio_codec || stream.audio_codec,
     mime_codec: output.mime_codec || stream.mime_codec,

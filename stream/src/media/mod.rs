@@ -130,7 +130,10 @@ pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
                             "media worker failed: stage={}, outcome=ffmpeg_error, stream_id={}, ssrc={}, ffmpeg_code={}, reason={}",
                             stage, worker_stream_id, ssrc, code, message
                         ),
-                        Err(MediaRunError::Pipeline(_)) => {}
+                        Err(MediaRunError::Pipeline(error)) => error!(
+                            "media worker failed: stage=pipeline, outcome=failed, stream_id={}, ssrc={}, reason={error}",
+                            worker_stream_id, ssrc
+                        ),
                     }
                     if failed && worker_runtime.is_shutting_down() {
                         GlobalRuntime::request_shutdown_with_error();

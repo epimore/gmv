@@ -262,14 +262,12 @@ impl RtpPacketBuffer {
             return RtpReadOutcome::Data(copy_len);
         }
 
-        let mut waited_for_input = false;
         loop {
             if let Some(reason) = self.control.interrupt_reason() {
                 return RtpReadOutcome::Interrupted(reason);
             }
-            if !waited_for_input && self.queue_count == 0 && !self.input_closed {
-                self.receive_one_with_timeout();
-                waited_for_input = true;
+            if self.first_read_rtp_sn == u16::MAX && self.queue_count == 0 && !self.input_closed {
+                self.prefill_initial_window();
             }
             self.drain_available_packets();
             let input_closed = self.input_closed;
@@ -477,11 +475,36 @@ impl RtpPacketBuffer {
         matches!(self.payload_kind, PayloadKind::H264 | PayloadKind::H265)
     }
 
-    fn receive_one_with_timeout(&mut self) {
-        match self.packet_rx.recv_timeout(AVIO_RECV_TIMEOUT) {
-            Ok(pkt) => self.enqueue_initial(pkt),
-            Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => self.input_closed = true,
+    fn prefill_initial_window(&mut self) {
+        let mut reorder_deadline = None;
+        while self.queue_count < self.queue_window && !self.input_closed {
+            if self.control.interrupt_reason().is_some() {
+                return;
+            }
+            let now = Instant::now();
+            let wait = match reorder_deadline {
+                Some(deadline) if now < deadline => {
+                    deadline.duration_since(now).min(AVIO_RECV_TIMEOUT)
+                }
+                Some(_) => return,
+                None => AVIO_RECV_TIMEOUT,
+            };
+            match self.packet_rx.recv_timeout(wait) {
+                Ok(pkt) => {
+                    self.enqueue_initial(pkt);
+                    reorder_deadline.get_or_insert_with(|| {
+                        Instant::now() + Duration::from_millis(self.max_gap_wait_ms())
+                    });
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    if reorder_deadline.is_none()
+                        || reorder_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                    {
+                        return;
+                    }
+                }
+                Err(RecvTimeoutError::Disconnected) => self.input_closed = true,
+            }
         }
     }
 
@@ -1147,6 +1170,34 @@ mod tests {
         assert_eq!(
             buffer.consume_packet(output.len(), output.as_mut_ptr()),
             RtpReadOutcome::Interrupted(RtpInterruptReason::StartupDeadline)
+        );
+    }
+
+    #[test]
+    fn initial_window_orders_packets_before_fixing_first_sequence() {
+        let (tx, rx) = crossbeam_channel::bounded(4);
+        tx.send(packet(10, b"ten")).unwrap();
+        tx.send(packet(8, b"eight")).unwrap();
+        tx.send(packet(9, b"nine")).unwrap();
+        tx.send(packet(11, b"eleven")).unwrap();
+        drop(tx);
+        let mut media_ext = MediaExt::default();
+        media_ext.type_name = "PS".to_string();
+        let mut buffer = RtpPacketBuffer::init(
+            200_000_037,
+            rx,
+            &media_ext,
+            read_control(Instant::now() + Duration::from_secs(60)),
+        );
+        let mut output = [0u8; 16];
+
+        for expected in [b"eight".as_slice(), b"nine", b"ten", b"eleven"] {
+            let size = data_len(buffer.consume_packet(output.len(), output.as_mut_ptr()));
+            assert_eq!(&output[..size], expected);
+        }
+        assert_eq!(
+            buffer.consume_packet(output.len(), output.as_mut_ptr()),
+            RtpReadOutcome::Closed
         );
     }
 }

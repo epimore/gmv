@@ -13,9 +13,10 @@ use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi::{
     AV_CODEC_FLAG_GLOBAL_HEADER, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_G723_1,
     AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
-    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, FF_PROFILE_AAC_LOW,
-    av_packet_ref, av_samples_set_silence, avcodec_parameters_alloc, avcodec_parameters_copy,
+    AVCodecID_AV_CODEC_ID_MP2, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW,
+    AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, FF_PROFILE_AAC_LOW, av_packet_ref,
+    av_samples_set_silence, avcodec_parameters_alloc, avcodec_parameters_copy,
     avcodec_parameters_free, avcodec_parameters_to_context,
 };
 use rsmpeg::swresample::SwrContext;
@@ -121,7 +122,8 @@ impl CodecContext {
                 AVCodecID_AV_CODEC_ID_PCM_ALAW
                 | AVCodecID_AV_CODEC_ID_PCM_MULAW
                 | AVCodecID_AV_CODEC_ID_G723_1
-                | AVCodecID_AV_CODEC_ID_G729 => {
+                | AVCodecID_AV_CODEC_ID_G729
+                | AVCodecID_AV_CODEC_ID_MP2 => {
                     let transcode = CodecParametersSnapshot::copy(codecpar).and_then(|snapshot| {
                         AacTranscoder::new(stream_index, stream_index, snapshot.as_ptr(), 0)
                             .map(|audio| (audio, snapshot))
@@ -200,6 +202,9 @@ impl CodecContext {
             return Ok(false);
         }
         let stream = unsafe { *(*demuxer.avio.fmt_ctx).streams.add(source_index as usize) };
+        if !supported_audio_source(unsafe { (*(*stream).codecpar).codec_id }) {
+            return Ok(false);
+        }
         let next_pts = self
             .silent
             .as_ref()
@@ -290,6 +295,7 @@ fn supported_audio_source(codec_id: rsmpeg::ffi::AVCodecID) -> bool {
             | AVCodecID_AV_CODEC_ID_PCM_MULAW
             | AVCodecID_AV_CODEC_ID_G723_1
             | AVCodecID_AV_CODEC_ID_G729
+            | AVCodecID_AV_CODEC_ID_MP2
     ) && AVCodec::find_decoder(codec_id).is_some()
 }
 
@@ -837,8 +843,9 @@ mod tests {
     use base::tokio_util::sync::CancellationToken;
     use gmv_domain::info::media_info::{OutputAudioCodec, TranscodeConfig};
     use rsmpeg::ffi::{
-        AVMediaType_AVMEDIA_TYPE_AUDIO, av_channel_layout_default, av_new_packet, av_packet_unref,
-        avformat_alloc_context, avformat_new_stream,
+        AVMediaType_AVMEDIA_TYPE_AUDIO, AVSampleFormat_AV_SAMPLE_FMT_S16,
+        av_channel_layout_default, av_new_packet, av_packet_unref, avformat_alloc_context,
+        avformat_new_stream,
     };
 
     use super::*;
@@ -930,6 +937,55 @@ mod tests {
             assert_eq!(codec.rejected_audio_stream(), Some(0));
             assert!(codec.has_silent_audio());
             assert!(!codec.has_real_audio());
+            for _ in 0..AUDIO_RECOVERY_FRAMES {
+                assert!(!codec.observe_ready_audio(&mut demuxer, 0, 0).unwrap());
+            }
+            assert!(!codec.has_real_audio());
+        }
+    }
+
+    #[test]
+    fn mp2_audio_prepares_real_aac_transcoder() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            let stream = avformat_new_stream(fmt_ctx, ptr::null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_MP2;
+            (*codecpar).sample_rate = 48_000;
+            (*codecpar).channels = 2;
+            (*codecpar).bit_rate = 128_000;
+            (*codecpar).format = AVSampleFormat_AV_SAMPLE_FMT_S16 as i32;
+            (*codecpar).frame_size = 1_152;
+            av_channel_layout_default(&mut (*codecpar).ch_layout, 2);
+            (*stream).time_base = AVRational {
+                num: 1,
+                den: 48_000,
+            };
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx,
+                    io_buf: ptr::null_mut(),
+                    avio_ctx: ptr::null_mut(),
+                },
+                params: vec![ParamRepairState {
+                    ready: true,
+                    ..Default::default()
+                }],
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
+            };
+            let mut codec = CodecContext::fixed_aac();
+
+            codec.prepare(&mut demuxer, true, &[true]).unwrap();
+
+            assert_eq!(codec.rejected_audio_stream(), None);
+            assert_eq!(codec.transcoded_stream_index(), Some(0));
+            assert!(codec.has_real_audio());
+            assert!(codec.has_silent_audio());
         }
     }
 

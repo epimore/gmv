@@ -145,6 +145,7 @@ echo "[5/7] configure"
   --enable-decoder=h264 \
   --enable-decoder=hevc \
   --enable-decoder=aac \
+  --enable-decoder=mp2 \
   --enable-decoder=pcm_alaw \
   --enable-decoder=pcm_mulaw \
   --enable-decoder=g723_1 \
@@ -155,6 +156,7 @@ echo "[5/7] configure"
   --enable-parser=h264 \
   --enable-parser=hevc \
   --enable-parser=aac \
+  --enable-parser=mpegaudio \
   \
   --enable-bsf=h264_mp4toannexb \
   --enable-bsf=hevc_mp4toannexb \
