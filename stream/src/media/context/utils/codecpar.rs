@@ -7,15 +7,14 @@ use log::{debug, error, info, warn};
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVCodec, AVCodecID, AVCodecID_AV_CODEC_ID_AAC,
     AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H264,
-    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP2, AVCodecID_AV_CODEC_ID_OPUS,
-    AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat,
-    AVPixelFormat_AV_PIX_FMT_NV12, AVPixelFormat_AV_PIX_FMT_YUV420P,
-    AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational, AVSampleFormat,
-    AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream,
-    av_channel_layout_default, av_channel_layout_uninit, av_free, av_malloc, av_rescale_q,
-    avcodec_alloc_context3, avcodec_close, avcodec_find_decoder, avcodec_free_context,
-    avcodec_open2, avcodec_parameters_from_context, avcodec_parameters_to_context,
+    AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_OPUS, AVCodecID_AV_CODEC_ID_PCM_ALAW,
+    AVCodecID_AV_CODEC_ID_PCM_MULAW, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, AVPacket, AVPixelFormat, AVPixelFormat_AV_PIX_FMT_NV12,
+    AVPixelFormat_AV_PIX_FMT_YUV420P, AVPixelFormat_AV_PIX_FMT_YUVJ420P, AVRational,
+    AVSampleFormat, AVSampleFormat_AV_SAMPLE_FMT_FLTP, AVSampleFormat_AV_SAMPLE_FMT_S16, AVStream,
+    av_channel_layout_default, av_free, av_malloc, av_rescale_q, avcodec_alloc_context3,
+    avcodec_close, avcodec_find_decoder, avcodec_free_context, avcodec_open2,
+    avcodec_parameters_from_context, avcodec_parameters_to_context,
 };
 use std::ptr;
 
@@ -116,9 +115,6 @@ pub unsafe fn repair_basic_stream_info(
             repair_video_stream_info(stream, media_ext);
         }
         AVMediaType_AVMEDIA_TYPE_AUDIO => {
-            if (*par).codec_id == AVCodecID_AV_CODEC_ID_MP2 {
-                repair_mp2_stream_info(par, pkt, param);
-            }
             if matches!((*par).codec_id, AVCodecID_AV_CODEC_ID_AAC)
                 && ((*par).extradata_size < 2 || (*par).extradata.is_null())
             {
@@ -350,101 +346,6 @@ pub(super) fn parse_aac_audio_specific_config(asc: &[u8]) -> Option<(i32, i32)> 
     Some((sample_rate, channels))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Mp2FrameParameters {
-    sample_rate: i32,
-    channels: i32,
-    bit_rate: i64,
-    frame_size: i32,
-}
-
-fn parse_mp2_frame_parameters(data: &[u8]) -> Option<Mp2FrameParameters> {
-    const MPEG1_LAYER2_BITRATES: [i64; 16] = [
-        0, 32, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 384, 0,
-    ];
-    const MPEG2_LAYER2_BITRATES: [i64; 16] = [
-        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
-    ];
-    const MPEG1_SAMPLE_RATES: [i32; 3] = [44_100, 48_000, 32_000];
-
-    data.windows(4).find_map(|bytes| {
-        let header = u32::from_be_bytes(bytes.try_into().ok()?);
-        if header & 0xffe0_0000 != 0xffe0_0000 {
-            return None;
-        }
-        let version = (header >> 19) & 0x03;
-        let layer = (header >> 17) & 0x03;
-        if version == 0x01 || layer != 0x02 {
-            return None;
-        }
-        let bitrate_index = ((header >> 12) & 0x0f) as usize;
-        let sample_rate_index = ((header >> 10) & 0x03) as usize;
-        let base_sample_rate = *MPEG1_SAMPLE_RATES.get(sample_rate_index)?;
-        let sample_rate = match version {
-            0x03 => base_sample_rate,
-            0x02 => base_sample_rate / 2,
-            0x00 => base_sample_rate / 4,
-            _ => return None,
-        };
-        let bit_rate_kbps = if version == 0x03 {
-            MPEG1_LAYER2_BITRATES[bitrate_index]
-        } else {
-            MPEG2_LAYER2_BITRATES[bitrate_index]
-        };
-        if bit_rate_kbps == 0 {
-            return None;
-        }
-        let bit_rate = bit_rate_kbps * 1_000;
-        let padding = i64::from((header >> 9) & 0x01);
-        let frame_bytes = (144 * bit_rate / i64::from(sample_rate)) + padding;
-        if frame_bytes <= 4 {
-            return None;
-        }
-        let channels = if (header >> 6) & 0x03 == 0x03 { 1 } else { 2 };
-        Some(Mp2FrameParameters {
-            sample_rate,
-            channels,
-            bit_rate,
-            frame_size: 1_152,
-        })
-    })
-}
-
-unsafe fn repair_mp2_stream_info(
-    par: *mut rsmpeg::ffi::AVCodecParameters,
-    pkt: &AVPacket,
-    param: &mut ParamRepairState,
-) {
-    if pkt.data.is_null() || pkt.size < 4 {
-        return;
-    }
-    let data = unsafe { std::slice::from_raw_parts(pkt.data, pkt.size as usize) };
-    let Some(mp2) = parse_mp2_frame_parameters(data) else {
-        return;
-    };
-
-    if param.evidence.sample_rate < ParameterEvidence::Bitstream {
-        unsafe { (*par).sample_rate = mp2.sample_rate };
-        TrackParameterEvidence::promote(
-            &mut param.evidence.sample_rate,
-            ParameterEvidence::Bitstream,
-        );
-    }
-    if param.evidence.channels < ParameterEvidence::Bitstream {
-        unsafe {
-            (*par).channels = mp2.channels;
-            (*par).channel_layout = rsmpeg::ffi::av_get_default_channel_layout(mp2.channels) as u64;
-            av_channel_layout_uninit(&mut (*par).ch_layout);
-            av_channel_layout_default(&mut (*par).ch_layout, mp2.channels);
-        }
-        TrackParameterEvidence::promote(&mut param.evidence.channels, ParameterEvidence::Bitstream);
-    }
-    unsafe {
-        (*par).bit_rate = mp2.bit_rate;
-        (*par).frame_size = mp2.frame_size;
-    }
-}
-
 #[cfg(test)]
 mod aac_audio_specific_config_tests {
     use super::*;
@@ -545,48 +446,6 @@ mod aac_audio_specific_config_tests {
         assert_eq!(evidence, ParameterEvidence::Sdp);
         TrackParameterEvidence::promote(&mut evidence, ParameterEvidence::Bitstream);
         assert_eq!(evidence, ParameterEvidence::Bitstream);
-    }
-
-    #[test]
-    fn repairs_mp2_parameters_from_frame_header() {
-        let frame = [0x00, 0x00, 0xff, 0xfd, 0x84, 0x00];
-        assert_eq!(
-            parse_mp2_frame_parameters(&frame),
-            Some(Mp2FrameParameters {
-                sample_rate: 48_000,
-                channels: 2,
-                bit_rate: 128_000,
-                frame_size: 1_152,
-            })
-        );
-
-        unsafe {
-            let format = rsmpeg::ffi::avformat_alloc_context();
-            let stream = rsmpeg::ffi::avformat_new_stream(format, ptr::null());
-            let codecpar = (*stream).codecpar;
-            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
-            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_MP2;
-            let mut packet = std::mem::zeroed::<AVPacket>();
-            packet.data = frame.as_ptr() as *mut u8;
-            packet.size = frame.len() as i32;
-            let mut state = ParamRepairState::default();
-
-            assert!(repair_basic_stream_info(
-                stream,
-                &packet,
-                &MediaExt::default(),
-                &mut state,
-            ));
-
-            assert_eq!((*codecpar).sample_rate, 48_000);
-            assert_eq!((*codecpar).channels, 2);
-            assert_eq!((*codecpar).ch_layout.nb_channels, 2);
-            assert_eq!((*codecpar).bit_rate, 128_000);
-            assert_eq!((*codecpar).frame_size, 1_152);
-            assert_eq!(state.evidence.sample_rate, ParameterEvidence::Bitstream);
-            assert_eq!(state.evidence.channels, ParameterEvidence::Bitstream);
-            rsmpeg::ffi::avformat_free_context(format);
-        }
     }
 }
 
@@ -812,8 +671,7 @@ unsafe fn audio_parameters_ready(par: *const rsmpeg::ffi::AVCodecParameters) -> 
         AVCodecID_AV_CODEC_ID_PCM_ALAW
         | AVCodecID_AV_CODEC_ID_PCM_MULAW
         | AVCodecID_AV_CODEC_ID_G723_1
-        | AVCodecID_AV_CODEC_ID_G729
-        | AVCodecID_AV_CODEC_ID_MP2 => true,
+        | AVCodecID_AV_CODEC_ID_G729 => true,
         _ => false,
     }
 }

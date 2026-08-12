@@ -524,11 +524,14 @@ y=0100008199\r\n";
 
     #[test]
     fn embedded_audio_from_f_field_is_declared_without_separate_media() {
-        let sdp = format!("{VALID_VIDEO_ANSWER}f=v/2/5/25/1/8000a/1/8/8\r\n");
+        let sdp = format!("{VALID_VIDEO_ANSWER}f=v/2/5/25/1/8000a/1/8/1\r\n");
         let ext = parse_media_ext(sdp.as_bytes()).unwrap();
 
         assert_eq!(ext.declaration.audio.state, MediaDeclarationState::Active);
         assert!(ext.declaration.audio.embedded_in_ps);
+        assert_eq!(ext.declaration.audio.codec.as_deref(), Some("g711"));
+        assert_eq!(ext.declaration.audio.clock_rate, Some(8_000));
+        assert_eq!(ext.audio_params.bitrate.as_deref(), Some("64"));
     }
 
     #[test]

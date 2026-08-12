@@ -6,16 +6,17 @@ use gmv_domain::info::media_info_ext::MediaExt;
 use rsmpeg::ffi::{
     AVCodecID, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722,
     AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H263,
-    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP2,
-    AVCodecID_AV_CODEC_ID_MPEG4, AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW,
-    AVCodecID_AV_CODEC_ID_PCM_MULAW, AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary,
-    AVFMT_FLAG_CUSTOM_IO, AVFMT_FLAG_DISCARD_CORRUPT, AVFMT_FLAG_GENPTS, AVFMT_FLAG_IGNDTS,
-    AVFMT_FLAG_IGNIDX, AVFMT_FLAG_NOBUFFER, AVFormatContext, AVIOContext,
-    AVMediaType_AVMEDIA_TYPE_AUDIO, AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream,
-    av_dict_free, av_find_input_format, av_free, av_malloc, avcodec_find_decoder,
-    avcodec_parameters_alloc, avcodec_parameters_copy, avcodec_parameters_free,
-    avformat_alloc_context, avformat_close_input, avformat_find_stream_info, avformat_free_context,
-    avformat_new_stream, avformat_open_input, avio_alloc_context, avio_context_free,
+    AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MPEG4,
+    AVCodecID_AV_CODEC_ID_NONE, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
+    AVCodecID_AV_CODEC_ID_SIREN, AVCodecParameters, AVDictionary, AVFMT_FLAG_CUSTOM_IO,
+    AVFMT_FLAG_DISCARD_CORRUPT, AVFMT_FLAG_GENPTS, AVFMT_FLAG_IGNDTS, AVFMT_FLAG_IGNIDX,
+    AVFMT_FLAG_NOBUFFER, AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO,
+    AVMediaType_AVMEDIA_TYPE_VIDEO, AVRational, AVStream, av_channel_layout_default,
+    av_channel_layout_uninit, av_dict_free, av_find_input_format, av_free, av_malloc,
+    avcodec_find_decoder, avcodec_parameters_alloc, avcodec_parameters_copy,
+    avcodec_parameters_free, avformat_alloc_context, avformat_close_input,
+    avformat_find_stream_info, avformat_free_context, avformat_new_stream, avformat_open_input,
+    avio_alloc_context, avio_context_free,
 };
 use std::ffi::{CString, c_int, c_void};
 use std::ops::Range;
@@ -424,6 +425,35 @@ unsafe fn map_video_codec_id(s: &str) -> AVCodecID {
     }
 }
 
+fn supported_audio_codec(codec_id: AVCodecID) -> bool {
+    matches!(
+        codec_id,
+        AVCodecID_AV_CODEC_ID_AAC
+            | AVCodecID_AV_CODEC_ID_PCM_ALAW
+            | AVCodecID_AV_CODEC_ID_PCM_MULAW
+            | AVCodecID_AV_CODEC_ID_G723_1
+            | AVCodecID_AV_CODEC_ID_G729
+    )
+}
+
+fn audio_codec_hint<'a>(media_ext: &'a MediaExt, fmt_name: &str) -> Option<(&'a str, AVCodecID)> {
+    let declaration = &media_ext.declaration.audio;
+    let codec = if fmt_name == "mpeg" {
+        (declaration.is_active() && declaration.embedded_in_ps)
+            .then_some(declaration.codec.as_deref())
+            .flatten()
+    } else if declaration.is_active() {
+        declaration
+            .codec
+            .as_deref()
+            .or(media_ext.audio_params.codec_id.as_deref())
+    } else {
+        media_ext.audio_params.codec_id.as_deref()
+    }?;
+    let codec_id = unsafe { map_audio_codec_id(codec) };
+    supported_audio_codec(codec_id).then_some((codec, codec_id))
+}
+
 pub unsafe fn map_audio_codec_id(s: &str) -> AVCodecID {
     match s.to_lowercase().as_str() {
         // G.711 A-law
@@ -557,39 +587,110 @@ fn input_sample_rate(media_ext: &MediaExt) -> i32 {
         .unwrap_or(8000)
 }
 
-unsafe fn log_audio_codec_mismatch(fmt_ctx: *mut AVFormatContext, media_ext: &MediaExt) {
-    let Some(declared) = media_ext
-        .declaration
-        .audio
-        .codec
-        .as_deref()
-        .or(media_ext.audio_params.codec_id.as_deref())
-    else {
+unsafe fn apply_embedded_audio_declaration(
+    fmt_ctx: *mut AVFormatContext,
+    media_ext: &MediaExt,
+    params: &mut [ParamRepairState],
+) {
+    let declaration = &media_ext.declaration.audio;
+    let Some((declared, declared_id)) = audio_codec_hint(media_ext, "mpeg") else {
         return;
     };
-    if declared.eq_ignore_ascii_case("g711") {
-        return;
-    }
-    let declared_id = unsafe { map_audio_codec_id(declared) };
-    if declared_id == AVCodecID_AV_CODEC_ID_NONE {
-        return;
-    }
     for index in 0..unsafe { (*fmt_ctx).nb_streams as usize } {
         let stream = unsafe { *(*fmt_ctx).streams.add(index) };
         if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
             continue;
         }
         let codecpar = unsafe { (*stream).codecpar };
-        if unsafe { (*codecpar).codec_type } == AVMediaType_AVMEDIA_TYPE_AUDIO
-            && unsafe { (*codecpar).codec_id } != AVCodecID_AV_CODEC_ID_NONE
-            && unsafe { (*codecpar).codec_id } != declared_id
-        {
-            warn!(
-                "audio parameter mismatch: field=codec, declared={declared}, observed_id={}, outcome=observed_wins",
-                unsafe { (*codecpar).codec_id }
-            );
-            return;
+        if unsafe { (*codecpar).codec_type } != AVMediaType_AVMEDIA_TYPE_AUDIO {
+            continue;
         }
+        let observed_id = unsafe { (*codecpar).codec_id };
+        if observed_id != AVCodecID_AV_CODEC_ID_NONE && observed_id != declared_id {
+            warn!(
+                "audio parameter mismatch: field=codec, declared={declared}, observed_id={observed_id}, outcome=declared_wins, reason=embedded_ps_f_field"
+            );
+        }
+        if observed_id != declared_id {
+            unsafe {
+                if !(*codecpar).extradata.is_null() {
+                    av_free((*codecpar).extradata.cast());
+                    (*codecpar).extradata = ptr::null_mut();
+                    (*codecpar).extradata_size = 0;
+                }
+                (*codecpar).codec_id = declared_id;
+                (*codecpar).codec_tag = 0;
+                (*codecpar).format = -1;
+                (*codecpar).frame_size = 0;
+                (*codecpar).block_align = 0;
+                (*codecpar).bits_per_coded_sample = 0;
+                (*codecpar).sample_rate = 0;
+                (*codecpar).channels = 0;
+                (*codecpar).channel_layout = 0;
+                av_channel_layout_uninit(&mut (*codecpar).ch_layout);
+            }
+        }
+        if let Some(sample_rate) = declaration.clock_rate.filter(|rate| *rate > 0) {
+            unsafe { (*codecpar).sample_rate = sample_rate };
+        }
+        let channels = declaration
+            .channels
+            .filter(|channels| *channels > 0)
+            .or_else(|| {
+                matches!(
+                    declared_id,
+                    AVCodecID_AV_CODEC_ID_PCM_ALAW
+                        | AVCodecID_AV_CODEC_ID_PCM_MULAW
+                        | AVCodecID_AV_CODEC_ID_G723_1
+                        | AVCodecID_AV_CODEC_ID_G729
+                )
+                .then_some(1)
+            });
+        if let Some(channels) = channels {
+            unsafe {
+                (*codecpar).channels = channels;
+                (*codecpar).channel_layout =
+                    rsmpeg::ffi::av_get_default_channel_layout(channels) as u64;
+                av_channel_layout_uninit(&mut (*codecpar).ch_layout);
+                av_channel_layout_default(&mut (*codecpar).ch_layout, channels);
+            }
+        }
+        if let Some(bit_rate) = media_ext
+            .audio_params
+            .bitrate
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(|value| (value * 1_000.0).round() as i64)
+            .filter(|value| *value > 0)
+        {
+            unsafe { (*codecpar).bit_rate = bit_rate };
+        }
+        if matches!(
+            declared_id,
+            AVCodecID_AV_CODEC_ID_PCM_ALAW | AVCodecID_AV_CODEC_ID_PCM_MULAW
+        ) {
+            unsafe {
+                (*codecpar).bits_per_coded_sample = 8;
+                (*codecpar).block_align = 1;
+            }
+        }
+        if let Some(param) = params.get_mut(index) {
+            param.ready = false;
+            param.evidence.codec = ParameterEvidence::Sdp;
+            if unsafe { (*codecpar).sample_rate } > 0 {
+                param.evidence.sample_rate = ParameterEvidence::Sdp;
+            }
+            if unsafe { (*codecpar).channels } > 0 {
+                param.evidence.channels = ParameterEvidence::Sdp;
+            }
+        }
+        info!(
+            "audio codec resolved: action=input_probe, outcome=declared_confirmed, source=f_field, codec={declared}, codec_id={declared_id}, sample_rate={}, channels={}",
+            unsafe { (*codecpar).sample_rate },
+            unsafe { (*codecpar).channels }
+        );
+        return;
     }
 }
 
@@ -649,20 +750,15 @@ impl DemuxerContext {
                     (*in_fmt_ctx).video_codec = codec;
                 }
             }
-            if let Some(a_id) = &media_ext.audio_params.codec_id
-                && fmt_name != "mpeg"
-            {
-                let id = map_audio_codec_id(a_id);
-                if id != AVCodecID_AV_CODEC_ID_NONE {
-                    (*in_fmt_ctx).audio_codec_id = id;
-                    let codec = avcodec_find_decoder(id);
-                    if codec.is_null() {
-                        warn!(
-                            "audio decoder unavailable: action=input_probe, outcome=video_continues, codec={a_id}"
-                        );
-                    } else {
-                        (*in_fmt_ctx).audio_codec = codec;
-                    }
+            if let Some((audio_codec, id)) = audio_codec_hint(media_ext, fmt_name) {
+                (*in_fmt_ctx).audio_codec_id = id;
+                let codec = avcodec_find_decoder(id);
+                if codec.is_null() {
+                    warn!(
+                        "audio decoder unavailable: action=input_probe, outcome=video_continues, codec={audio_codec}"
+                    );
+                } else {
+                    (*in_fmt_ctx).audio_codec = codec;
                 }
             }
 
@@ -729,13 +825,14 @@ impl DemuxerContext {
                 drop(avio);
                 return Err(e);
             }
-            log_audio_codec_mismatch(in_fmt_ctx, media_ext);
-
             // 8) update probe cache & collect codecpar_list & stream mapping & reset_timestamp_state
             let nb_streams = (*in_fmt_ctx).nb_streams as usize;
-            let params: Vec<ParamRepairState> = (0..nb_streams)
+            let mut params: Vec<ParamRepairState> = (0..nb_streams)
                 .map(|index| ParamRepairState::from_stream(*(*in_fmt_ctx).streams.add(index)))
                 .collect();
+            if fmt_name == "mpeg" {
+                apply_embedded_audio_declaration(in_fmt_ctx, media_ext, &mut params);
+            }
             rsmpeg::ffi::av_dict_free(&mut dict_opts);
             Ok(DemuxerContext {
                 avio,
@@ -750,16 +847,19 @@ impl DemuxerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputTrack, OutputTrackPlan, OutputTrackSource, ParamRepairState,
-        extend_param_repair_states, map_audio_codec_id, ready_for_initial_output,
+        OutputTrack, OutputTrackPlan, OutputTrackSource, ParamRepairState, ParameterEvidence,
+        apply_embedded_audio_declaration, audio_codec_hint, extend_param_repair_states,
+        map_audio_codec_id, ready_for_initial_output,
     };
+    use gmv_domain::info::media_info_ext::{MediaDeclarationState, MediaExt};
     use rsmpeg::ffi::{
-        AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_G723_1, AVCodecID_AV_CODEC_ID_G729,
-        AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC, AVCodecID_AV_CODEC_ID_MP2,
-        AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
+        AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1,
+        AVCodecID_AV_CODEC_ID_G729, AVCodecID_AV_CODEC_ID_H264, AVCodecID_AV_CODEC_ID_HEVC,
+        AVCodecID_AV_CODEC_ID_MP2, AVCodecID_AV_CODEC_ID_PCM_ALAW, AVCodecID_AV_CODEC_ID_PCM_MULAW,
         AVCodecID_AV_CODEC_ID_SIREN, AVMediaType_AVMEDIA_TYPE_AUDIO,
         AVMediaType_AVMEDIA_TYPE_VIDEO, AVOption, av_demuxer_iterate, av_opt_next,
-        avcodec_find_decoder, avcodec_find_encoder,
+        avcodec_find_decoder, avcodec_find_encoder, avformat_alloc_context, avformat_free_context,
+        avformat_new_stream,
     };
     use std::ffi::CStr;
     use std::ptr;
@@ -843,6 +943,72 @@ mod tests {
         }
     }
 
+    fn embedded_g711_media_ext() -> MediaExt {
+        let mut media_ext = MediaExt::default();
+        media_ext.type_name = "PS".to_string();
+        media_ext.audio_params.codec_id = Some("g711".to_string());
+        media_ext.audio_params.bitrate = Some("64".to_string());
+        media_ext.audio_params.sample_rate = Some("8".to_string());
+        media_ext.declaration.audio.state = MediaDeclarationState::Active;
+        media_ext.declaration.audio.codec = Some("g711".to_string());
+        media_ext.declaration.audio.clock_rate = Some(8_000);
+        media_ext.declaration.audio.embedded_in_ps = true;
+        media_ext
+    }
+
+    #[test]
+    fn embedded_ps_f_field_supplies_supported_audio_hint() {
+        let mut media_ext = embedded_g711_media_ext();
+        for (codec, codec_id) in [
+            ("g711", AVCodecID_AV_CODEC_ID_PCM_ALAW),
+            ("g711u", AVCodecID_AV_CODEC_ID_PCM_MULAW),
+            ("g7231", AVCodecID_AV_CODEC_ID_G723_1),
+            ("g729", AVCodecID_AV_CODEC_ID_G729),
+            ("aac", AVCodecID_AV_CODEC_ID_AAC),
+        ] {
+            media_ext.declaration.audio.codec = Some(codec.to_string());
+            assert_eq!(
+                audio_codec_hint(&media_ext, "mpeg").map(|(_, codec_id)| codec_id),
+                Some(codec_id),
+                "supported f= codec was rejected: {codec}"
+            );
+        }
+
+        media_ext.declaration.audio.codec = Some("g7221".to_string());
+        assert!(audio_codec_hint(&media_ext, "mpeg").is_none());
+
+        let mut not_embedded = embedded_g711_media_ext();
+        not_embedded.declaration.audio.embedded_in_ps = false;
+        assert!(audio_codec_hint(&not_embedded, "mpeg").is_none());
+    }
+
+    #[test]
+    fn embedded_ps_f_field_overrides_ambiguous_demux_audio() {
+        unsafe {
+            let format = avformat_alloc_context();
+            let stream = avformat_new_stream(format, ptr::null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_ADPCM_G722;
+            (*codecpar).sample_rate = 44_100;
+            (*codecpar).channels = 2;
+            let mut params = vec![ParamRepairState::from_stream(stream)];
+
+            apply_embedded_audio_declaration(format, &embedded_g711_media_ext(), &mut params);
+
+            assert_eq!((*codecpar).codec_id, AVCodecID_AV_CODEC_ID_PCM_ALAW);
+            assert_eq!((*codecpar).sample_rate, 8_000);
+            assert_eq!((*codecpar).channels, 1);
+            assert_eq!((*codecpar).bit_rate, 64_000);
+            assert_eq!((*codecpar).bits_per_coded_sample, 8);
+            assert_eq!((*codecpar).block_align, 1);
+            assert_eq!(params[0].evidence.codec, ParameterEvidence::Sdp);
+            assert_eq!(params[0].evidence.sample_rate, ParameterEvidence::Sdp);
+            assert_eq!(params[0].evidence.channels, ParameterEvidence::Sdp);
+            avformat_free_context(format);
+        }
+    }
+
     #[test]
     fn runtime_ffmpeg_contains_promised_audio_transcode_capabilities() {
         unsafe {
@@ -850,7 +1016,6 @@ mod tests {
                 AVCodecID_AV_CODEC_ID_H264,
                 AVCodecID_AV_CODEC_ID_HEVC,
                 AVCodecID_AV_CODEC_ID_AAC,
-                AVCodecID_AV_CODEC_ID_MP2,
                 AVCodecID_AV_CODEC_ID_PCM_ALAW,
                 AVCodecID_AV_CODEC_ID_PCM_MULAW,
                 AVCodecID_AV_CODEC_ID_G723_1,
@@ -864,6 +1029,10 @@ mod tests {
             assert!(
                 !avcodec_find_encoder(AVCodecID_AV_CODEC_ID_AAC).is_null(),
                 "required AAC encoder missing"
+            );
+            assert!(
+                avcodec_find_decoder(AVCodecID_AV_CODEC_ID_MP2).is_null(),
+                "unsupported MP2 decoder must be excluded from the minimal FFmpeg build"
             );
         }
     }
