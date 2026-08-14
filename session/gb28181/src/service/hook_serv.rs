@@ -61,8 +61,12 @@ pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRe
             );
         }
     }
-    stream_close::begin(stream_id);
-    InTimeoutEventRes::CloseAll
+    stream_close::begin(stream_id.clone());
+    if state::session::Cache::stream_is_closing(&stream_id) {
+        InTimeoutEventRes::KeepAlive
+    } else {
+        InTimeoutEventRes::CloseAll
+    }
 }
 
 fn keep_alive_paused_playback(lease: Option<&PlaybackPauseLease>, now: NaiveDateTime) -> bool {
@@ -182,9 +186,13 @@ pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
         ),
     }
 
-    stream_close::begin(stream_id);
+    stream_close::begin(stream_id.clone());
 
-    OutputEventRes::CloseAll
+    if state::session::Cache::stream_is_closing(&stream_id) {
+        OutputEventRes::CloseMuxer
+    } else {
+        OutputEventRes::CloseAll
+    }
 }
 
 pub async fn stream_unknown(event: UnknownStreamEvent) -> bool {

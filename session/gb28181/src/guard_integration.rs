@@ -890,11 +890,23 @@ impl SessionControl for SessionControlRpc {
         let force = request.force || request.subscription_id.is_empty();
         let setup_lock = crate::state::session::Cache::stream_map_query_input(&request.stream_id)
             .map(|(device_id, channel_id, access_mode)| {
-                crate::state::session::Cache::stream_setup_lock(
-                    &device_id,
-                    &channel_id,
-                    access_mode,
-                )
+                if access_mode == crate::state::session::AccessMode::Live {
+                    let profile =
+                        crate::state::session::Cache::stream_live_profile(&request.stream_id)
+                            .unwrap_or_default();
+                    crate::state::session::Cache::stream_setup_lock_with_discriminator(
+                        &device_id,
+                        &channel_id,
+                        access_mode,
+                        profile.as_str(),
+                    )
+                } else {
+                    crate::state::session::Cache::stream_setup_lock(
+                        &device_id,
+                        &channel_id,
+                        access_mode,
+                    )
+                }
             });
         let _setup_guard = match setup_lock.as_ref() {
             Some(lock) => Some(lock.lock().await),
@@ -945,7 +957,10 @@ impl SessionControl for SessionControlRpc {
                         request.stream_id.clone(),
                         "last_subscription_released",
                     );
-                    Ok(DeviceStreamState::Stopped)
+                    Ok(DeviceStreamState::Stopping)
+                }
+                None if crate::state::session::Cache::stream_is_closing(&request.stream_id) => {
+                    Ok(DeviceStreamState::Stopping)
                 }
                 None => Ok(DeviceStreamState::Stopped),
             }

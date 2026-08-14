@@ -46,7 +46,7 @@ use crate::io::media_endpoint::{
 };
 use crate::state::register::{
     AudioSourceRuntimeState, FinalizeStreamResult, OutputAudioRuntimeMode, OutputRuntimeState,
-    Register, StreamRuntimeObservation,
+    Register, StreamOnlineStatus, StreamRuntimeObservation,
 };
 
 static GUARD_EVENT_SENDER: OnceLock<NodeEventSender> = OnceLock::new();
@@ -496,9 +496,19 @@ impl StreamControl for StreamControlRpc {
         );
         Ok(tonic::Response::new(
             match decode_payload::<StreamKey>(&request.payload_json) {
-                Ok(value) => StreamBoolResponse {
-                    value: Register::is_exist(value),
-                    error: None,
+                Ok(value) => match Register::online(value) {
+                    StreamOnlineStatus::Online => StreamBoolResponse {
+                        value: true,
+                        error: None,
+                    },
+                    StreamOnlineStatus::Offline => StreamBoolResponse {
+                        value: false,
+                        error: None,
+                    },
+                    StreamOnlineStatus::Closing => StreamBoolResponse {
+                        value: false,
+                        error: Some(error("stream_closing", "stream is closing")),
+                    },
                 },
                 Err(error) => StreamBoolResponse {
                     value: false,

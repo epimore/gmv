@@ -2314,9 +2314,7 @@ impl BusinessControl {
                 true,
             ));
         }
-        let state = if response.state == DeviceStreamState::Running as i32 {
-            StreamSummaryState::Running
-        } else if response.state == DeviceStreamState::Stopped as i32 {
+        let state = if response.state == DeviceStreamState::Stopped as i32 {
             self.store.remove_stream_session_owner(stream_id);
             if let Some(mut route) = active_route_id
                 .as_deref()
@@ -2326,6 +2324,8 @@ impl BusinessControl {
                 self.store.upsert_route(route);
             }
             StreamSummaryState::Stopped
+        } else if let Some(state) = released_stream_summary_state(response.state) {
+            state
         } else {
             edge.invalid_response("stream_release_invalid_state");
             return Err(GuardError::Conflict(
@@ -3266,6 +3266,15 @@ impl BusinessControl {
     }
 }
 
+fn released_stream_summary_state(state: i32) -> Option<StreamSummaryState> {
+    match DeviceStreamState::try_from(state).ok()? {
+        DeviceStreamState::Running => Some(StreamSummaryState::Running),
+        DeviceStreamState::Stopping => Some(StreamSummaryState::Stopping),
+        DeviceStreamState::Stopped => Some(StreamSummaryState::Stopped),
+        _ => None,
+    }
+}
+
 fn normalize_broadcast_transport(value: &str) -> GuardResult<String> {
     let normalized = if value.trim().is_empty() {
         "udp"
@@ -3801,7 +3810,7 @@ mod tests {
     }
 
     #[test]
-    fn live_input_keys_isolate_main_and_sub_profiles() {
+    fn only_live_input_keys_share_and_isolate_main_and_sub_profiles() {
         assert_eq!(
             DeviceStreamKind::Live.input_key("device", "channel", "main"),
             Some("live:device:channel:main".to_string())
@@ -3813,6 +3822,30 @@ mod tests {
         assert_ne!(
             DeviceStreamKind::Live.input_key("device", "channel", "main"),
             DeviceStreamKind::Live.input_key("device", "channel", "sub")
+        );
+        assert_eq!(
+            DeviceStreamKind::Playback.input_key("device", "channel", "main"),
+            None
+        );
+        assert_eq!(
+            DeviceStreamKind::Download.input_key("device", "channel", "main"),
+            None
+        );
+    }
+
+    #[test]
+    fn release_state_preserves_stopping_projection() {
+        assert_eq!(
+            released_stream_summary_state(DeviceStreamState::Running as i32),
+            Some(StreamSummaryState::Running)
+        );
+        assert_eq!(
+            released_stream_summary_state(DeviceStreamState::Stopping as i32),
+            Some(StreamSummaryState::Stopping)
+        );
+        assert_eq!(
+            released_stream_summary_state(DeviceStreamState::Stopped as i32),
+            Some(StreamSummaryState::Stopped)
         );
     }
 
@@ -3943,6 +3976,40 @@ mod tests {
             GmvGuardErrorCode::StreamProfileMismatch.out_msg()
         );
         assert!(!retryable);
+    }
+
+    #[test]
+    fn remote_error_preserves_retryable_stream_closing() {
+        let error = ErrorDetail {
+            code: "session_business_failed".to_string(),
+            message: "BizError: [code = 4004, msg = \"stream is closing\"]".to_string(),
+            metadata: HashMap::from([(
+                META_GLOBAL_CODE.to_string(),
+                (GmvGuardErrorCode::StreamClosing as u16).to_string(),
+            )]),
+        };
+
+        let error = remote_error(
+            "session",
+            "start_live",
+            error,
+            "stream_start_failed",
+            "视频流创建失败，请检查设备在线状态和媒体服务",
+            false,
+        );
+
+        let GuardError::UserVisible {
+            code,
+            user_message,
+            retryable,
+            ..
+        } = error
+        else {
+            panic!("expected user-visible error");
+        };
+        assert_eq!(code, "stream_closing");
+        assert_eq!(user_message, GmvGuardErrorCode::StreamClosing.out_msg());
+        assert!(retryable);
     }
 
     #[test]

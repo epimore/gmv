@@ -41,6 +41,8 @@ use crate::state::{DownloadConf, StreamNode, session};
 use crate::storage::dialog_session::{DialogSessionType, DialogState, SipDialogSessionRepository};
 use crate::utils::id_builder;
 
+const LIVE_RESTART_CLOSE_WAIT: Duration = Duration::from_secs(12);
+
 pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
     let device_id = &play_live_model.device_id;
     if !Register::has_session(device_id) {
@@ -64,6 +66,23 @@ pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalR
         stream_profile.as_str(),
     );
     let _setup_guard = setup_lock.lock().await;
+
+    if let Some(stream_id) =
+        state::session::Cache::live_profile_stream(device_id, channel_id, stream_profile)
+        && state::session::Cache::stream_is_closing(&stream_id)
+        && !state::session::Cache::wait_stream_terminal(&stream_id, LIVE_RESTART_CLOSE_WAIT).await
+    {
+        return Err(GlobalError::new_biz_error(
+            gmv_nodec::error_code::GmvErrorCode::StreamClosing.code(),
+            "stream is closing",
+            |msg| {
+                debug!(
+                    "{msg}: action=live_start, outcome=retryable, device_id={device_id}, channel_id={channel_id}, profile={}",
+                    stream_profile.as_str()
+                )
+            },
+        ));
+    }
 
     if let Some((stream_id, proxy_addr, profile_verified)) = enable_invite_stream(
         device_id,
@@ -1214,6 +1233,22 @@ async fn enable_invite_stream(
     ) {
         None => Ok(None),
         Some((stream_id, ssrc, profile_verified)) => {
+            if state::session::Cache::stream_is_closing(&stream_id) {
+                return Err(GlobalError::new_biz_error(
+                    gmv_nodec::error_code::GmvErrorCode::StreamClosing.code(),
+                    "stream is closing",
+                    |msg| debug!("{msg}: stream_id={stream_id}"),
+                ));
+            }
+            if let Some(config) = custom_media_config
+                && state::session::Cache::live_pipeline_matches(&stream_id, config) == Some(false)
+            {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "existing live stream uses a different shared media pipeline",
+                    |msg| error!("{msg}: stream_id={stream_id}"),
+                ));
+            }
             let mut res = None;
             if let Some((node_name, proxy_addr)) =
                 state::session::Cache::stream_map_query_node(&stream_id)

@@ -34,22 +34,24 @@ pub async fn chunk(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> Re
             )
             .await
             {
-                OutPlayKind::Play => match Register::get_muxer_rx(&ssrc, MuxerEnum::FMp4) {
-                    Ok(rx) => {
-                        let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
-                            Some(Box::new(move || {
-                                Register::listen_output_timeout(
-                                    stream_id,
-                                    OutputEnum::DashFmp4,
-                                    token,
-                                    addr,
-                                    0,
-                                );
-                            }));
-                        send_fmp4(ssrc, rx, on_disconnect).await
+                OutPlayKind::Play => {
+                    match Register::get_playable_muxer_rx(&stream_id, MuxerEnum::FMp4) {
+                        Ok(Some(rx)) => {
+                            let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
+                                Some(Box::new(move || {
+                                    Register::listen_output_timeout(
+                                        stream_id,
+                                        OutputEnum::DashFmp4,
+                                        token,
+                                        addr,
+                                        0,
+                                    );
+                                }));
+                            send_fmp4(ssrc, rx, on_disconnect).await
+                        }
+                        Ok(None) | Err(_) => res_404(),
                     }
-                    Err(_) => res_404(),
-                },
+                }
                 OutPlayKind::Forbid => res_401(),
                 OutPlayKind::Notfound => res_404(),
             }
@@ -106,7 +108,7 @@ pub async fn init_segment(
                 ) {
                     Ok(_) => {
                         Register::listen_output_timeout(
-                            stream_id,
+                            stream_id.clone(),
                             OutputEnum::DashMp4,
                             token,
                             addr,
@@ -143,21 +145,21 @@ pub async fn segment(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
                 ) {
                     Ok(_) => {
                         Register::listen_output_timeout(
-                            stream_id,
+                            stream_id.clone(),
                             OutputEnum::DashMp4,
                             token,
                             addr,
                             DEFAULT_OFFSET_SECOND,
                         );
-                        match Register::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
-                            Ok(mut rx) => match rx.recv().await {
+                        match Register::get_playable_muxer_rx(&stream_id, MuxerEnum::DashMp4) {
+                            Ok(Some(mut rx)) => match rx.recv().await {
                                 Ok(pkt) => Response::builder()
                                     .header("Content-Type", "video/mp4")
                                     .body(Body::from(pkt.data.clone()))
                                     .unwrap(),
                                 Err(_) => res_404(),
                             },
-                            Err(_) => res_404(),
+                            Ok(None) | Err(_) => res_404(),
                         }
                     }
                     Err(_) => res_404(),

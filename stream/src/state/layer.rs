@@ -320,9 +320,11 @@ pub mod converter_layer {
 
     #[derive(Clone)]
     pub struct ConverterLayer {
+        pub codec_config: Option<Codec>,
         pub codec: Option<CodecLayer>,
         pub transcode: Option<TranscodeConfig>,
         pub muxer: MuxerLayer,
+        pub filter_config: Filter,
         pub filter: FilterLayer,
     }
 
@@ -334,12 +336,16 @@ pub mod converter_layer {
             output: &OutputKind,
         ) -> Self {
             let muxer = MuxerLayer::new(output);
+            let filter_config = filter.clone();
             let filter = FilterLayer::new(filter);
+            let codec_config = codec.clone();
             let codec = codec.map(CodecLayer::new);
             Self {
+                codec_config,
                 codec,
                 transcode,
                 muxer,
+                filter_config,
                 filter,
             }
         }

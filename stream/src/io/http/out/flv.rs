@@ -37,22 +37,24 @@ pub async fn handler(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
             )
             .await
             {
-                OutPlayKind::Play => match Register::get_muxer_rx(&ssrc, MuxerEnum::Flv) {
-                    Ok(rx) => {
-                        let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
-                            Some(Box::new(move || {
-                                Register::listen_output_timeout(
-                                    stream_id,
-                                    OutputEnum::HttpFlv,
-                                    token,
-                                    addr,
-                                    0,
-                                );
-                            }));
-                        send_frame(ssrc, rx, on_disconnect)
+                OutPlayKind::Play => {
+                    match Register::get_playable_muxer_rx(&stream_id, MuxerEnum::Flv) {
+                        Ok(Some(rx)) => {
+                            let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
+                                Some(Box::new(move || {
+                                    Register::listen_output_timeout(
+                                        stream_id,
+                                        OutputEnum::HttpFlv,
+                                        token,
+                                        addr,
+                                        0,
+                                    );
+                                }));
+                            send_frame(ssrc, rx, on_disconnect)
+                        }
+                        Ok(None) | Err(_) => res_404(),
                     }
-                    Err(_) => res_404(),
-                },
+                }
                 OutPlayKind::Forbid => res_401(),
                 OutPlayKind::Notfound => res_404(),
             }

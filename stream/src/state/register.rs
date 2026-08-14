@@ -64,6 +64,12 @@ fn publish_muxer_event(
     message_bus.try_publish(ContextEvent::Muxer(event))
 }
 
+fn shared_pipeline_matches(converter: &ConverterLayer, media_config: &MediaConfig) -> bool {
+    converter.codec_config.as_ref() == media_config.codec.as_ref()
+        && converter.transcode == media_config.transcode
+        && converter.filter_config == media_config.filter
+}
+
 fn live_output_contract(
     output_type: &str,
 ) -> GlobalResult<(&'static str, OutputKind, OutputEnum, &'static str)> {
@@ -141,6 +147,13 @@ fn close_output_layers(
     }
     muxer.close_by_muxer_type(MuxerEnum::from_output_enum(output_enum));
     true
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamOnlineStatus {
+    Offline,
+    Online,
+    Closing,
 }
 
 pub const DEFAULT_EXPIRES: Duration = Duration::from_secs(8);
@@ -1379,14 +1392,14 @@ impl Register {
             GlobalError::new_biz_error(
                 BaseErrorCode::NotFound.code(),
                 "SSRC不存在或已超时丢弃",
-                |msg| error!("stream_id = {}; {msg}", stream_id),
+                |_| {},
             )
         })?;
         if meta.closing.load(Ordering::Acquire) {
             return Err(GlobalError::new_biz_error(
                 BaseErrorCode::InvalidState.code(),
                 "stream is closing",
-                |msg| error!("{msg}: stream_id={stream_id}"),
+                |_| {},
             ));
         }
         let _hls_guard = (output_enum == OutputEnum::HlsFmp4).then(|| arc.hls_lease_lock.lock());
@@ -1501,6 +1514,36 @@ impl Register {
         }
     }
 
+    pub fn online(stream_key: StreamKey) -> StreamOnlineStatus {
+        let StreamKey { stream_id, ssrc } = stream_key;
+        let arc = Self::get().inner.clone();
+        let stream_id = match stream_id {
+            Some(stream_id) => Arc::<str>::from(stream_id),
+            None => match arc.rtp_gateway_map.get(&ssrc) {
+                Some(channel) => channel.stream_id.clone(),
+                None => return StreamOnlineStatus::Offline,
+            },
+        };
+        let Some(metadata) = arc.stream_metadata_map.get(&stream_id) else {
+            return StreamOnlineStatus::Offline;
+        };
+        if metadata.ssrc != ssrc {
+            return StreamOnlineStatus::Offline;
+        }
+        if metadata.closing.load(Ordering::Acquire) {
+            return StreamOnlineStatus::Closing;
+        }
+        if arc
+            .rtp_gateway_map
+            .get(&ssrc)
+            .is_some_and(|channel| channel.stream_id == stream_id)
+        {
+            StreamOnlineStatus::Online
+        } else {
+            StreamOnlineStatus::Offline
+        }
+    }
+
     pub fn active_stream_count() -> usize {
         Self::get().inner.stream_metadata_map.len()
     }
@@ -1587,6 +1630,20 @@ impl Register {
                 Some(meta) => meta.converter.muxer.get_rx(muxer_enum),
             },
         }
+    }
+
+    pub fn get_playable_muxer_rx(
+        stream_id: &str,
+        muxer_enum: MuxerEnum,
+    ) -> GlobalResult<Option<MuxPacketReceiver>> {
+        let arc = Self::get().inner.clone();
+        let Some(meta) = arc.stream_metadata_map.get(stream_id) else {
+            return Ok(None);
+        };
+        if meta.closing.load(Ordering::Acquire) {
+            return Ok(None);
+        }
+        meta.converter.muxer.get_rx(muxer_enum).map(Some)
     }
     pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedReceiver<T>>
     where
@@ -2089,7 +2146,7 @@ impl Register {
     pub fn init_media(media_config: MediaConfig) -> GlobalResult<u32> {
         let ssrc = media_config.ssrc;
         let time_schedule_key = TimeScheduleKey::RtpGateway(ssrc);
-        let stream_id: Arc<str> = Arc::from(media_config.stream_id);
+        let stream_id: Arc<str> = Arc::from(media_config.stream_id.as_str());
         let arc = Self::get().inner.clone();
         let (in_wait_timeout, out_idle_timeout) = arc
             .stream_conf
@@ -2112,10 +2169,10 @@ impl Register {
                     },
                 ));
             }
-            if meta.converter.transcode != media_config.transcode {
+            if !shared_pipeline_matches(&meta.converter, &media_config) {
                 return Err(GlobalError::new_biz_error(
                     BaseErrorCode::InvalidState.code(),
-                    "existing stream uses a different transcode profile",
+                    "existing stream uses a different shared media pipeline",
                     |msg| error!("{msg}: stream_id={stream_id}, ssrc={ssrc}"),
                 ));
             }
@@ -2547,16 +2604,20 @@ mod unknown_stream_tests {
         OutputRuntimeState, RtpChannel, StreamMetadata, UNKNOWN_STREAM_COOLDOWN_MS,
         UNKNOWN_STREAM_EXPIRE_MS, UnknownStreamObservation, close_output_layers,
         live_output_contract, mark_output_media_metadata_failed, output_media_metadata_is_valid,
-        publish_muxer_event, stream_config_ready, update_actual_media_profile_if_present,
-        update_output_media_metadata_if_present,
+        publish_muxer_event, shared_pipeline_matches, stream_config_ready,
+        update_actual_media_profile_if_present, update_output_media_metadata_if_present,
     };
+    use crate::state::layer::converter_layer::ConverterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
     use crate::state::layer::output_layer::OutputLayer;
     use base::bus::mpsc::TypedMessageBus;
     use base::dashmap::DashMap;
     use base::net::state::Protocol;
+    use gmv_domain::info::codec::Codec;
+    use gmv_domain::info::filter::{Capture, Filter};
+    use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec, TranscodeConfig};
     use gmv_domain::info::media_info_ext::MediaExt;
-    use gmv_domain::info::output::{HlsFmp4Output, HlsPlaylistProfile, OutputKind};
+    use gmv_domain::info::output::{HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, OutputKind};
     use gmv_protocol::common::v1::ErrorDetail;
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -2609,6 +2670,48 @@ mod unknown_stream_tests {
         assert!(!stream_config_ready(None, origin));
         assert!(!stream_config_ready(Some(&media_ext), None));
         assert!(stream_config_ready(Some(&media_ext), origin));
+    }
+
+    #[test]
+    fn shared_pipeline_ignores_muxer_but_rejects_codec_transcode_or_filter_changes() {
+        let transcode = Some(TranscodeConfig {
+            audio_codec: Some(OutputAudioCodec::Aac),
+        });
+        let converter = ConverterLayer::new(
+            Some(Codec::H264),
+            transcode.clone(),
+            Filter::default(),
+            &OutputKind::HlsFmp4(HlsFmp4Output {
+                fmt: Default::default(),
+                playlist_profile: HlsPlaylistProfile::Standard,
+            }),
+        );
+        let mut requested = MediaConfig {
+            ssrc: 200_000_021,
+            stream_id: "shared-pipeline".to_string(),
+            in_wait_timeout: None,
+            out_idle_timeout: None,
+            codec: Some(Codec::H264),
+            transcode,
+            filter: Filter::default(),
+            output: OutputKind::HttpFlv(HttpFlvOutput {
+                fmt: Default::default(),
+            }),
+            session_hook_endpoint: None,
+        };
+
+        assert!(shared_pipeline_matches(&converter, &requested));
+
+        requested.codec = Some(Codec::H265);
+        assert!(!shared_pipeline_matches(&converter, &requested));
+        requested.codec = Some(Codec::H264);
+        requested.transcode = None;
+        assert!(!shared_pipeline_matches(&converter, &requested));
+        requested.transcode = converter.transcode.clone();
+        requested.filter = Filter {
+            capture: Some(Capture {}),
+        };
+        assert!(!shared_pipeline_matches(&converter, &requested));
     }
 
     #[test]

@@ -14,12 +14,13 @@ use base::dashmap::mapref::entry::Entry;
 use base::log::warn;
 use base::once_cell::sync::Lazy;
 use base::tokio::sync::Mutex as AsyncMutex;
+use base::tokio::sync::Notify;
 use base::tokio::sync::mpsc::Sender;
-use base::tokio::time::Instant;
+use base::tokio::time::{Instant, timeout};
 use gmv_domain::info::media_info::MediaConfig;
 use gmv_domain::info::obj::BaseStreamInfo;
 
-use crate::state::model::LiveStreamProfile;
+use crate::state::model::{CustomMediaConfig, LiveStreamProfile};
 
 static GENERAL_CACHE: Lazy<Cache> = Lazy::new(Cache::init);
 static STREAM_CLOSE_GENERATION: AtomicU64 = AtomicU64::new(1);
@@ -290,6 +291,7 @@ impl Cache {
                     restored,
                     guard_lease,
                     lifecycle: StreamLifecycle::Playing,
+                    close_notify: Arc::new(Notify::new()),
                 });
                 true
             }
@@ -385,10 +387,74 @@ impl Cache {
             .map(|item| (item.device_id.clone(), item.channel_id.clone(), item.am))
     }
 
+    pub fn stream_live_profile(stream_id: &str) -> Option<LiveStreamProfile> {
+        GENERAL_CACHE.shared.device_map.iter().find_map(|entry| {
+            entry
+                .value()
+                .iter()
+                .find(|stream| stream.stream_id == stream_id && stream.am == AccessMode::Live)
+                .map(|stream| stream.stream_profile)
+        })
+    }
+
+    pub fn live_profile_stream(
+        device_id: &str,
+        channel_id: &str,
+        stream_profile: LiveStreamProfile,
+    ) -> Option<String> {
+        GENERAL_CACHE
+            .shared
+            .device_map
+            .get(device_id)
+            .and_then(|streams| {
+                streams
+                    .iter()
+                    .find(|stream| {
+                        stream.channel_id == channel_id
+                            && stream.am == AccessMode::Live
+                            && stream.stream_profile == stream_profile
+                    })
+                    .map(|stream| stream.stream_id.clone())
+            })
+    }
+
+    pub fn live_pipeline_matches(stream_id: &str, requested: &CustomMediaConfig) -> Option<bool> {
+        GENERAL_CACHE.shared.device_map.iter().find_map(|entry| {
+            entry
+                .value()
+                .iter()
+                .find(|stream| stream.stream_id == stream_id && stream.am == AccessMode::Live)
+                .and_then(|stream| stream.config.as_ref())
+                .map(|config| {
+                    config.codec == requested.codec
+                        && config.transcode == requested.transcode
+                        && config.filter == requested.filter
+                })
+        })
+    }
+
+    pub async fn wait_stream_terminal(stream_id: &str, wait: Duration) -> bool {
+        let notify = match GENERAL_CACHE.shared.stream_map.get(stream_id) {
+            None => return true,
+            Some(stream) if stream.is_closing() => stream.close_notify.clone(),
+            Some(_) => return false,
+        };
+        let notified = notify.notified();
+        if !Self::stream_is_closing(stream_id) {
+            return !GENERAL_CACHE.shared.stream_map.contains_key(stream_id);
+        }
+        if timeout(wait, notified).await.is_err() {
+            return false;
+        }
+        !GENERAL_CACHE.shared.stream_map.contains_key(stream_id)
+    }
+
     pub fn stream_map_remove(stream_id: &String, gmv_token: Option<&String>) {
         match gmv_token {
             None => {
-                GENERAL_CACHE.shared.stream_map.remove(stream_id);
+                if let Some((_, stream)) = GENERAL_CACHE.shared.stream_map.remove(stream_id) {
+                    stream.close_notify.notify_waiters();
+                }
             }
             Some(token) => match GENERAL_CACHE.shared.stream_map.entry(stream_id.to_string()) {
                 Entry::Occupied(mut occ) => {
@@ -608,6 +674,7 @@ impl Cache {
         generation: u64,
     ) -> Option<StreamCloseInfo> {
         Self::device_map_remove_stream(&stream.device_id, stream_id);
+        stream.close_notify.notify_waiters();
         if let Some(closing_generation) = stream.closing_generation() {
             let _ = Register::scheduler().remove_register(
                 &crate::register::core::TimeScheduleKey::StreamClosing(
@@ -1534,6 +1601,7 @@ struct StreamTable {
     restored: bool,
     guard_lease: Option<GuardLease>,
     lifecycle: StreamLifecycle,
+    close_notify: Arc<Notify>,
 }
 
 enum StreamLifecycle {
@@ -1761,6 +1829,10 @@ impl AccessMode {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use base::tokio::sync::Notify;
+
     use crate::state::session::{
         AccessMode, Cache, GENERAL_CACHE, StateEntry, StateValue, StateWaiter, StreamLifecycle,
         StreamTable,
@@ -1780,6 +1852,7 @@ mod tests {
             restored: false,
             guard_lease: None,
             lifecycle: StreamLifecycle::Playing,
+            close_notify: Arc::new(Notify::new()),
         }
     }
 
@@ -1885,6 +1958,69 @@ mod tests {
         );
 
         Cache::stream_map_remove(&stream_id, None);
+    }
+
+    #[test]
+    fn closing_waiter_completes_only_after_stream_removal() {
+        base::tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let stream_id = "closing-wait-notification".to_string();
+                Cache::stream_map_remove(&stream_id, None);
+                Cache::stream_map_insert_info(
+                    stream_id.clone(),
+                    "device-id".to_string(),
+                    "channel-id".to_string(),
+                    200_009_997,
+                    String::new(),
+                    "media-close-test".to_string(),
+                    "call-close-test".to_string(),
+                    1,
+                    AccessMode::Live,
+                );
+                Cache::stream_close_begin(&stream_id, "last_subscription_released")
+                    .expect("close should begin");
+
+                assert!(Cache::stream_is_closing(&stream_id));
+                assert!(
+                    !Cache::wait_stream_terminal(&stream_id, std::time::Duration::from_millis(1))
+                        .await
+                );
+
+                let waiting_stream_id = stream_id.clone();
+                let waiter = base::tokio::spawn(async move {
+                    Cache::wait_stream_terminal(
+                        &waiting_stream_id,
+                        std::time::Duration::from_secs(1),
+                    )
+                    .await
+                });
+                base::tokio::task::yield_now().await;
+                Cache::stream_map_remove(&stream_id, None);
+
+                assert!(waiter.await.expect("waiter should finish"));
+            });
+    }
+
+    #[test]
+    fn live_profile_setup_locks_are_isolated_from_playback_and_each_other() {
+        let main = Cache::stream_setup_lock_with_discriminator(
+            "device-lock",
+            "channel-lock",
+            AccessMode::Live,
+            "main",
+        );
+        let sub = Cache::stream_setup_lock_with_discriminator(
+            "device-lock",
+            "channel-lock",
+            AccessMode::Live,
+            "sub",
+        );
+        let playback = Cache::stream_setup_lock("device-lock", "channel-lock", AccessMode::Back);
+
+        assert!(!std::sync::Arc::ptr_eq(&main, &sub));
+        assert!(!std::sync::Arc::ptr_eq(&main, &playback));
+        assert!(!std::sync::Arc::ptr_eq(&sub, &playback));
     }
 
     #[test]

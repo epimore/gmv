@@ -137,7 +137,7 @@ pub async fn m3u8_handler(
         OutPlayKind::Notfound => return res_404(),
         OutPlayKind::Play => {}
     }
-    let store = match ensure_store(ssrc).await {
+    let store = match ensure_store(&stream_id, ssrc).await {
         Some(store) => store,
         None => return res_404(),
     };
@@ -171,13 +171,13 @@ pub async fn init_mp4_handler(
     token: Arc<str>,
     query: &HashMap<String, String>,
 ) -> Response<Body> {
-    let Some(base) = Register::get_base_stream_info_by_stream_id(stream_id) else {
+    let Some(base) = Register::get_base_stream_info_by_stream_id(stream_id.clone()) else {
         return res_404();
     };
     if !Register::check_token(&(token, Arc::from(base.stream_id.as_str()))) {
         return res_401();
     }
-    let Some(store) = ensure_store(base.rtp_info.ssrc).await else {
+    let Some(store) = ensure_store(&stream_id, base.rtp_info.ssrc).await else {
         return res_404();
     };
     let state = store.state.read().await;
@@ -203,10 +203,10 @@ pub async fn segment_mp4_handler(segment_id: Arc<str>, token: Arc<str>) -> Respo
     let Some(base) = Register::get_base_stream_info_by_stream_id(stream_id.clone()) else {
         return res_404();
     };
-    if !Register::check_token(&(token, stream_id)) {
+    if !Register::check_token(&(token, stream_id.clone())) {
         return res_401();
     }
-    let Some(store) = ensure_store(base.rtp_info.ssrc).await else {
+    let Some(store) = ensure_store(&stream_id, base.rtp_info.ssrc).await else {
         return res_404();
     };
     if let MediaResource::Part {
@@ -237,10 +237,11 @@ pub async fn segment_ts_handler() -> Response<Body> {
         .expect("valid HLS-TS unsupported response")
 }
 
-async fn ensure_store(ssrc: u32) -> Option<Arc<HlsStoreHandle>> {
+async fn ensure_store(stream_id: &str, ssrc: u32) -> Option<Arc<HlsStoreHandle>> {
     let existing = cloned_store(&HLS_STORES, ssrc);
-    let mut rx = match Register::get_muxer_rx(&ssrc, MuxerEnum::HlsMp4) {
-        Ok(rx) => rx,
+    let mut rx = match Register::get_playable_muxer_rx(stream_id, MuxerEnum::HlsMp4) {
+        Ok(Some(rx)) => rx,
+        Ok(None) => return None,
         Err(_) => return existing,
     };
     let channel_id = rx.channel_id();

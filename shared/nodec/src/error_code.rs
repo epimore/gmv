@@ -24,6 +24,7 @@ base::define_errors! {
         PtzRejected => (4001, "云台控制未被设备接受，请确认通道支持云台"),
         SnapshotRejected => (4002, "抓拍请求未被设备接受，请确认设备在线且支持抓拍"),
         StreamProfileMismatch => (4003, "设备未切换到所选码流，请确认设备支持该主/辅码流档位"),
+        StreamClosing => (4004, "直播流正在关闭，请稍后重试", retryable = true),
     }
 }
 
@@ -54,6 +55,7 @@ impl GmvErrorCode {
             Self::PtzRejected => "ptz_rejected",
             Self::SnapshotRejected => "snapshot_rejected",
             Self::StreamProfileMismatch => "stream_profile_mismatch",
+            Self::StreamClosing => "stream_closing",
         }
     }
 
@@ -83,6 +85,7 @@ impl GmvErrorCode {
             "ptz_failed" | "ptz_rejected" => Some(Self::PtzRejected),
             "snapshot_failed" | "snapshot_rejected" => Some(Self::SnapshotRejected),
             "stream_profile_mismatch" => Some(Self::StreamProfileMismatch),
+            "stream_closing" => Some(Self::StreamClosing),
             _ => None,
         }
     }
@@ -103,5 +106,18 @@ mod tests {
             Some(4003)
         );
         assert!(!code.retryable());
+    }
+
+    #[test]
+    fn stream_closing_has_stable_retryable_api_contract() {
+        let code = GmvErrorCode::StreamClosing;
+
+        assert_eq!(code as u16, 4004);
+        assert_eq!(code.api_code(), "stream_closing");
+        assert_eq!(
+            GmvErrorCode::from_api_code(code.api_code()).map(|code| code as u16),
+            Some(4004)
+        );
+        assert!(code.retryable());
     }
 }

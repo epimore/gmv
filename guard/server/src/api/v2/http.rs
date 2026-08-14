@@ -10338,7 +10338,8 @@ fn status_for_guard_error_code(code: GmvGuardErrorCode) -> StatusCode {
         | GmvGuardErrorCode::DuplicateEvent
         | GmvGuardErrorCode::PtzRejected
         | GmvGuardErrorCode::SnapshotRejected
-        | GmvGuardErrorCode::StreamProfileMismatch => StatusCode::CONFLICT,
+        | GmvGuardErrorCode::StreamProfileMismatch
+        | GmvGuardErrorCode::StreamClosing => StatusCode::CONFLICT,
     }
 }
 

@@ -802,6 +802,7 @@ import StatusPill from '@/components/StatusPill.vue';
 import { GmvMultiGrid, GmvPlayerView, type GmvCloudRecordRange, type GmvCodec, type GmvPlayerControlsConfig, type GmvPtzCommand, type GmvSource, type GmvStreamProfileOption, type GmvViewCapabilities } from 'gmv-player';
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime } from '@/utils/dateTime';
+import { applyStreamOutputState } from '@/utils/streamOutputState';
 
 const auth = useAuthStore();
 const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
@@ -869,7 +870,7 @@ const networkSuggestionOpen = ref(false);
 const singlePendingSwitch = ref<{
   previous_type: LiveOutputType;
   previous_output?: StreamOutputSummary;
-  previous_endpoint: string;
+  previous_stream: StreamSummary;
   next_output: StreamOutputSummary;
 }>();
 const lastAction = ref('');
@@ -1027,6 +1028,7 @@ interface MultiViewCell {
   pending_switch?: {
     previous_type: LiveOutputType;
     previous_output?: StreamOutputSummary;
+    previous_stream: StreamSummary;
     previous_sources: GmvSource[];
     next_output: StreamOutputSummary;
   };
@@ -1270,38 +1272,6 @@ function mediaStatePollDelay() {
   return Math.round(base * (0.9 + (Math.abs(hash) % 201) / 1_000));
 }
 
-function preservePlaybackToken(currentEndpoint: string, nextEndpoint: string) {
-  const endpoint = nextEndpoint || currentEndpoint;
-  const token = currentEndpoint
-    .split('?', 2)[1]
-    ?.split('&')
-    .find((parameter) => parameter.startsWith('gmv-token='));
-  if (!endpoint || !token) return endpoint;
-  const [base, query = ''] = endpoint.split('?', 2);
-  const parameters = query
-    .split('&')
-    .filter((parameter) => parameter && !parameter.startsWith('gmv-token='));
-  parameters.push(token);
-  return `${base}?${parameters.join('&')}`;
-}
-
-function applyOutputState(stream: StreamSummary, output: StreamOutputSummary): StreamSummary {
-  return {
-    ...stream,
-    endpoint: preservePlaybackToken(stream.endpoint, output.endpoint),
-    video_codec: output.video_codec || stream.video_codec,
-    audio_codec: output.audio_codec || stream.audio_codec,
-    mime_codec: output.mime_codec || stream.mime_codec,
-    source_audio_state: output.source_audio_state,
-    output_audio_mode: output.output_audio_mode,
-    audio_recovery_eligible: output.audio_recovery_eligible,
-    late_track_watch: output.late_track_watch,
-    audio_sample_rate: output.audio_sample_rate,
-    audio_channels: output.audio_channels,
-    output_generation: output.generation,
-  };
-}
-
 async function pollMediaStates() {
   if (mediaStatePollInFlight || !activeMediaStateKey.value || multiViewDisposed) return;
   mediaStatePollInFlight = true;
@@ -1324,7 +1294,7 @@ async function pollMediaStates() {
           ?? outputs.find((item) => item.state === 'ready');
         if (output) {
           singleOutput.value = output;
-          lastStream.value = applyOutputState(currentSingle, output);
+          lastStream.value = applyStreamOutputState(currentSingle, output);
         }
       }
       for (const cell of multiCells.value.filter((item) => item.stream?.stream_id === streamId)) {
@@ -1334,7 +1304,7 @@ async function pollMediaStates() {
         if (!output || !cell.stream) continue;
         const previousState = `${cell.stream.source_audio_state}:${cell.stream.output_audio_mode}:${cell.stream.output_generation}`;
         cell.output = output;
-        cell.stream = applyOutputState(cell.stream, output);
+        cell.stream = applyStreamOutputState(cell.stream, output);
         const nextState = `${cell.stream.source_audio_state}:${cell.stream.output_audio_mode}:${cell.stream.output_generation}`;
         if (previousState !== nextState) cell.sources = streamSources(cell.stream, cell.mode);
       }
@@ -2708,6 +2678,7 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       await closeStreamOutput(cell.stream.stream_id, nextOutput.output_id).catch(() => undefined);
       return;
     }
+    const nextStream = applyStreamOutputState(current.stream, nextOutput);
     setChannelOutputTypeForMode(cell.channel, cell.mode, outputType);
     setSelectedMultiOutputType(cell.key, outputType);
     upsertMultiCell({
@@ -2715,10 +2686,12 @@ async function handleMultiOutputTypeChange(event: { index: number; outputType: s
       operation: undefined,
       output_type: outputType,
       output: nextOutput,
-      sources: streamSources({ ...current.stream, endpoint: nextOutput.endpoint }),
+      stream: nextStream,
+      sources: streamSources(nextStream, current.mode),
       pending_switch: {
         previous_type: previousType,
         previous_output: previousOutput,
+        previous_stream: current.stream,
         previous_sources: previousSources,
         next_output: nextOutput,
       },
@@ -2857,6 +2830,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
     ...cell,
     output_type: pending.previous_type,
     output: pending.previous_output,
+    stream: pending.previous_stream,
     sources: pending.previous_sources,
     pending_switch: undefined,
     output_switching: false,
@@ -2897,6 +2871,7 @@ async function handleMultiPlaybackSwitchCancel(event: { index: number }) {
     ...cell,
     output_type: pending.previous_type,
     output: pending.previous_output,
+    stream: pending.previous_stream,
     sources: pending.previous_sources,
     pending_switch: undefined,
     output_switching: false,
@@ -3123,13 +3098,13 @@ async function handleSingleOutputTypeChange(value: string) {
     singlePendingSwitch.value = {
       previous_type: previousType,
       previous_output: singleOutput.value,
-      previous_endpoint: stream.endpoint,
+      previous_stream: stream,
       next_output: nextOutput,
     };
     singleOutput.value = nextOutput;
     singleMediaOperation.value = undefined;
     setChannelOutputTypeForMode(channel, lastAction.value === '历史回放' ? 'playback' : 'live', outputType);
-    lastStream.value = { ...stream, endpoint: nextOutput.endpoint };
+    lastStream.value = applyStreamOutputState(stream, nextOutput);
   } catch (error) {
     singleMediaOperation.value = undefined;
     singleOutputSwitching.value = false;
@@ -3235,7 +3210,7 @@ async function handleSinglePlaybackError(event: { message: string }) {
   singleOutput.value = pending.previous_output;
   singlePendingSwitch.value = undefined;
   singleOutputSwitching.value = false;
-  lastStream.value = { ...stream, endpoint: pending.previous_endpoint };
+  lastStream.value = pending.previous_stream;
   ElMessage.error(`切换播放方式失败，已恢复原播放：${event.message}`);
 }
 
@@ -3258,7 +3233,7 @@ async function handleSinglePlaybackSwitchCancel() {
   singleOutput.value = pending.previous_output;
   singlePendingSwitch.value = undefined;
   singleOutputSwitching.value = false;
-  lastStream.value = { ...stream, endpoint: pending.previous_endpoint };
+  lastStream.value = pending.previous_stream;
   ElMessage.info('已保持当前播放方式');
 }
 

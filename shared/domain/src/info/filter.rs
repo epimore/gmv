@@ -1,11 +1,11 @@
 use base::serde::{Deserialize, Serialize};
 
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(crate = "base::serde")]
 pub struct Capture {}
 #[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+#[derive(Serialize, Deserialize, Debug, Default, Clone, PartialEq, Eq)]
 #[serde(crate = "base::serde")]
 pub struct Filter {
     //抽图
