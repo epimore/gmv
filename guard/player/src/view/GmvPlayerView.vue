@@ -838,7 +838,8 @@ function notifyControlsActivity() {
   controlsRef.value?.notifyActivity();
 }
 
-function handlePlayerPointerLeave() {
+function handlePlayerPointerLeave(event: PointerEvent) {
+  if (event.pointerType === 'touch') return;
   controlsRef.value?.notifySurfaceLeave();
 }
 

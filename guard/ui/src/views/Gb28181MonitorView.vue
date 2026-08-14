@@ -1017,6 +1017,10 @@ interface MultiViewCell {
   playback_start_sec?: number;
   playback_end_sec?: number;
   playback_position_sec?: number;
+  playback_anchor_position_sec?: number;
+  playback_anchor_media_time_ms?: number;
+  playback_last_media_time_ms?: number;
+  playback_seek_pending?: boolean;
   playback_generation?: number;
   playback_rate?: number;
   playback_ack_rate?: number;
@@ -1970,6 +1974,10 @@ async function confirmMultiPlayback(channel: SelectedChannelRef) {
     playback_start_sec: startSec,
     playback_end_sec: endSec,
     playback_position_sec: startSec,
+    playback_anchor_position_sec: startSec,
+    playback_anchor_media_time_ms: undefined,
+    playback_last_media_time_ms: undefined,
+    playback_seek_pending: false,
     playback_generation: 0,
     playback_rate: multiDesiredRate.value,
     playback_ack_rate: 1,
@@ -1996,6 +2004,10 @@ async function stopConfirmedMultiPlayback(channel: SelectedChannelRef) {
     operation: undefined,
     playback_generation: 0,
     playback_position_sec: cell.playback_start_sec,
+    playback_anchor_position_sec: cell.playback_start_sec,
+    playback_anchor_media_time_ms: undefined,
+    playback_last_media_time_ms: undefined,
+    playback_seek_pending: false,
     playback_ack_rate: 1,
     playback_state: undefined,
     status: 'idle',
@@ -2019,6 +2031,10 @@ async function replayMultiPlayback(channel: SelectedChannelRef) {
     sources: [],
     operation: undefined,
     playback_position_sec: cell.playback_start_sec,
+    playback_anchor_position_sec: cell.playback_start_sec,
+    playback_anchor_media_time_ms: undefined,
+    playback_last_media_time_ms: undefined,
+    playback_seek_pending: false,
     playback_generation: 0,
     playback_ack_rate: 1,
     playback_state: 'playing',
@@ -2151,6 +2167,9 @@ async function startMultiCell(cell: MultiViewCell) {
       await stopMultiStream(stream);
       return;
     }
+    const playbackPositionSec = cell.mode === 'playback'
+      ? cell.playback_position_sec ?? stream.playback_start_time_sec ?? cell.playback_start_sec
+      : undefined;
     upsertMultiCell({
       ...cell,
       stream,
@@ -2161,7 +2180,11 @@ async function startMultiCell(cell: MultiViewCell) {
       status: stream.state === 'running' ? 'playing' : 'online',
       playback_start_sec: cell.mode === 'playback' ? stream.playback_start_time_sec ?? cell.playback_start_sec : undefined,
       playback_end_sec: cell.mode === 'playback' ? stream.playback_end_time_sec ?? cell.playback_end_sec : undefined,
-      playback_position_sec: cell.mode === 'playback' ? stream.playback_start_time_sec ?? cell.playback_position_sec : undefined,
+      playback_position_sec: playbackPositionSec,
+      playback_anchor_position_sec: playbackPositionSec,
+      playback_anchor_media_time_ms: undefined,
+      playback_last_media_time_ms: undefined,
+      playback_seek_pending: false,
       playback_generation: cell.mode === 'playback' ? stream.playback_generation ?? 0 : undefined,
       playback_rate: cell.mode === 'playback' ? cell.playback_rate ?? multiDesiredRate.value : undefined,
       playback_ack_rate: cell.mode === 'playback' ? 1 : undefined,
@@ -2583,6 +2606,21 @@ async function handleMultiPlaybackSeek(event: { index: number; payload: { timeMs
   const target = requireMultiPlayback(cell);
   if (!target || !cell.playback_start_sec || !cell.playback_end_sec) return;
   const positionSec = Math.min(cell.playback_end_sec, Math.max(cell.playback_start_sec, cell.playback_start_sec + event.payload.timeMs / 1_000));
+  const previousProgress = {
+    playback_position_sec: cell.playback_position_sec,
+    playback_anchor_position_sec: cell.playback_anchor_position_sec,
+    playback_anchor_media_time_ms: cell.playback_anchor_media_time_ms,
+    playback_last_media_time_ms: cell.playback_last_media_time_ms,
+  };
+  upsertMultiCell({
+    ...cell,
+    playback_position_sec: positionSec,
+    playback_anchor_position_sec: positionSec,
+    playback_anchor_media_time_ms: undefined,
+    playback_last_media_time_ms: undefined,
+    playback_seek_pending: true,
+  });
+  multiGridRef.value?.confirmPlaybackProgress(event.index, (positionSec - cell.playback_start_sec) * 1_000);
   try {
     const result = await seekGbPlayback(target.playbackId, {
       request_id: `ui-multi-seek-${Date.now()}-${cell.channel_id}`,
@@ -2591,27 +2629,68 @@ async function handleMultiPlaybackSeek(event: { index: number; payload: { timeMs
       expected_generation: cell.playback_generation ?? 0,
     });
     const current = multiCells.value.find((item) => item.key === cell.key);
-    if (current) upsertMultiCell({ ...current, playback_generation: result.generation, playback_position_sec: positionSec, error: undefined });
+    if (current) upsertMultiCell({
+      ...current,
+      playback_generation: result.generation,
+      playback_position_sec: positionSec,
+      playback_anchor_position_sec: positionSec,
+      playback_anchor_media_time_ms: undefined,
+      playback_last_media_time_ms: undefined,
+      playback_seek_pending: false,
+      error: undefined,
+    });
     multiGridRef.value?.confirmPlaybackProgress(event.index, (positionSec - cell.playback_start_sec) * 1_000);
   } catch (error) {
     const current = multiCells.value.find((item) => item.key === cell.key);
-    if (current) upsertMultiCell({ ...current, error: errorMessage(error, '定位失败') });
+    if (current) upsertMultiCell({
+      ...current,
+      ...previousProgress,
+      playback_seek_pending: false,
+      error: errorMessage(error, '定位失败'),
+    });
     ElMessage.error(errorMessage(error, `${cell.title} 定位失败`));
-    const currentMs = Math.max(0, ((cell.playback_position_sec ?? cell.playback_start_sec) - cell.playback_start_sec) * 1_000);
+    const currentMs = Math.max(0, ((previousProgress.playback_position_sec ?? cell.playback_start_sec) - cell.playback_start_sec) * 1_000);
     multiGridRef.value?.confirmPlaybackProgress(event.index, currentMs);
   }
 }
 async function handleMultiPlaybackProgress(event: { index: number; payload: { mediaTimeMs: number } }) {
   const cell = multiCellAtVisibleIndex(event.index);
   if (!cell || cell.mode !== 'playback' || !cell.playback_start_sec || !cell.playback_end_sec) return;
-  const positionSec = Math.min(cell.playback_end_sec, cell.playback_start_sec + event.payload.mediaTimeMs / 1_000);
+  if (cell.playback_seek_pending) return;
+  let anchorPositionSec = cell.playback_anchor_position_sec ?? cell.playback_position_sec ?? cell.playback_start_sec;
+  let anchorMediaTimeMs = cell.playback_anchor_media_time_ms;
+  if (cell.playback_last_media_time_ms !== undefined && event.payload.mediaTimeMs + 1_000 < cell.playback_last_media_time_ms) {
+    anchorPositionSec = cell.playback_position_sec ?? anchorPositionSec;
+    anchorMediaTimeMs = event.payload.mediaTimeMs;
+  }
+  if (anchorMediaTimeMs === undefined) anchorMediaTimeMs = event.payload.mediaTimeMs;
+  const elapsedMs = Math.max(0, event.payload.mediaTimeMs - anchorMediaTimeMs);
+  const positionSec = Math.min(cell.playback_end_sec, anchorPositionSec + elapsedMs / 1_000);
   if (positionSec >= cell.playback_end_sec && cell.status !== 'stopped') {
     await disposeMultiCellMedia(cell);
-    upsertMultiCell({ ...cell, stream: undefined, sources: [], operation: undefined, playback_position_sec: positionSec, playback_state: undefined, status: 'stopped' });
+    upsertMultiCell({
+      ...cell,
+      stream: undefined,
+      sources: [],
+      operation: undefined,
+      playback_position_sec: positionSec,
+      playback_anchor_position_sec: positionSec,
+      playback_anchor_media_time_ms: anchorMediaTimeMs,
+      playback_last_media_time_ms: event.payload.mediaTimeMs,
+      playback_seek_pending: false,
+      playback_state: undefined,
+      status: 'stopped',
+    });
     return;
   }
   multiGridRef.value?.confirmPlaybackProgress(event.index, (positionSec - cell.playback_start_sec) * 1_000);
-  upsertMultiCell({ ...cell, playback_position_sec: positionSec });
+  upsertMultiCell({
+    ...cell,
+    playback_position_sec: positionSec,
+    playback_anchor_position_sec: anchorPositionSec,
+    playback_anchor_media_time_ms: anchorMediaTimeMs,
+    playback_last_media_time_ms: event.payload.mediaTimeMs,
+  });
 }
 async function handleMultiCloudRecordCreate(event: { index: number; payload: { startTimeMs: number; endTimeMs: number } }) {
   const cell = multiCellAtVisibleIndex(event.index);

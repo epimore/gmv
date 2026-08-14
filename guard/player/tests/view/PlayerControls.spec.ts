@@ -557,6 +557,55 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
+  it("iPad 触屏 contact 结束不会关闭更多菜单且下级操作可完成", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        capabilities: { streamProfile: true },
+        outputType: "flv",
+        outputOptions: [
+          { value: "flv", label: "HTTP-FLV" },
+          { value: "hls", label: "HLS-fMP4" },
+        ],
+        streamProfile: "main",
+        streamProfileOptions: [
+          { value: "main", label: "主码流" },
+          { value: "sub", label: "辅码流" },
+        ],
+        controls: {
+          items: ["play"],
+          overflowItems: ["info", "streamProfile", "outputType"],
+          visibility: "always",
+        },
+      },
+      attachTo: document.body,
+    });
+
+    const dispatchTouchLeave = async () => {
+      const event = new Event("pointerleave");
+      Object.defineProperty(event, "pointerType", { value: "touch" });
+      wrapper.get(".gmv-player").element.dispatchEvent(event);
+      await nextTick();
+    };
+
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    await dispatchTouchLeave();
+    expect(wrapper.find(".overflow-menu").exists()).toBe(true);
+    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(true);
+
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    await dispatchTouchLeave();
+    await wrapper.get('[aria-label="切换主辅码流"]').setValue("sub");
+    expect(wrapper.emitted("streamProfileChange")?.at(-1)).toEqual([{ profile: "sub" }]);
+
+    await wrapper.get('[aria-label="更多操作"]').trigger("click");
+    await dispatchTouchLeave();
+    await wrapper.get('[aria-label="媒体输出格式"]').setValue("hls");
+    expect(wrapper.emitted("outputTypeChange")?.at(-1)).toEqual(["hls"]);
+    wrapper.unmount();
+  });
+
   it("发送类型化 action 并携带选择值", async () => {
     const wrapper = mountControls({
       items: ["snapshot", "outputType", "info", "playbackRate"],

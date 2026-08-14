@@ -9,6 +9,8 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   let previewOutputType = '';
   let previewStarts = 0;
   let playbackOutputType = '';
+  let multiSeekRequests = 0;
+  let releaseMultiSeek: (() => void) | undefined;
   let imageAccesses = 0;
   const releasedStreams: string[] = [];
   let coverUpdates = 0;
@@ -142,12 +144,23 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
         body = previewStream;
       }
     } else if (path.endsWith('/playback') && request.method() === 'POST') {
-      playbackOutputType = request.postDataJSON().output_type;
+      const playbackRequest = request.postDataJSON();
+      playbackOutputType = playbackRequest.output_type;
       body = {
         operation_id: 'playback-operation-1', state: 'ready', stage: 'ready', elapsed_ms: 10,
         last_progress_at_ms: Date.now(), checkpoint_ms: 8_000, hard_timeout_ms: 30_000,
-        can_continue: false, result: playbackStream, error: null,
+        can_continue: false,
+        result: {
+          ...playbackStream,
+          playback_start_time_sec: playbackRequest.start_time_sec,
+          playback_end_time_sec: playbackRequest.end_time_sec,
+        },
+        error: null,
       };
+    } else if (path.endsWith('/playbacks/playback-1/seek') && request.method() === 'POST') {
+      multiSeekRequests += 1;
+      await new Promise<void>((resolve) => { releaseMultiSeek = resolve; });
+      body = { generation: 2 };
     }
     else if (path.endsWith('/records/query')) {
       recordQueries += 1;
@@ -329,4 +342,53 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   const lockedDown = page.getByRole('button', { name: '截取录像创建中' });
   await expect(lockedDown).toBeDisabled();
   await expect(lockedDown.locator('.clip-down-spinner')).toBeVisible();
+
+  await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
+  await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
+  await page.getByLabel('加入多画面回放').click();
+
+  const defaultRangeInputs = page.locator('.multi-default-range input');
+  await defaultRangeInputs.nth(0).fill('2026-07-22 10:00:00');
+  await defaultRangeInputs.nth(0).press('Enter');
+  await defaultRangeInputs.nth(1).fill('2026-07-22 10:30:00');
+  await defaultRangeInputs.nth(1).press('Enter');
+  await page.locator('.device-channel-tree .tree-device-node').first().click();
+  await page.locator('.tree-channel-node').first().click();
+  await page.getByRole('button', { name: '确认播放', exact: true }).click();
+
+  const multiProgress = page.locator('.grid-cell').first().getByLabel('回放进度');
+  await expect(multiProgress).toBeVisible();
+  const emitMultiProgress = async (mediaTimeMs: number) => {
+    await page.locator('.grid-cell .gmv-player').first().evaluate((element, value) => {
+      const instance = (element as HTMLElement & {
+        __vueParentComponent?: { emit: (event: string, payload: unknown) => void };
+      }).__vueParentComponent;
+      if (!instance) throw new Error('GmvPlayerView instance is unavailable');
+      instance.emit('playbackProgress', { mediaTimeMs: value });
+    }, mediaTimeMs);
+  };
+
+  await emitMultiProgress(0);
+  await emitMultiProgress(120_000);
+  await expect(multiProgress).toHaveValue('120000');
+  await multiProgress.evaluate((element) => {
+    const input = element as HTMLInputElement;
+    input.value = '600000';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect.poll(() => multiSeekRequests).toBe(1);
+  await emitMultiProgress(180_000);
+  await expect(multiProgress).toHaveValue('600000');
+
+  const seekResponse = page.waitForResponse((response) => (
+    new URL(response.url()).pathname.endsWith('/playbacks/playback-1/seek')
+  ));
+  releaseMultiSeek?.();
+  await seekResponse;
+  await emitMultiProgress(240_000);
+  await expect(multiProgress).toHaveValue('600000');
+  await emitMultiProgress(0);
+  await expect(multiProgress).toHaveValue('600000');
+  await emitMultiProgress(5_000);
+  await expect(multiProgress).toHaveValue('605000');
 });
