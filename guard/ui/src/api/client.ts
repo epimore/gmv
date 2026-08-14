@@ -188,7 +188,12 @@ export const createStreamOutput = async (
   return waitMediaOperation(operation, options);
 };
 export const closeStreamOutput = (streamId: string, outputId: string) => request<{ closed: boolean; output_id: string }>('/streams/' + encodeURIComponent(streamId) + '/outputs/' + encodeURIComponent(outputId) + '/close', { method: 'POST', body: '{}' });
-export const listStreamOutputs = (streamId: string) => request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs', {}, true, 2_000);
+export const listStreamOutputs = (streamId: string, subscriptionId?: string) => {
+  const query = new URLSearchParams();
+  if (subscriptionId) query.set('subscription_id', subscriptionId);
+  const suffix = query.size ? `?${query}` : '';
+  return request<StreamOutputSummary[]>('/streams/' + encodeURIComponent(streamId) + '/outputs' + suffix, {}, true, 2_000);
+};
 export const listAiTasks = () => request<AiTaskSummary[]>('/ai/tasks');
 export const startAiTask = (streamId: string, model: string, requestId: string) => request<AiTaskSummary>('/ai/tasks', { method: 'POST', body: JSON.stringify({ stream_id: streamId, model, request_id: requestId }) });
 export const cancelAiTask = (taskId: string) => request<AiTaskSummary>('/ai/tasks/' + taskId + '/cancel', { method: 'POST', body: '{}' });

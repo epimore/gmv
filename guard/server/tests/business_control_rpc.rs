@@ -631,6 +631,17 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 output.state,
                 gmv_guard_server::api::v2::model::StreamOutputState::Ready
             );
+            let own_outputs = control
+                .list_stream_outputs_for_subscription(&stream.stream_id, Some("viewer-output"))
+                .await
+                .unwrap();
+            assert_eq!(own_outputs.len(), 1);
+            assert_eq!(own_outputs[0].output_id, "out");
+            let all_outputs = control
+                .list_stream_outputs(&stream.stream_id)
+                .await
+                .unwrap();
+            assert_eq!(all_outputs.len(), 2);
 
             let error = control
                 .create_stream_output(
@@ -1580,24 +1591,35 @@ impl StreamControl for FakeStream {
         let failed = self.fail_output.load(Ordering::Acquire);
         Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
             endpoints: vec![],
-            outputs: vec![OutputInfo {
-                output_id: "out".to_string(),
-                stream_id: request.stream_id,
-                output_type: "fmp4".to_string(),
-                endpoint: "http://127.0.0.1/out.fmp4".to_string(),
-                state: if failed {
-                    OutputState::Failed as i32
-                } else {
-                    OutputState::Ready as i32
+            outputs: vec![
+                OutputInfo {
+                    output_id: "out".to_string(),
+                    stream_id: request.stream_id.clone(),
+                    output_type: "fmp4".to_string(),
+                    endpoint: "http://127.0.0.1/out.fmp4".to_string(),
+                    state: if failed {
+                        OutputState::Failed as i32
+                    } else {
+                        OutputState::Ready as i32
+                    },
+                    subscription_id: "viewer-output".to_string(),
+                    failure: failed.then(|| ErrorDetail {
+                        code: "output_format_unsupported".to_string(),
+                        message: "pcm_alaw is not supported in MP4".to_string(),
+                        metadata: HashMap::new(),
+                    }),
+                    ..Default::default()
                 },
-                subscription_id: "viewer-output".to_string(),
-                failure: failed.then(|| ErrorDetail {
-                    code: "output_format_unsupported".to_string(),
-                    message: "pcm_alaw is not supported in MP4".to_string(),
-                    metadata: HashMap::new(),
-                }),
-                ..Default::default()
-            }],
+                OutputInfo {
+                    output_id: "other-viewer-output".to_string(),
+                    stream_id: request.stream_id,
+                    output_type: "flv".to_string(),
+                    endpoint: "http://127.0.0.1/out.flv".to_string(),
+                    state: OutputState::Ready as i32,
+                    subscription_id: "other-viewer".to_string(),
+                    ..Default::default()
+                },
+            ],
         }))
     }
 

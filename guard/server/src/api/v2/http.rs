@@ -1165,6 +1165,7 @@ fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
 fn openapi_query_fields(path: &str) -> &'static [(&'static str, bool)] {
     match path {
         "/media/operations" => &[("ids", false)],
+        "/streams/{stream_id}/outputs" => &[("subscription_id", false)],
         "/events" => &[
             ("after_id", false),
             ("limit", false),
@@ -9037,13 +9038,20 @@ async fn list_stream_outputs(
     State(state): State<HttpState>,
     headers: HeaderMap,
     Path(stream_id): Path<String>,
+    Query(query): Query<StreamOutputListQuery>,
 ) -> Result<Json<Vec<StreamOutputSummary>>, HttpError> {
     debug!("/api/v2/streams/{{stream_id}}/outputs, req: stream_id={stream_id}");
     require_role(&state.auth, &headers, Role::Viewer)?;
     let outputs = BusinessControl::new(state.api.store())
-        .list_stream_outputs(&stream_id)
+        .list_stream_outputs_for_subscription(&stream_id, query.subscription_id.as_deref())
         .await?;
     Ok(Json(outputs))
+}
+
+#[derive(Debug, Default, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct StreamOutputListQuery {
+    subscription_id: Option<String>,
 }
 
 async fn create_stream_output(
@@ -10420,6 +10428,16 @@ mod tests {
     use crate::integration::model::{MqttRuntimeApplyState, MqttRuntimeConfig};
     use crate::store::model::PlaybackTicketRecord;
     use axum::http::Method;
+
+    #[test]
+    fn output_list_documents_optional_subscription_filter() {
+        let parameters = openapi_operation_parameters("get", "/streams/{stream_id}/outputs");
+        assert!(parameters.iter().any(|parameter| {
+            parameter["name"] == "subscription_id"
+                && parameter["in"] == "query"
+                && parameter["required"] == false
+        }));
+    }
 
     #[test]
     fn mqtt_broker_connection_requires_connack_for_desired_revision() {

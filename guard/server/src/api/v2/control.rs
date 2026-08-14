@@ -2491,6 +2491,15 @@ impl BusinessControl {
         &self,
         stream_id: &str,
     ) -> GuardResult<Vec<StreamOutputSummary>> {
+        self.list_stream_outputs_for_subscription(stream_id, None)
+            .await
+    }
+
+    pub async fn list_stream_outputs_for_subscription(
+        &self,
+        stream_id: &str,
+        subscription_id: Option<&str>,
+    ) -> GuardResult<Vec<StreamOutputSummary>> {
         let stream = self.stream_node_for_resource(stream_id)?;
         let stream_grpc = grpc_uri(&stream)?;
         let mut client = StreamControlClient::new(connect_rpc(&stream_grpc, "stream").await?);
@@ -2512,6 +2521,9 @@ impl BusinessControl {
         Ok(response
             .outputs
             .into_iter()
+            .filter(|output| {
+                subscription_id.is_none_or(|expected| output.subscription_id == expected)
+            })
             .map(stream_output_summary)
             .collect())
     }

@@ -803,6 +803,14 @@ import { GmvMultiGrid, GmvPlayerView, type GmvCloudRecordRange, type GmvCodec, t
 import { useAuthStore } from '@/stores/auth';
 import { formatDateTime } from '@/utils/dateTime';
 import { applyStreamOutputState } from '@/utils/streamOutputState';
+import {
+  matchStreamOutput,
+  streamOutputNeedsPolling,
+  streamOutputPollDelay,
+  streamOutputQueryKey,
+  streamOutputTargetKey,
+  type StreamOutputPollTarget,
+} from '@/utils/streamOutputPolling';
 
 const auth = useAuthStore();
 const singlePlayerRef = ref<InstanceType<typeof GmvPlayerView>>();
@@ -1249,58 +1257,107 @@ watch(pausedPlaybackPresenceKey, (key) => {
   if (key) void heartbeatPausedPlaybacks();
 });
 
-const activeMediaStateKey = computed(() => [
-  lastStream.value?.state === 'running' ? lastStream.value.stream_id : '',
-  ...multiCells.value.filter((cell) => cell.stream?.state === 'running').map((cell) => cell.stream!.stream_id),
-].filter(Boolean).sort().join('|'));
+function singleMediaStateTarget(): StreamOutputPollTarget | undefined {
+  const stream = lastStream.value;
+  if (stream?.state !== 'running') return undefined;
+  return {
+    streamId: stream.stream_id,
+    subscriptionId: stream.subscription_id,
+    outputId: singleOutput.value?.output_id,
+    endpoint: stream.endpoint,
+    outputType: singleOutput.value?.output_type || singlePlayerOutputType.value,
+    outputState: singleOutput.value?.state,
+    audioRecoveryEligible: stream.audio_recovery_eligible,
+    lateTrackWatch: stream.late_track_watch,
+    generation: stream.output_generation,
+    pending: singleOutputSwitching.value,
+  };
+}
 
-function stopMediaStatePolling() {
+function multiMediaStateTarget(cell: MultiViewCell): StreamOutputPollTarget | undefined {
+  const stream = cell.stream;
+  if (stream?.state !== 'running') return undefined;
+  return {
+    streamId: stream.stream_id,
+    subscriptionId: stream.subscription_id,
+    outputId: cell.output?.output_id,
+    endpoint: stream.endpoint,
+    outputType: cell.output?.output_type || cell.output_type,
+    outputState: cell.output?.state,
+    audioRecoveryEligible: stream.audio_recovery_eligible,
+    lateTrackWatch: stream.late_track_watch,
+    generation: stream.output_generation,
+    pending: cell.output_switching,
+  };
+}
+
+const activeMediaStateTargets = computed(() => [
+  singleMediaStateTarget(),
+  ...multiCells.value.map(multiMediaStateTarget),
+].filter((target): target is StreamOutputPollTarget => !!target));
+
+const mediaStatePollTargets = computed(() => {
+  const targets = new Map<string, StreamOutputPollTarget>();
+  for (const target of activeMediaStateTargets.value.filter(streamOutputNeedsPolling)) {
+    targets.set(streamOutputTargetKey(target), target);
+  }
+  return [...targets.values()];
+});
+
+const activeMediaStateKey = computed(() => mediaStatePollTargets.value
+  .map(streamOutputTargetKey)
+  .sort()
+  .join('|'));
+
+function clearMediaStatePollTimer() {
   if (mediaStatePollTimer !== undefined) window.clearTimeout(mediaStatePollTimer);
   mediaStatePollTimer = undefined;
+}
+
+function stopMediaStatePolling() {
+  clearMediaStatePollTimer();
   mediaStatePollStartedAt = 0;
   mediaStatePollFailures = 0;
 }
 
 function mediaStatePollDelay() {
-  const age = Date.now() - mediaStatePollStartedAt;
-  const failureBackoff = [2_000, 5_000, 10_000];
-  const base = mediaStatePollFailures > 0
-    ? failureBackoff[Math.min(mediaStatePollFailures, failureBackoff.length) - 1]
-    : age < 10_000 ? 1_000 : age < 60_000 ? 2_000 : 5_000;
-  let hash = 0;
-  for (const char of activeMediaStateKey.value) hash = (hash * 31 + char.charCodeAt(0)) | 0;
-  return Math.round(base * (0.9 + (Math.abs(hash) % 201) / 1_000));
+  return streamOutputPollDelay(
+    Date.now() - mediaStatePollStartedAt,
+    mediaStatePollFailures,
+    activeMediaStateKey.value,
+  );
 }
 
-async function pollMediaStates() {
-  if (mediaStatePollInFlight || !activeMediaStateKey.value || multiViewDisposed) return;
+async function pollMediaStates(force = false) {
+  const targets = force ? activeMediaStateTargets.value : mediaStatePollTargets.value;
+  if (mediaStatePollInFlight || !targets.length || multiViewDisposed || document.visibilityState !== 'visible') return;
   mediaStatePollInFlight = true;
   try {
-    const streamIds = [...new Set(activeMediaStateKey.value.split('|').filter(Boolean))];
-    const results = await Promise.allSettled(streamIds.map(async (streamId) => ({
-      streamId,
-      outputs: await listStreamOutputs(streamId),
+    const queries = new Map<string, StreamOutputPollTarget>();
+    for (const target of targets) queries.set(streamOutputQueryKey(target), target);
+    const results = await Promise.allSettled([...queries.values()].map(async (target) => ({
+      queryKey: streamOutputQueryKey(target),
+      outputs: await listStreamOutputs(target.streamId, target.subscriptionId),
     })));
     mediaStatePollFailures = results.every((result) => result.status === 'fulfilled')
       ? 0
       : mediaStatePollFailures + 1;
     for (const result of results) {
       if (result.status !== 'fulfilled') continue;
-      const { streamId, outputs } = result.value;
+      const { queryKey, outputs } = result.value;
       const currentSingle = lastStream.value;
-      if (currentSingle?.stream_id === streamId) {
-        const output = outputs.find((item) => item.output_id === singleOutput.value?.output_id)
-          ?? outputs.find((item) => item.endpoint === currentSingle.endpoint)
-          ?? outputs.find((item) => item.state === 'ready');
+      const singleTarget = singleMediaStateTarget();
+      if (currentSingle && singleTarget && streamOutputQueryKey(singleTarget) === queryKey) {
+        const output = matchStreamOutput(outputs, singleTarget);
         if (output) {
           singleOutput.value = output;
           lastStream.value = applyStreamOutputState(currentSingle, output);
         }
       }
-      for (const cell of multiCells.value.filter((item) => item.stream?.stream_id === streamId)) {
-        const output = outputs.find((item) => item.output_id === cell.output?.output_id)
-          ?? outputs.find((item) => item.endpoint === cell.stream?.endpoint)
-          ?? outputs.find((item) => item.state === 'ready');
+      for (const cell of multiCells.value) {
+        const target = multiMediaStateTarget(cell);
+        if (!target || streamOutputQueryKey(target) !== queryKey) continue;
+        const output = matchStreamOutput(outputs, target);
         if (!output || !cell.stream) continue;
         const previousState = `${cell.stream.source_audio_state}:${cell.stream.output_audio_mode}:${cell.stream.output_generation}`;
         cell.output = output;
@@ -1311,18 +1368,29 @@ async function pollMediaStates() {
     }
   } finally {
     mediaStatePollInFlight = false;
-    if (activeMediaStateKey.value && !multiViewDisposed) {
+    if (activeMediaStateKey.value && !multiViewDisposed && document.visibilityState === 'visible') {
       mediaStatePollTimer = window.setTimeout(() => void pollMediaStates(), mediaStatePollDelay());
     }
   }
 }
 
 watch(activeMediaStateKey, (key) => {
-  stopMediaStatePolling();
-  if (!key) return;
+  clearMediaStatePollTimer();
+  mediaStatePollFailures = 0;
+  if (!key) {
+    mediaStatePollStartedAt = 0;
+    return;
+  }
   mediaStatePollStartedAt = Date.now();
-  void pollMediaStates();
+  if (document.visibilityState === 'visible') void pollMediaStates();
 });
+
+function handleMediaStateWakeup() {
+  clearMediaStatePollTimer();
+  if (document.visibilityState !== 'visible' || !activeMediaStateKey.value) return;
+  if (!mediaStatePollStartedAt) mediaStatePollStartedAt = Date.now();
+  void pollMediaStates();
+}
 
 const playerCapabilities = computed<GmvViewCapabilities>(() => {
   const channel = selectedChannel.value;
@@ -2817,6 +2885,7 @@ async function handleMultiPlaybackError(event: { index: number; payload: { messa
   }
   const pending = cell?.pending_switch;
   if (!cell) return;
+  if (!pending && cell.mode === 'live') void pollMediaStates(true);
   if (cell.mode === 'playback' && !pending) {
     await disposeMultiCellMedia(cell);
     upsertMultiCell({ ...cell, stream: undefined, sources: [], operation: undefined, status: 'error', error: event.payload.message });
@@ -3204,7 +3273,10 @@ async function handleSinglePlaybackError(event: { message: string }) {
   const pending = singlePendingSwitch.value;
   const stream = lastStream.value;
   const channel = selectedChannel.value;
-  if (!pending || !stream || !channel) return;
+  if (!pending || !stream || !channel) {
+    if (stream && !stream.playback_id) void pollMediaStates(true);
+    return;
+  }
   await closeStreamOutput(stream.stream_id, pending.next_output.output_id).catch(() => undefined);
   setChannelOutputTypeForMode(channel, lastAction.value === '历史回放' ? 'playback' : 'live', pending.previous_type);
   singleOutput.value = pending.previous_output;
@@ -4106,6 +4178,9 @@ onMounted(() => {
   window.addEventListener('online', handlePlaybackPresenceWakeup);
   window.addEventListener('pageshow', handlePlaybackPresenceWakeup);
   document.addEventListener('visibilitychange', handlePlaybackPresenceWakeup);
+  window.addEventListener('online', handleMediaStateWakeup);
+  window.addEventListener('pageshow', handleMediaStateWakeup);
+  document.addEventListener('visibilitychange', handleMediaStateWakeup);
 });
 onBeforeRouteLeave(async () => {
   if (!await stopBroadcast()) return false;
@@ -4124,6 +4199,9 @@ onBeforeUnmount(() => {
   window.removeEventListener('online', handlePlaybackPresenceWakeup);
   window.removeEventListener('pageshow', handlePlaybackPresenceWakeup);
   document.removeEventListener('visibilitychange', handlePlaybackPresenceWakeup);
+  window.removeEventListener('online', handleMediaStateWakeup);
+  window.removeEventListener('pageshow', handleMediaStateWakeup);
+  document.removeEventListener('visibilitychange', handleMediaStateWakeup);
   void stopBroadcast();
   void stopAllMultiStreams({ quiet: true });
   void stopCurrentStream();
