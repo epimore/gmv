@@ -497,6 +497,7 @@ impl MqttCommandExecutor {
                             .get("registered_only")
                             .and_then(Value::as_bool)
                             .unwrap_or(false),
+                        None,
                         page,
                         page_size,
                     )

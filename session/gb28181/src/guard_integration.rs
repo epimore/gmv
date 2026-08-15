@@ -1635,21 +1635,31 @@ impl SessionControl for SessionControlRpc {
         let device_id = request.device_id.trim().to_string();
         let device_name = request.device_name.trim().to_string();
         let registered_only = request.registered_only;
+        let monitor_status = match request.monitor_status {
+            None => None,
+            Some(value @ (0 | 1)) => Some(value),
+            Some(_) => {
+                return Err(tonic::Status::invalid_argument(
+                    "monitor_status must be 0 or 1",
+                ));
+            }
+        };
         let total = if domain_id.is_empty() {
-            crate::storage::guard_query::GbDeviceView::count(registered_only).await
+            crate::storage::guard_query::GbDeviceView::count(registered_only, monitor_status).await
         } else {
             crate::storage::guard_query::GbDeviceView::count_by_domain(
                 &domain_id,
                 &device_id,
                 &device_name,
                 registered_only,
+                monitor_status,
             )
             .await
         }
         .map_err(storage_status)?;
         let page = request.page.max(1);
         let devices = if request.page_size == 0 {
-            crate::storage::guard_query::GbDeviceView::list(registered_only).await
+            crate::storage::guard_query::GbDeviceView::list(registered_only, monitor_status).await
         } else if !domain_id.is_empty() {
             let offset = page.saturating_sub(1).saturating_mul(request.page_size);
             crate::storage::guard_query::GbDeviceView::list_page_by_domain(
@@ -1657,6 +1667,7 @@ impl SessionControl for SessionControlRpc {
                 &device_id,
                 &device_name,
                 registered_only,
+                monitor_status,
                 offset,
                 request.page_size,
             )
@@ -1665,6 +1676,7 @@ impl SessionControl for SessionControlRpc {
             let offset = page.saturating_sub(1).saturating_mul(request.page_size);
             crate::storage::guard_query::GbDeviceView::list_page(
                 registered_only,
+                monitor_status,
                 offset,
                 request.page_size,
             )

@@ -352,8 +352,9 @@ export interface GbBroadcastOperationSummary {
 
 const gbPath = (value: string) => encodeURIComponent(value);
 export const getGbSessionNodeConfig = (nodeId: string) => request<GbSessionConfigInfo>('/gb28181/session-nodes/' + gbPath(nodeId) + '/config');
-export const listGbDevicePage = (page = 1, pageSize = 20, sessionNodeId = '', domainId = '', deviceId = '', deviceName = '', registeredOnly = false) => {
+export const listGbDevicePage = (page = 1, pageSize = 20, sessionNodeId = '', domainId = '', deviceId = '', deviceName = '', registeredOnly = false, monitorStatus?: number) => {
   const query = new URLSearchParams({ page: String(page), page_size: String(pageSize), session_node_id: sessionNodeId, domain_id: domainId, device_id: deviceId, device_name: deviceName, registered_only: String(registeredOnly) });
+  if (monitorStatus !== undefined) query.set('monitor_status', String(monitorStatus));
   return request<GbDevicePage>('/gb28181/devices?' + query);
 };
 export const createGbDevice = (payload: GbDevicePayload) => request<GbDeviceInfo>('/gb28181/devices', { method: 'POST', body: JSON.stringify(payload) });

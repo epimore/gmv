@@ -14,6 +14,11 @@
           </el-option>
         </el-select>
         <el-input v-model="deviceName" style="width: 220px" clearable placeholder="设备名称" @clear="queryDevices" />
+        <el-select v-model="deviceMonitorStatus" style="width: 140px" aria-label="状态" placeholder="全部">
+          <el-option label="全部" value="" />
+          <el-option label="在线" value="1" />
+          <el-option label="离线" value="0" />
+        </el-select>
         <el-button type="primary" :loading="loading" @click="queryDevices">查询</el-button>
         <el-button :loading="loading" @click="resetDevices">重置</el-button>
         <!-- <el-button :loading="loading" @click="loadDevices">刷新</el-button> -->
@@ -835,6 +840,7 @@ const listNodeLoading = ref(false);
 const treeLoading = ref(false);
 const multiStopping = ref(false);
 const deviceName = ref('');
+const deviceMonitorStatus = ref<'' | '0' | '1'>('');
 const treeDeviceId = ref('');
 const treeDeviceName = ref('');
 const devices = ref<GbDeviceInfo[]>([]);
@@ -3135,6 +3141,7 @@ async function loadDevices() {
       '',
       deviceName.value,
       true,
+      deviceMonitorStatus.value === '' ? undefined : Number(deviceMonitorStatus.value),
     );
     devices.value = result.items;
     total.value = result.total;
@@ -3147,7 +3154,7 @@ async function loadDevices() {
   }
 }
 async function queryDevices() { page.value = 1; await loadDevices(); }
-async function resetDevices() { deviceName.value = ''; page.value = 1; await loadDevices(); }
+async function resetDevices() { deviceName.value = ''; deviceMonitorStatus.value = ''; page.value = 1; await loadDevices(); }
 async function handlePageSizeChange() { page.value = 1; await loadDevices(); }
 async function handleListNodeChange() { page.value = 1; await loadDevices(); }
 function openDeviceDetail(device: GbDeviceInfo) {

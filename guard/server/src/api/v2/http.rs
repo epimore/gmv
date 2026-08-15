@@ -1180,6 +1180,7 @@ fn openapi_query_fields(path: &str) -> &'static [(&'static str, bool)] {
             ("device_id", false),
             ("device_name", false),
             ("registered_only", false),
+            ("monitor_status", false),
         ],
         "/gb28181/devices/{device_id}/channels"
         | "/gb28181/devices/{device_id}/resources"
@@ -1649,6 +1650,9 @@ fn openapi_request_field_schema(path: &str, name: &str) -> base::serde_json::Val
         "page_size" if path.contains("/records") || path.contains("/images") => {
             object.insert("maximum".to_string(), base::serde_json::json!(100));
         }
+        "monitor_status" => {
+            object.insert("enum".to_string(), base::serde_json::json!([0, 1]));
+        }
         "broadcast_codec" | "codec" => {
             object.insert("enum".to_string(), base::serde_json::json!(["PCMA"]));
             object.insert("default".to_string(), base::serde_json::json!("PCMA"));
@@ -1685,6 +1689,7 @@ fn openapi_field_type(name: &str) -> &'static str {
         | "page_size"
         | "pwd_check"
         | "status"
+        | "monitor_status"
         | "heartbeat_sec"
         | "sort_no"
         | "start_time_sec"
@@ -1831,6 +1836,7 @@ fn openapi_field_description(name: &str) -> &'static str {
         "page_size" => "每页记录数；设备列表最多 500，录像和截图列表最多 100。",
         "device_name" => "设备名称模糊筛选值。",
         "registered_only" => "是否只返回已注册设备。",
+        "monitor_status" => "设备在线状态筛选值：1 在线，0 离线；省略时返回全部状态。",
         _ => "业务字段。",
     }
 }
@@ -6505,6 +6511,7 @@ struct GbDeviceListQuery {
     device_id: Option<String>,
     device_name: Option<String>,
     registered_only: Option<bool>,
+    monitor_status: Option<i64>,
 }
 
 #[derive(Debug, Default, base::serde::Deserialize)]
@@ -7500,6 +7507,13 @@ async fn gb_devices(
         .map(str::trim)
         .unwrap_or_default();
     let registered_only = query.registered_only.unwrap_or(false);
+    let monitor_status = match query.monitor_status {
+        None => None,
+        Some(value @ (0 | 1)) => Some(value),
+        Some(_) => {
+            return Err(HttpError::bad_request("monitor_status must be 0 or 1"));
+        }
+    };
     require_role(&state.auth, &headers, Role::Viewer)?;
     let control = BusinessControl::new(state.api.store());
     let (session_node_id, domain_id) = match (query_session_node_id, query_domain_id) {
@@ -7514,7 +7528,7 @@ async fn gb_devices(
         }
     };
     debug!(
-        "/api/v2/gb28181/devices, req: session_node_id={session_node_id}, domain_id={domain_id}, device_id={device_id}, device_name={device_name}, registered_only={registered_only}, page={page}, page_size={page_size}"
+        "/api/v2/gb28181/devices, req: session_node_id={session_node_id}, domain_id={domain_id}, device_id={device_id}, device_name={device_name}, registered_only={registered_only}, monitor_status={monitor_status:?}, page={page}, page_size={page_size}"
     );
     let devices = control
         .list_gb_device_page(
@@ -7523,6 +7537,7 @@ async fn gb_devices(
             device_id,
             device_name,
             registered_only,
+            monitor_status,
             page,
             page_size,
         )

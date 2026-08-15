@@ -205,6 +205,49 @@ test('核心管理页面卡片铺满可视窗口且页面不产生纵向滚动',
   }
 });
 
+test('监控设备列表按在线状态查询并可重置为全部', async ({ page }) => {
+  await mockAuth(page, true);
+  await page.route('**/api/v2/nodes', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([readySessionNode]) });
+  });
+  await page.route('**/api/v2/gb28181/session-nodes/session-1/config', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ domain: '3402000000', domain_id: '3402000000', wan_ip: '127.0.0.1', wan_port: 5060 }),
+    });
+  });
+  await page.route('**/api/v2/gb28181/devices**', async (route) => {
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ items: [], total: 0, page: 1, page_size: 20 }) });
+  });
+
+  await page.goto('/gb28181/monitor');
+  const statusSelect = page.locator('.toolbar .el-select').filter({
+    has: page.getByRole('combobox', { name: '状态' }),
+  });
+  await expect(statusSelect).toBeVisible();
+
+  await statusSelect.click();
+  await page.getByRole('option', { name: '在线', exact: true }).click();
+  const onlineRequest = page.waitForRequest((request) => new URL(request.url()).searchParams.get('monitor_status') === '1');
+  await page.getByRole('button', { name: '查询', exact: true }).click();
+  await onlineRequest;
+
+  await statusSelect.click();
+  await page.getByRole('option', { name: '离线', exact: true }).click();
+  const offlineRequest = page.waitForRequest((request) => new URL(request.url()).searchParams.get('monitor_status') === '0');
+  await page.getByRole('button', { name: '查询', exact: true }).click();
+  await offlineRequest;
+
+  const resetRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/v2/gb28181/devices' && !url.searchParams.has('monitor_status');
+  });
+  await page.getByRole('button', { name: '重置', exact: true }).click();
+  await resetRequest;
+  await expect(statusSelect).toContainText('全部');
+});
+
 test('Dashboard 展示边端状态、能力入口和待处理事项', async ({ page }) => {
   await mockAuth(page, true);
 

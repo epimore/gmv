@@ -263,6 +263,21 @@ fn session_record_query_contract_is_stable() {
 }
 
 #[test]
+fn session_device_online_status_filter_is_optional_and_appended() {
+    let descriptor = descriptor();
+    let session = descriptor_file(&descriptor, "gmv.session.v1");
+    let request = descriptor_message(session, "ListGbDevicesRequest");
+    let field = request
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("monitor_status"))
+        .unwrap();
+
+    assert_eq!(field.number, Some(7));
+    assert_eq!(field.proto3_optional, Some(true));
+}
+
+#[test]
 fn session_image_access_contract_is_stable() {
     let descriptor = descriptor();
     let session = descriptor

@@ -395,6 +395,7 @@ message ListGbDevicesRequest {
   string device_id = 4;
   string device_name = 5;
   bool registered_only = 6;
+  optional int64 monitor_status = 7;
 }
 
 message GetGbDeviceRequest {

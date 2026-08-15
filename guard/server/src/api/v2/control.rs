@@ -661,6 +661,7 @@ impl BusinessControl {
                 device_id: String::new(),
                 device_name: String::new(),
                 registered_only: false,
+                monitor_status: None,
             };
             base::log::debug!(
                 "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
@@ -694,6 +695,7 @@ impl BusinessControl {
         device_id: &str,
         device_name: &str,
         registered_only: bool,
+        monitor_status: Option<i64>,
         page: u32,
         page_size: u32,
     ) -> GuardResult<GbDevicePage> {
@@ -715,6 +717,7 @@ impl BusinessControl {
             device_id: device_id.to_string(),
             device_name: device_name.to_string(),
             registered_only,
+            monitor_status,
         };
         base::log::debug!(
             "guard rpc client outbound: method=session_control.list_gb_devices, node={}, req:{request:?}",
