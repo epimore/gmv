@@ -91,6 +91,40 @@ describe("MultiGrid output selector", () => {
     wrapper.unmount();
   });
 
+  it("keeps manual control visibility isolated per player cell", async () => {
+    const wrapper = mount(MultiGrid, {
+      props: {
+        gridSize: 4,
+        cells: [
+          {
+            title: "live-a",
+            mediaMode: "live",
+            sources: [{ protocol: "flv", url: "stream-a.flv" }],
+            controls: { items: ["play"], visibility: "auto", autoHideDelayMs: 3000 },
+          },
+          {
+            title: "playback-b",
+            mediaMode: "playback",
+            sources: [{ protocol: "flv", url: "stream-b.flv" }],
+            controls: { items: ["play", "timeline"], visibility: "auto", autoHideDelayMs: 3000 },
+          },
+        ],
+      },
+    });
+    const players = wrapper.findAllComponents(GmvPlayerView);
+
+    await players[0].findAll(".gmv-video")[0].trigger("click");
+
+    expect(players[0].get(".gmv-player").classes()).toContain("player-chrome-hidden");
+    expect(players[1].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    expect(players[1].find(".playback-timeline-row").exists()).toBe(true);
+
+    await players[0].findAll(".gmv-video")[0].trigger("click");
+    expect(players[0].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    expect(players[1].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    wrapper.unmount();
+  });
+
   it("forwards playback controls and progress with the cell index", async () => {
     const wrapper = mount(MultiGrid, {
       props: {

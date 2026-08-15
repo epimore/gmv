@@ -194,6 +194,27 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await page.getByRole('menuitem', { name: 'LL-HLS', exact: true }).click();
   await expect.poll(() => previewOutputType).toBe('ll_hls');
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
+  const livePlayer = page.locator('.monitor-player-dialog .gmv-player');
+  const liveVideo = livePlayer.locator('.gmv-video').first();
+  await livePlayer.getByLabel('更多操作').click();
+  await livePlayer.getByLabel('切换媒体信息').click();
+  await livePlayer.getByLabel('更多操作').click();
+  await livePlayer.getByLabel('切换云台控制').click();
+  await livePlayer.getByLabel('更多操作').click();
+  await liveVideo.click({ position: { x: 20, y: 20 } });
+  await expect(livePlayer).toHaveClass(/player-chrome-hidden/);
+  await expect(livePlayer.locator('.media-info-panel')).toBeHidden();
+  await expect(livePlayer.locator('.ptz-panel')).toBeHidden();
+  await expect(livePlayer.locator('.overflow-menu')).toHaveCount(0);
+
+  await liveVideo.click({ position: { x: 20, y: 20 } });
+  await expect(livePlayer).not.toHaveClass(/player-chrome-hidden/);
+  await expect(livePlayer.locator('.media-info-panel')).toBeVisible();
+  await expect(livePlayer.locator('.ptz-panel')).toBeVisible();
+  await page.waitForTimeout(3_000);
+  await expect(livePlayer).toHaveClass(/player-chrome-hidden/);
+  await expect(livePlayer.locator('.media-info-panel')).toHaveCount(0);
+  await expect(livePlayer.locator('.ptz-panel')).toHaveCount(0);
   await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
   await expect.poll(() => releasedStreams.length).toBe(1);
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeHidden();
@@ -330,7 +351,15 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await page.getByRole('button', { name: '开始播放' }).click();
   await expect.poll(() => playbackOutputType).toBe('hls');
   await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
-  await expect(page.getByLabel('回放进度')).toHaveAttribute('max', String(30 * 60 * 1_000));
+  const playbackPlayer = page.locator('.monitor-player-dialog .gmv-player');
+  const playbackProgress = playbackPlayer.getByLabel('回放进度');
+  await expect(playbackProgress).toHaveAttribute('max', String(30 * 60 * 1_000));
+  await playbackPlayer.hover({ position: { x: 20, y: 20 } });
+  await expect(playbackProgress).toBeVisible();
+  await playbackPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await expect(playbackProgress).toBeHidden();
+  await playbackPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await expect(playbackProgress).toBeVisible();
   await page.getByLabel('回放操作模式').selectOption('clip');
   cloudRecordingCreateRange = undefined;
   const createClip = page.getByRole('button', { name: '创建截取录像' });
@@ -357,6 +386,11 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await page.getByRole('button', { name: '确认播放', exact: true }).click();
 
   const multiProgress = page.locator('.grid-cell').first().getByLabel('回放进度');
+  await expect(multiProgress).toBeVisible();
+  const multiPlayer = page.locator('.grid-cell .gmv-player').first();
+  await multiPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await expect(multiProgress).toBeHidden();
+  await multiPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
   await expect(multiProgress).toBeVisible();
   const emitMultiProgress = async (mediaTimeMs: number) => {
     await page.locator('.grid-cell .gmv-player').first().evaluate((element, value) => {

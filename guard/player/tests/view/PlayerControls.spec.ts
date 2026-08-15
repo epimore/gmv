@@ -431,6 +431,125 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
+  it("点击播放表面软隐藏并恢复媒体信息和云台，随后超时硬隐藏不再恢复", async () => {
+    vi.useFakeTimers();
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        capabilities: { ptz: true },
+        controls: {
+          items: ["info", "ptz"],
+          visibility: "auto",
+          autoHideDelayMs: 3000,
+        },
+      },
+      attachTo: document.body,
+    });
+
+    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="切换云台控制"]').trigger("click");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(true);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(true);
+
+    const video = wrapper.findAll(".gmv-video")[0];
+    const ptzUp = wrapper.get('[title="上"]');
+    await ptzUp.trigger("pointerdown");
+    await video.trigger("click");
+    expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    await ptzUp.trigger("pointerup");
+    expect(wrapper.emitted("ptz")?.slice(-2)).toEqual([
+      [{ action: "up", speed: 64 }],
+      [{ action: "stop", speed: 64 }],
+    ]);
+
+    await video.trigger("click");
+    expect(wrapper.get(".gmv-player").classes()).toContain("player-chrome-hidden");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(true);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(true);
+
+    await video.trigger("pointermove");
+    await wrapper.get(".gmv-player").trigger("pointerleave");
+    expect(wrapper.get(".gmv-player").classes()).toContain("player-chrome-hidden");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(wrapper.find(".media-info-panel").exists()).toBe(true);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(true);
+
+    await video.trigger("click");
+    expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(true);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(wrapper.get(".gmv-player").classes()).toContain("player-chrome-hidden");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(false);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(false);
+
+    await video.trigger("click");
+    expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    expect(wrapper.find(".media-info-panel").exists()).toBe(false);
+    expect(wrapper.find(".ptz-panel").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("等价 controls 对象刷新不会重置自动隐藏倒计时", async () => {
+    vi.useFakeTimers();
+    const wrapper = mountControls({ items: ["play"], visibility: "auto", autoHideDelayMs: 3000 });
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await wrapper.setProps({
+      config: { items: ["play"], visibility: "auto", autoHideDelayMs: 3000 },
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
+    wrapper.unmount();
+  });
+
+  it("播放表面点击不绕过 always 和 hidden 配置", async () => {
+    const always = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        controls: { items: ["play"], visibility: "always" },
+      },
+    });
+    const hidden = mount(GmvPlayerView, {
+      props: {
+        sources: [],
+        controls: { items: ["play"], visibility: "hidden" },
+      },
+    });
+
+    await always.findAll(".gmv-video")[0].trigger("click");
+    await hidden.findAll(".gmv-video")[0].trigger("click");
+
+    expect(always.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+    expect(always.find(".control-bar").exists()).toBe(true);
+    expect(hidden.get(".gmv-player").classes()).toContain("player-chrome-hidden");
+    expect(hidden.find(".control-bar").exists()).toBe(false);
+    always.unmount();
+    hidden.unmount();
+  });
+
+  it("进行中的外部交互阻止播放表面手动隐藏", async () => {
+    const wrapper = mountControls({ items: ["play"], visibility: "auto", autoHideDelayMs: 3000 });
+    const controls = wrapper.vm as unknown as {
+      setExternalInteractionActive: (active: boolean) => void;
+      toggleSurfaceVisibility: () => void;
+    };
+
+    controls.setExternalInteractionActive(true);
+    controls.toggleSurfaceVisibility();
+    await nextTick();
+    expect(wrapper.get(".control-bar").classes()).not.toContain("is-hidden");
+
+    controls.setExternalInteractionActive(false);
+    controls.toggleSurfaceVisibility();
+    await nextTick();
+    expect(wrapper.get(".control-bar").classes()).toContain("is-hidden");
+    wrapper.unmount();
+  });
+
   it("回放进度行和功能按钮行使用同一超时隐藏状态", async () => {
     vi.useFakeTimers();
     const wrapper = mountControls(

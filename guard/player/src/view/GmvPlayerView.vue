@@ -10,8 +10,8 @@
       },
     ]"
     @pointermove="notifyControlsActivity"
-    @pointerdown="notifyControlsActivity"
     @pointerleave="handlePlayerPointerLeave"
+    @click="handlePlayerSurfaceClick"
     @keydown="notifyControlsActivity"
   >
     <video ref="videoARef" class="gmv-video" :class="{ 'is-active': activeVideoSlot === 0 }" playsinline muted :poster="poster || undefined"></video>
@@ -838,6 +838,16 @@ function notifyControlsActivity() {
   controlsRef.value?.notifyActivity();
 }
 
+function handlePlayerSurfaceClick(event: MouseEvent) {
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  const interactiveTarget = target.closest(
+    'button, input, select, textarea, a, label, details, summary, .control-bar, .media-info-panel, .ptz-panel',
+  );
+  if (interactiveTarget && playerRef.value?.contains(interactiveTarget)) return;
+  controlsRef.value?.toggleSurfaceVisibility();
+}
+
 function handlePlayerPointerLeave(event: PointerEvent) {
   if (event.pointerType === 'touch') return;
   controlsRef.value?.notifySurfaceLeave();
@@ -865,9 +875,9 @@ function togglePtzPanel() {
   ptzOpen.value = true;
 }
 
-function handleControlsVisibilityChange(visible: boolean) {
+function handleControlsVisibilityChange(visible: boolean, reason: 'activity' | 'config' | 'manual' | 'timeout' = 'timeout') {
   controlsAreVisible.value = visible;
-  if (!visible) {
+  if (!visible && reason !== 'manual') {
     infoOpen.value = false;
     closePtzPanel();
   }
@@ -956,6 +966,13 @@ function boxStyle(box: GmvAiBox) {
 
 .gmv-video.is-active {
   visibility: visible;
+}
+
+.player-chrome-hidden .media-info-panel,
+.player-chrome-hidden .ptz-panel {
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
 }
 
 .player-waiting-cover {

@@ -306,9 +306,11 @@ const props = withDefaults(
   },
 );
 
+type ControlsVisibilityChangeReason = "activity" | "config" | "manual" | "timeout";
+
 const emit = defineEmits<{
   action: [GmvPlayerControlAction];
-  visibilityChange: [visible: boolean];
+  visibilityChange: [visible: boolean, reason: ControlsVisibilityChangeReason];
 }>();
 
 const rootRef = ref<HTMLElement>();
@@ -326,6 +328,7 @@ const clipHandleBMs = ref(0);
 const hoverTimelineTimeMs = ref<number>();
 const hoverTimelineLeft = ref(0);
 let hideTimer: number | undefined;
+let lastVisibilityChangeReason: ControlsVisibilityChangeReason = "config";
 
 const CLIP_MIN_DURATION_MS = 2 * 60 * 1_000;
 const CLIP_MAX_DURATION_MS = 2 * 60 * 60 * 1_000;
@@ -385,9 +388,8 @@ const overflowItems = computed(() => {
 });
 const canAutoHide = computed(() => visibility.value === "auto" && !interactionActive.value);
 
-watch(visible, (value) => emit("visibilityChange", value), { immediate: true });
 watch(
-  () => [visibility.value, props.config.autoHideDelayMs] as const,
+  [visibility, () => props.config.autoHideDelayMs],
   syncVisibility,
   { immediate: true },
 );
@@ -428,12 +430,26 @@ onBeforeUnmount(() => {
 function syncVisibility() {
   clearHideTimer();
   if (visibility.value === "hidden") {
-    visible.value = false;
+    setControlsVisible(false, "config", true);
     overflowOpen.value = false;
     return;
   }
-  visible.value = true;
+  setControlsVisible(true, "config", true);
   if (canAutoHide.value) scheduleHide();
+}
+
+function setControlsVisible(
+  nextVisible: boolean,
+  reason: ControlsVisibilityChangeReason,
+  forceEmit = false,
+) {
+  lastVisibilityChangeReason = reason;
+  if (visible.value === nextVisible) {
+    if (forceEmit) emit("visibilityChange", nextVisible, reason);
+    return;
+  }
+  visible.value = nextVisible;
+  emit("visibilityChange", nextVisible, reason);
 }
 
 function clearHideTimer() {
@@ -445,17 +461,31 @@ function clearHideTimer() {
 function scheduleHide() {
   clearHideTimer();
   if (!canAutoHide.value) return;
+  if (!visible.value && lastVisibilityChangeReason === "manual") return;
   hideTimer = window.setTimeout(() => {
     hideTimer = undefined;
-    visible.value = false;
+    setControlsVisible(false, "timeout");
     overflowOpen.value = false;
   }, props.config.autoHideDelayMs ?? 3000);
 }
 
 function notifyActivity() {
   if (visibility.value === "hidden") return;
-  visible.value = true;
+  if (!visible.value && lastVisibilityChangeReason === "manual") return;
+  setControlsVisible(true, "activity");
   if (canAutoHide.value) scheduleHide();
+}
+
+function toggleSurfaceVisibility() {
+  if (visibility.value !== "auto" || interactionActive.value) return;
+  clearHideTimer();
+  overflowOpen.value = false;
+  if (visible.value) {
+    setControlsVisible(false, "manual");
+    return;
+  }
+  setControlsVisible(true, "manual");
+  scheduleHide();
 }
 
 function notifySurfaceLeave() {
@@ -669,7 +699,7 @@ function emitPreset(type: "preset-call" | "preset-set", fromOverflow = false) {
   afterAction(fromOverflow);
 }
 
-defineExpose({ notifyActivity, notifySurfaceLeave, setExternalInteractionActive });
+defineExpose({ notifyActivity, notifySurfaceLeave, setExternalInteractionActive, toggleSurfaceVisibility });
 </script>
 
 <style scoped>
