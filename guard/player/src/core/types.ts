@@ -92,6 +92,7 @@ export interface GmvViewCapabilities {
   record?: boolean;
   playback?: boolean;
   audio?: boolean;
+  broadcast?: boolean;
   streamSwitch?: boolean;
   streamProfile?: boolean;
   aiOverlay?: boolean;
@@ -100,6 +101,7 @@ export interface GmvViewCapabilities {
 export type GmvPlayerControl =
   | 'play'
   | 'audio'
+  | 'broadcast'
   | 'snapshot'
   | 'outputType'
   | 'info'
@@ -130,8 +132,10 @@ export interface GmvCloudRecordRange {
 }
 
 export interface GmvPlayerControlsState {
-  playbackState: GmvDeviceStatus;
+  playbackState: GmvDeviceStatus | 'paused';
   audioEnabled: boolean;
+  broadcasting?: boolean;
+  broadcastBusy?: boolean;
   fullscreen: boolean;
   infoOpen: boolean;
   ptzOpen: boolean;
@@ -160,6 +164,7 @@ export interface GmvStreamProfileOption {
 export type GmvPlayerControlAction =
   | { type: 'play-toggle' }
   | { type: 'audio-toggle' }
+  | { type: 'broadcast-toggle' }
   | { type: 'snapshot' }
   | { type: 'output-type-change'; outputType: string }
   | { type: 'info-toggle' }

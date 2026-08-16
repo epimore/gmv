@@ -81,6 +81,62 @@ afterEach(() => {
 });
 
 describe("GmvPlayerView make-before-break", () => {
+  it("直播暂停与继续复用同一引擎并切换图标状态", async () => {
+    const url = "http://127.0.0.1/live.flv";
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: source(url),
+        mediaMode: "live",
+        controls: { items: ["play"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    await wrapper.get('[aria-label="暂停"]').trigger("click");
+    expect(players[0].pause).toHaveBeenCalledOnce();
+    expect(wrapper.find('[aria-label="继续播放"]').exists()).toBe(true);
+    expect(players[0].unload).not.toHaveBeenCalled();
+    expect(players[0].destroy).not.toHaveBeenCalled();
+
+    await wrapper.setProps({ sources: source(url) });
+    expect(wrapper.find('[aria-label="继续播放"]').exists()).toBe(true);
+    await wrapper.get('[aria-label="继续播放"]').trigger("click");
+    expect(players[0].play).toHaveBeenCalledTimes(2);
+    expect(players[0].unload).not.toHaveBeenCalled();
+    expect(players[0].destroy).not.toHaveBeenCalled();
+
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+    expect(wrapper.find('[aria-label="暂停"]').exists()).toBe(true);
+    expect(wrapper.emitted("playbackStateChange")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("播放器麦克风只发出能力受控的广播意图", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: source("http://127.0.0.1/live.flv"),
+        deviceId: "device-1",
+        channelId: "channel-1",
+        capabilities: { broadcast: true },
+        controls: { items: ["broadcast"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+
+    await wrapper.get('[aria-label="开始语音广播"]').trigger("click");
+    expect(wrapper.emitted("broadcastToggle")).toEqual([[
+      { deviceId: "device-1", channelId: "channel-1" },
+    ]]);
+
+    await wrapper.setProps({ broadcastBusy: true });
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="语音广播处理中"]').element.disabled).toBe(true);
+    wrapper.unmount();
+  });
+
   it("starts muted and lets the user enable runtime-detected audio", async () => {
     const wrapper = mount(GmvPlayerView, {
       props: {
@@ -97,7 +153,7 @@ describe("GmvPlayerView make-before-break", () => {
     await wrapper.vm.$nextTick();
 
     expect(video.muted).toBe(true);
-    await wrapper.get('button[aria-label="切换声音"]').trigger("click");
+    await wrapper.get('button[aria-label="开启声音"]').trigger("click");
     expect(video.muted).toBe(false);
     wrapper.unmount();
   });
@@ -111,7 +167,7 @@ describe("GmvPlayerView make-before-break", () => {
       },
     });
     await vi.waitFor(() => expect(players).toHaveLength(1));
-    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="显示媒体信息"]').trigger("click");
 
     expect(wrapper.get(".media-info-panel").text()).toContain("音频自动探测");
     wrapper.unmount();
@@ -148,6 +204,24 @@ describe("GmvPlayerView make-before-break", () => {
 
     await wrapper.setProps({
       sources: [{ ...source(url)[0], hasAudio: true, generation: 2 }],
+    });
+
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    expect(players[0].destroy).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("reconnects when rateMode changes on the same URL", async () => {
+    const url = "http://127.0.0.1/shared.flv";
+    const wrapper = mount(GmvPlayerView, {
+      props: { sources: source(url) },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    wrapper.findAll("video")[0].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    await wrapper.setProps({
+      sources: [{ ...source(url)[0], rateMode: "remote-stream" }],
     });
 
     await vi.waitFor(() => expect(players).toHaveLength(2));
@@ -242,7 +316,7 @@ describe("GmvPlayerView make-before-break", () => {
     });
     video.dispatchEvent(new Event("playing"));
     await wrapper.vm.$nextTick();
-    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="显示媒体信息"]').trigger("click");
 
     const info = wrapper.get(".media-info-panel").text();
     expect(info).toContain("实时直播");
@@ -282,6 +356,153 @@ describe("GmvPlayerView make-before-break", () => {
     );
 
     expect(video.playbackRate).toBe(4);
+    wrapper.unmount();
+  });
+
+  it("回放画面加载期间选择倍速仍发出远端变速请求", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [
+          {
+            protocol: "flv",
+            url: "http://127.0.0.1/playback.flv",
+            codec: "h264",
+            rateMode: "remote-stream",
+          },
+        ],
+        mediaMode: "playback",
+        controls: { items: ["playbackRate"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+
+    await wrapper.get<HTMLSelectElement>('[aria-label="播放倍速"]').setValue("2");
+
+    expect(wrapper.emitted("playbackRateChange")).toEqual([[{ rate: 2 }]]);
+    (wrapper.vm as unknown as { confirmPlaybackRate: (rate: number) => void }).confirmPlaybackRate(2);
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+    expect(video.playbackRate).toBe(2);
+    wrapper.unmount();
+  });
+
+  it("挂载时声明的远端确认倍速应用到 FLV video", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{
+          protocol: "flv",
+          url: "http://127.0.0.1/playback.flv",
+          codec: "h264",
+          rateMode: "remote-stream",
+        }],
+        confirmedPlaybackRate: 4,
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(video.playbackRate).toBe(4);
+    wrapper.unmount();
+  });
+
+  it("回放输出切换到新 video slot 后保持已确认倍速", async () => {
+    const playbackSource = (url: string) => [{
+      protocol: "flv" as const,
+      url,
+      codec: "h264" as const,
+      rateMode: "remote-stream" as const,
+    }];
+    const wrapper = mount(GmvPlayerView, {
+      props: { sources: playbackSource("http://127.0.0.1/playback-a.flv") },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const videos = wrapper.findAll("video");
+    videos[0].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+    (wrapper.vm as unknown as { confirmPlaybackRate: (rate: number) => void }).confirmPlaybackRate(4);
+
+    await wrapper.setProps({ sources: playbackSource("http://127.0.0.1/playback-b.flv") });
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    videos[1].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(videos[1].element.playbackRate).toBe(4);
+    wrapper.unmount();
+  });
+
+  it("完整销毁回放会话后新会话恢复 1x", async () => {
+    const playbackSource = (url: string) => [{
+      protocol: "flv" as const,
+      url,
+      codec: "h264" as const,
+      rateMode: "remote-stream" as const,
+    }];
+    const wrapper = mount(GmvPlayerView, {
+      props: { sources: playbackSource("http://127.0.0.1/playback-a.flv") },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const video = wrapper.findAll("video")[0].element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+    (wrapper.vm as unknown as { confirmPlaybackRate: (rate: number) => void }).confirmPlaybackRate(4);
+
+    await wrapper.setProps({ sources: [] });
+    await wrapper.setProps({ sources: playbackSource("http://127.0.0.1/playback-b.flv") });
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(video.playbackRate).toBe(1);
+    wrapper.unmount();
+  });
+
+  it("本地 MP4 在首次 playing 前选择的倍速不会被重置", async () => {
+    vi.spyOn(HTMLMediaElement.prototype, "canPlayType").mockReturnValue("probably");
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{
+          protocol: "mp4",
+          url: "http://127.0.0.1/archive.mp4",
+          codec: "h264",
+          rateMode: "local-file",
+        }],
+        mediaMode: "playback",
+        controls: { items: ["playbackRate"], visibility: "always" },
+      },
+    });
+    const video = wrapper.find("video").element;
+
+    await wrapper.get<HTMLSelectElement>('[aria-label="播放倍速"]').setValue("4");
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(video.playbackRate).toBe(4);
+    expect(wrapper.emitted("playbackRateChange")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("回放加载期间暂停走远端控制而不是本地暂停", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: [{
+          protocol: "flv",
+          url: "http://127.0.0.1/playback.flv",
+          codec: "h264",
+          rateMode: "remote-stream",
+        }],
+        mediaMode: "playback",
+        controls: { items: ["play"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+
+    await wrapper.get('[aria-label="播放"]').trigger("click");
+
+    expect(wrapper.emitted("playbackStateChange")).toEqual([[{ paused: true }]]);
+    expect(players[0].pause).not.toHaveBeenCalled();
     wrapper.unmount();
   });
 
@@ -397,6 +618,30 @@ describe("GmvPlayerView make-before-break", () => {
     expect(wrapper.classes()).toContain("is-error");
     expect(wrapper.classes()).not.toContain("is-playing");
     expect(wrapper.text()).toContain("new stream failed");
+    wrapper.unmount();
+  });
+
+  it("输出切换失败后保留旧画面的暂停状态", async () => {
+    const wrapper = mount(GmvPlayerView, {
+      props: {
+        sources: source("http://127.0.0.1/old.flv"),
+        controls: { items: ["play"], visibility: "always" },
+      },
+    });
+    await vi.waitFor(() => expect(players).toHaveLength(1));
+    const videos = wrapper.findAll("video");
+    videos[0].element.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+    await wrapper.get('[aria-label="暂停"]').trigger("click");
+
+    await wrapper.setProps({ sources: source("http://127.0.0.1/new.flv") });
+    await vi.waitFor(() => expect(players).toHaveLength(2));
+    videos[1].element.dispatchEvent(new ErrorEvent("error", { message: "new stream failed" }));
+    await wrapper.vm.$nextTick();
+
+    expect(players[0].destroy).not.toHaveBeenCalled();
+    expect(wrapper.find('[aria-label="继续播放"]').exists()).toBe(true);
+    expect(wrapper.classes()).not.toContain("is-error");
     wrapper.unmount();
   });
 

@@ -66,10 +66,21 @@ describe("FlvEngine audio fallback", () => {
     const engine = new FlvEngine();
     await engine.attach(testVideo(), source(false));
 
+    expect(mpegtsMock.createPlayer.mock.calls[0][0]).toMatchObject({ isLive: true });
     expect(mpegtsMock.createPlayer.mock.calls[0][1]).toMatchObject({
       enableWorker: false,
       enableWorkerForMSE: false,
+      liveSync: true,
     });
+    engine.destroy();
+  });
+
+  it("设备流式回放退出直播媒体与延迟同步策略", async () => {
+    const engine = new FlvEngine();
+    await engine.attach(testVideo(), { ...source(false), rateMode: "remote-stream" });
+
+    expect(mpegtsMock.createPlayer.mock.calls[0][0]).toMatchObject({ isLive: false });
+    expect(mpegtsMock.createPlayer.mock.calls[0][1]).toMatchObject({ liveSync: false });
     engine.destroy();
   });
 

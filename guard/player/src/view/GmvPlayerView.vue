@@ -11,7 +11,7 @@
     ]"
     @pointermove="notifyControlsActivity"
     @pointerleave="handlePlayerPointerLeave"
-    @click="handlePlayerSurfaceClick"
+    @pointerup="handlePlayerSurfacePointerUp"
     @keydown="notifyControlsActivity"
   >
     <video ref="videoARef" class="gmv-video" :class="{ 'is-active': activeVideoSlot === 0 }" playsinline muted :poster="poster || undefined"></video>
@@ -199,11 +199,14 @@ const props = withDefaults(
     streamProfileVerification?: GmvStreamProfileVerification;
     streamProfileOptions?: GmvStreamProfileOption[];
     streamProfileSwitching?: boolean;
+    broadcasting?: boolean;
+    broadcastBusy?: boolean;
     startupText?: string;
     startupCanCancel?: boolean;
     playbackDurationMs?: number;
     playbackStartTimeMs?: number;
     playbackEndTimeMs?: number;
+    confirmedPlaybackRate?: number;
     cloudRecordLockedRange?: GmvCloudRecordRange;
     /** @deprecated 请使用 controls.visibility。 */
     controlsVisible?: boolean;
@@ -219,6 +222,8 @@ const props = withDefaults(
     streamProfileVerification: 'unspecified',
     streamProfileOptions: () => [],
     streamProfileSwitching: false,
+    broadcasting: false,
+    broadcastBusy: false,
     controlsVisible: undefined,
   },
 );
@@ -236,6 +241,7 @@ const emit = defineEmits<{
   playbackSeek: [{ timeMs: number }];
   playbackRateChange: [{ rate: number }];
   playbackStateChange: [{ paused: boolean }];
+  broadcastToggle: [{ deviceId?: string; channelId?: string }];
   playbackProgress: [{ mediaTimeMs: number }];
   streamSwitch: [{ source: GmvSource }];
   streamProfileChange: [{ profile: GmvStreamProfile }];
@@ -298,7 +304,8 @@ function stopFrameProgress() {
 }
 
 let playerLoadVersion = 0;
-const viewState = ref<GmvDeviceStatus>('idle');
+type GmvPlayerViewState = GmvDeviceStatus | 'paused';
+const viewState = ref<GmvPlayerViewState>('idle');
 const isLoading = ref(false);
 const lastError = ref('');
 const startupProgress = ref<{ elapsedMs: number; checkpointMs: number; hardTimeoutMs: number }>();
@@ -337,6 +344,8 @@ const effectiveControls = computed<GmvPlayerControlsConfig>(() => ({
 const controlsState = computed<GmvPlayerControlsState>(() => ({
   playbackState: viewState.value,
   audioEnabled: audioEnabled.value,
+  broadcasting: props.broadcasting,
+  broadcastBusy: props.broadcastBusy,
   fullscreen: isFullscreen.value,
   infoOpen: infoOpen.value,
   ptzOpen: ptzOpen.value,
@@ -353,6 +362,7 @@ const controlsState = computed<GmvPlayerControlsState>(() => ({
 }));
 const statusLabel = computed(() => {
   if (viewState.value === 'playing') return '播放中';
+  if (viewState.value === 'paused') return '已暂停';
   if (viewState.value === 'reconnecting') return '重连中';
   if (viewState.value === 'error') return '异常';
   if (activePlaybackReady.value) return '已暂停';
@@ -517,19 +527,26 @@ watch(() => props.capabilities.ptz, (value) => {
   if (value === false) closePtzPanel();
 });
 
+watch(() => props.confirmedPlaybackRate, (rate) => {
+  if (rate === undefined || !Number.isFinite(rate) || rate <= 0) return;
+  playbackRate.value = rate;
+  const video = activeVideo();
+  if (video) video.playbackRate = rate;
+}, { immediate: true });
+
 async function mountPlayer(sources = props.sources) {
-  const version = ++playerLoadVersion;
   if (sources.length === 0) {
     destroyPlayer();
     return;
   }
   if (activePlaybackReady.value && sameSourceContract(activeSource.value, sources[0])) {
     destroyPlayerSlot(activeVideoSlot.value === 0 ? 1 : 0);
-    viewState.value = 'playing';
+    viewState.value = activeVideo()?.paused ? 'paused' : 'playing';
     isLoading.value = false;
     startupProgress.value = undefined;
     return;
   }
+  const version = ++playerLoadVersion;
   const hasActivePlayback = activePlaybackReady.value && !!players[activeVideoSlot.value];
   const retainedSlot = activeVideoSlot.value;
   const retainedSource = activeSource.value;
@@ -575,9 +592,8 @@ async function mountPlayer(sources = props.sources) {
     clearNetworkDegradeTimer();
     if (changed) {
       resetMediaStats();
-      playbackRate.value = 1;
-      video.playbackRate = 1;
     }
+    video.playbackRate = playbackRate.value;
     sampleMediaStats(video);
     void nextTick().then(() => {
       if (version !== playerLoadVersion || activeVideoSlot.value !== slot || players[slot] !== core) return;
@@ -602,7 +618,7 @@ async function mountPlayer(sources = props.sources) {
   }));
   playerStops[slot].push(core.on('paused', () => {
     if (slot === activeVideoSlot.value) {
-      viewState.value = 'idle';
+      viewState.value = 'paused';
       isLoading.value = false;
     }
   }));
@@ -637,7 +653,7 @@ async function mountPlayer(sources = props.sources) {
       activePlaybackReady.value = true;
       activeSource.value = retainedSource;
       selectedSourceUrl.value = retainedSourceUrl;
-      viewState.value = 'playing';
+      viewState.value = activeVideo()?.paused ? 'paused' : 'playing';
       lastError.value = '';
     } else {
       activePlaybackReady.value = false;
@@ -657,6 +673,7 @@ function sameSourceContract(left: GmvSource | undefined, right: GmvSource): bool
     && left.codec === right.codec
     && left.mimeCodec === right.mimeCodec
     && left.hasAudio === right.hasAudio
+    && left.rateMode === right.rateMode
     && left.generation === right.generation;
 }
 
@@ -668,6 +685,7 @@ function destroyPlayer() {
   activePlaybackReady.value = false;
   isLoading.value = false;
   startupProgress.value = undefined;
+  playbackRate.value = 1;
   resetMediaStats();
 }
 
@@ -689,14 +707,22 @@ function activeVideo() {
   return videoForSlot(activeVideoSlot.value);
 }
 
+function controlSource() {
+  return activeSource.value
+    ?? props.sources.find((item) => item.url === selectedSourceUrl.value)
+    ?? props.sources[0];
+}
+
 function togglePlay() {
-  const mode = activeSource.value?.rateMode ?? 'disabled';
+  const mode = controlSource()?.rateMode ?? 'disabled';
+  const paused = viewState.value === 'paused';
   if (mode === 'remote-stream') {
-    emit('playbackStateChange', { paused: viewState.value === 'playing' });
+    emit('playbackStateChange', { paused: !paused });
     return;
   }
-  if (viewState.value === 'playing') {
+  if (!paused) {
     activePlayer()?.pause();
+    viewState.value = 'paused';
     return;
   }
   void activePlayer()?.play();
@@ -775,7 +801,8 @@ function switchSource(url: string) {
 }
 
 function setPlaybackRate(rate: number) {
-  const mode = activeSource.value?.rateMode ?? (activeSource.value?.protocol === 'mp4' ? 'local-file' : 'disabled');
+  const source = controlSource();
+  const mode = source?.rateMode ?? (source?.protocol === 'mp4' ? 'local-file' : 'disabled');
   if (mode === 'disabled') return;
   if (mode === 'local-file') {
     playbackRate.value = rate;
@@ -791,8 +818,12 @@ function confirmPlaybackRate(rate: number) {
 }
 
 function confirmPlaybackState(paused: boolean) {
-  if (paused) activePlayer()?.pause();
-  else void activePlayer()?.play();
+  if (paused) {
+    activePlayer()?.pause();
+    viewState.value = 'paused';
+    return;
+  }
+  void activePlayer()?.play();
 }
 
 function confirmPlaybackProgress(timeMs: number) {
@@ -838,7 +869,8 @@ function notifyControlsActivity() {
   controlsRef.value?.notifyActivity();
 }
 
-function handlePlayerSurfaceClick(event: MouseEvent) {
+function handlePlayerSurfacePointerUp(event: PointerEvent) {
+  if (event.pointerType !== 'touch') return;
   const target = event.target;
   if (!(target instanceof Element)) return;
   const interactiveTarget = target.closest(
@@ -890,6 +922,11 @@ function handleControlAction(action: GmvPlayerControlAction) {
       break;
     case 'audio-toggle':
       toggleAudio();
+      break;
+    case 'broadcast-toggle':
+      if (props.capabilities.broadcast !== false && !props.broadcastBusy) {
+        emit('broadcastToggle', basePayload.value);
+      }
       break;
     case 'snapshot':
       captureSnapshot();

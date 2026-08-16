@@ -11,6 +11,7 @@
     "test": "vitest run --environment jsdom"
   },
   "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
     "hls.js": "^1.6.5",
     "mpegts.js": "^1.8.0",
     "vue": "^3.5.17"

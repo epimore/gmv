@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('录像查询仅按用户操作发起，并通过票据展示抓拍图集', async ({ page }) => {
+  test.setTimeout(60_000);
   let recordQueries = 0;
   const recordLists: URLSearchParams[] = [];
   let cloudRecordingLists = 0;
@@ -8,7 +9,13 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   let recordQueryRange: { start_time_sec: number; end_time_sec: number } | undefined;
   let previewOutputType = '';
   let previewStarts = 0;
+  let broadcastStarts = 0;
+  let broadcastStops = 0;
   let playbackOutputType = '';
+  const playbackSpeedRequests: Array<{ request_id: string; stream_id: string; speed_rate: number; expected_generation: number }> = [];
+  const playbackStateRequests: Array<{ stream_id: string; paused: boolean; expected_generation: number }> = [];
+  let holdNextPlaybackSpeed = false;
+  let releasePlaybackSpeed: (() => void) | undefined;
   let multiSeekRequests = 0;
   let releaseMultiSeek: (() => void) | undefined;
   let imageAccesses = 0;
@@ -51,6 +58,15 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
     classification_mode: 'default', effective_kind: 'video', effective_owner_scope: 'resource',
     effective_owner_id: channel.channel_id, warning: '', biz_enable: 1, owner_biz_enable: 1,
     supported: true, available: true, unavailable_reason: '', confirmation: null,
+  };
+  const audioOutputResource = {
+    ...resource,
+    resource_id: '34020000001370000001',
+    name: '入口相机语音输出',
+    type_code: '137',
+    suggested_kind: 'audio_output',
+    effective_kind: 'audio_output',
+    effective_owner_id: channel.channel_id,
   };
   const current = {
     current_batch: { batch_id: 'old', status: 'READY', start_time_sec: 1_753_000_000, end_time_sec: 1_753_003_600, created_at_ms: Date.now() - 600_000 },
@@ -106,7 +122,18 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
     else if (path === '/api/v2/gb28181/session-nodes/session-1/config') body = { domain: '3402000000', domain_id: device.domain_id, wan_ip: '127.0.0.1', wan_port: 5060 };
     else if (path === '/api/v2/gb28181/devices') body = { items: [device], total: 1, page: 1, page_size: 20 };
     else if (path.endsWith('/channels')) body = [channel];
-    else if (path.endsWith('/resources')) body = [resource];
+    else if (path.endsWith('/resources')) body = [resource, audioOutputResource];
+    else if (path.endsWith('/broadcasts/start') && request.method() === 'POST') {
+      broadcastStarts += 1;
+      const target = request.postDataJSON().targets[0];
+      body = {
+        broadcast_id: 'broadcast-1', stream_node_id: 'stream-node-1', input_url: '/test-broadcast-input', state: 'running',
+        target_summaries: [{ ...target, target_key: 'target-1', session_node_id: 'session-1', leg_id: 'leg-1', transport: target.trans_mode, profile: 'PCMA', state: 'running', reason: '' }],
+      };
+    } else if (path.endsWith('/broadcasts/broadcast-1/stop-all') && request.method() === 'POST') {
+      broadcastStops += 1;
+      body = { broadcast_id: 'broadcast-1', stream_node_id: 'stream-node-1', input_url: '', state: 'stopped', target_summaries: [] };
+    }
     else if (path.endsWith('/images/16873/access')) {
       imageAccesses += 1;
       expect(request.method()).toBe('POST');
@@ -157,6 +184,18 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
         },
         error: null,
       };
+    } else if (path.endsWith('/playbacks/playback-1/speed') && request.method() === 'POST') {
+      const speedRequest = request.postDataJSON();
+      playbackSpeedRequests.push(speedRequest);
+      if (holdNextPlaybackSpeed) {
+        holdNextPlaybackSpeed = false;
+        await new Promise<void>((resolve) => { releasePlaybackSpeed = resolve; });
+      }
+      body = { generation: speedRequest.expected_generation + 1 };
+    } else if (path.endsWith('/playbacks/playback-1/state') && request.method() === 'POST') {
+      const stateRequest = request.postDataJSON();
+      playbackStateRequests.push(stateRequest);
+      body = { generation: stateRequest.expected_generation + 1 };
     } else if (path.endsWith('/playbacks/playback-1/seek') && request.method() === 'POST') {
       multiSeekRequests += 1;
       await new Promise<void>((resolve) => { releaseMultiSeek = resolve; });
@@ -187,6 +226,74 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
   });
 
+  await page.addInitScript(() => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true });
+    let mediaRequestCount = 0;
+    const track = { stop: () => undefined, addEventListener: () => undefined };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: async () => {
+          mediaRequestCount += 1;
+          if (mediaRequestCount === 1) throw new Error('测试麦克风拒绝');
+          return { getTracks: () => [track], getAudioTracks: () => [track] };
+        },
+      },
+    });
+    class MockWebSocket {
+      static readonly OPEN = 1;
+      static readonly CLOSING = 2;
+      readyState = 0;
+      binaryType = '';
+      private readonly listeners = new Map<string, Set<EventListener>>();
+
+      constructor() {
+        queueMicrotask(() => {
+          this.readyState = MockWebSocket.OPEN;
+          this.dispatch('open');
+        });
+      }
+
+      addEventListener(type: string, listener: EventListener) {
+        const listeners = this.listeners.get(type) || new Set<EventListener>();
+        listeners.add(listener);
+        this.listeners.set(type, listeners);
+      }
+
+      removeEventListener(type: string, listener: EventListener) {
+        this.listeners.get(type)?.delete(listener);
+      }
+
+      send() {}
+
+      close() {
+        this.readyState = 3;
+        this.dispatch('close');
+      }
+
+      private dispatch(type: string) {
+        for (const listener of this.listeners.get(type) || []) listener(new Event(type));
+      }
+    }
+    class MockAudioContext {
+      sampleRate = 48_000;
+      state = 'running';
+      destination = {};
+      audioWorklet = { addModule: async () => undefined };
+      createMediaStreamSource() { return { connect: (target: unknown) => target }; }
+      createGain() { return { gain: { value: 1 }, connect: (target: unknown) => target }; }
+      async resume() {}
+      async close() { this.state = 'closed'; }
+    }
+    class MockAudioWorkletNode {
+      port = { onmessage: null };
+      connect(target: unknown) { return target; }
+    }
+    Object.defineProperty(window, 'WebSocket', { configurable: true, value: MockWebSocket });
+    Object.defineProperty(window, 'AudioContext', { configurable: true, value: MockAudioContext });
+    Object.defineProperty(window, 'AudioWorkletNode', { configurable: true, value: MockAudioWorkletNode });
+  });
+
   await page.goto('/gb28181/monitor');
   await page.getByRole('button', { name: '相机' }).click();
   await expect(page.locator('.channel-cover img')).toHaveAttribute('src', '/test-snapshot.svg');
@@ -195,19 +302,41 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await expect.poll(() => previewOutputType).toBe('ll_hls');
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
   const livePlayer = page.locator('.monitor-player-dialog .gmv-player');
+  await expect(livePlayer.getByLabel('播放倍速')).toHaveCount(0);
+  await expect(livePlayer.getByLabel('回放进度')).toHaveCount(0);
+  expect(playbackSpeedRequests).toHaveLength(0);
+  await expect(livePlayer.getByLabel('开始语音广播')).toBeVisible();
+  await livePlayer.getByLabel('开始语音广播').click();
+  await expect(page.getByText('语音广播启动失败')).toBeVisible();
+  await expect(livePlayer.getByLabel('开始语音广播')).toBeEnabled();
+  await livePlayer.getByLabel('开始语音广播').click();
+  await expect.poll(() => broadcastStarts).toBe(1);
+  await expect(livePlayer.getByLabel('停止语音广播')).toBeEnabled();
+  await livePlayer.getByLabel('停止语音广播').click();
+  await expect.poll(() => broadcastStops).toBe(1);
+  await expect(livePlayer.getByLabel('开始语音广播')).toBeEnabled();
   const liveVideo = livePlayer.locator('.gmv-video').first();
   await livePlayer.getByLabel('更多操作').click();
-  await livePlayer.getByLabel('切换媒体信息').click();
+  await livePlayer.getByLabel('显示媒体信息').click();
   await livePlayer.getByLabel('更多操作').click();
-  await livePlayer.getByLabel('切换云台控制').click();
+  await livePlayer.getByLabel('打开云台控制').click();
   await livePlayer.getByLabel('更多操作').click();
   await liveVideo.click({ position: { x: 20, y: 20 } });
+  await expect(livePlayer).not.toHaveClass(/player-chrome-hidden/);
+  await expect(livePlayer.locator('.media-info-panel')).toBeVisible();
+  await expect(livePlayer.locator('.ptz-panel')).toBeVisible();
+  await expect(livePlayer.locator('.overflow-menu')).toHaveCount(0);
+
+  await liveVideo.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(livePlayer).toHaveClass(/player-chrome-hidden/);
   await expect(livePlayer.locator('.media-info-panel')).toBeHidden();
   await expect(livePlayer.locator('.ptz-panel')).toBeHidden();
-  await expect(livePlayer.locator('.overflow-menu')).toHaveCount(0);
 
-  await liveVideo.click({ position: { x: 20, y: 20 } });
+  await liveVideo.evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(livePlayer).not.toHaveClass(/player-chrome-hidden/);
   await expect(livePlayer.locator('.media-info-panel')).toBeVisible();
   await expect(livePlayer.locator('.ptz-panel')).toBeVisible();
@@ -215,6 +344,12 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await expect(livePlayer).toHaveClass(/player-chrome-hidden/);
   await expect(livePlayer.locator('.media-info-panel')).toHaveCount(0);
   await expect(livePlayer.locator('.ptz-panel')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
+  expect(releasedStreams).toHaveLength(0);
+  await page.mouse.click(4, 4);
+  await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeVisible();
+  expect(releasedStreams).toHaveLength(0);
   await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
   await expect.poll(() => releasedStreams.length).toBe(1);
   await expect(page.getByRole('dialog', { name: /^实时直播 ·/ })).toBeHidden();
@@ -351,14 +486,72 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
   await page.getByRole('button', { name: '开始播放' }).click();
   await expect.poll(() => playbackOutputType).toBe('hls');
   await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
+  expect(releasedStreams).toHaveLength(2);
+  await page.mouse.click(4, 4);
+  await expect(page.getByRole('dialog', { name: /^历史回放 ·/ })).toBeVisible();
+  expect(releasedStreams).toHaveLength(2);
   const playbackPlayer = page.locator('.monitor-player-dialog .gmv-player');
+  await expect(playbackPlayer.getByLabel('开始语音广播')).toHaveCount(0);
+  const playbackPrimaryControls = playbackPlayer.locator('.primary-controls');
+  await expect(playbackPrimaryControls.getByLabel('截图')).toBeVisible();
+  await expect(playbackPrimaryControls.getByLabel('播放倍速')).toBeVisible();
+  await expect(playbackPrimaryControls.getByLabel('进入全屏')).toBeVisible();
+  holdNextPlaybackSpeed = true;
+  await playbackPrimaryControls.getByLabel('播放倍速').selectOption('2');
+  await expect.poll(() => playbackSpeedRequests.length).toBe(1);
+  expect(playbackSpeedRequests[0]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    speed_rate: 2,
+    expected_generation: 1,
+  });
+  await playbackPrimaryControls.getByLabel('播放倍速').selectOption('4');
+  await page.waitForTimeout(100);
+  expect(playbackSpeedRequests).toHaveLength(1);
+  releasePlaybackSpeed?.();
+  await expect.poll(() => playbackSpeedRequests.length).toBe(2);
+  expect(playbackSpeedRequests[1]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    speed_rate: 4,
+    expected_generation: 2,
+  });
+  expect(playbackSpeedRequests[1].request_id).not.toBe(playbackSpeedRequests[0].request_id);
+  await expect(page.getByText('回放倍速指令已发送：4x')).toBeVisible();
+  await expect.poll(() => playbackPlayer.locator('.gmv-video').first().evaluate((video) => (
+    video as HTMLVideoElement
+  ).playbackRate)).toBe(4);
+  await playbackPrimaryControls.getByRole('button', { name: '播放', exact: true }).click();
+  await expect.poll(() => playbackStateRequests.length).toBe(1);
+  expect(playbackStateRequests[0]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    paused: true,
+    expected_generation: 3,
+  });
+  await expect(playbackPrimaryControls.getByRole('button', { name: '继续播放', exact: true })).toBeVisible();
+  await playbackPrimaryControls.getByLabel('播放倍速').selectOption('2');
+  await page.waitForTimeout(100);
+  expect(playbackSpeedRequests).toHaveLength(2);
+  await playbackPrimaryControls.getByLabel('继续播放').click();
+  await expect.poll(() => playbackSpeedRequests.length).toBe(3);
+  expect(playbackSpeedRequests[2]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    speed_rate: 2,
+    expected_generation: 4,
+  });
   const playbackProgress = playbackPlayer.getByLabel('回放进度');
   await expect(playbackProgress).toHaveAttribute('max', String(30 * 60 * 1_000));
   await playbackPlayer.hover({ position: { x: 20, y: 20 } });
   await expect(playbackProgress).toBeVisible();
   await playbackPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await expect(playbackProgress).toBeVisible();
+  await playbackPlayer.locator('.gmv-video').first().evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(playbackProgress).toBeHidden();
-  await playbackPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await playbackPlayer.locator('.gmv-video').first().evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(playbackProgress).toBeVisible();
   await page.getByLabel('回放操作模式').selectOption('clip');
   cloudRecordingCreateRange = undefined;
@@ -374,23 +567,81 @@ test('录像查询仅按用户操作发起，并通过票据展示抓拍图集',
 
   await page.locator('.cloud-recording-drawer .el-drawer__close-btn').click();
   await page.locator('.monitor-player-dialog .el-dialog__headerbtn').click();
+  await expect.poll(() => releasedStreams.length).toBe(3);
   await page.getByLabel('加入多画面回放').click();
 
   const defaultRangeInputs = page.locator('.multi-default-range input');
   await defaultRangeInputs.nth(0).fill('2026-07-22 10:00:00');
-  await defaultRangeInputs.nth(0).press('Enter');
   await defaultRangeInputs.nth(1).fill('2026-07-22 10:30:00');
-  await defaultRangeInputs.nth(1).press('Enter');
+  await defaultRangeInputs.nth(1).press('Tab');
   await page.locator('.device-channel-tree .tree-device-node').first().click();
-  await page.locator('.tree-channel-node').first().click();
-  await page.getByRole('button', { name: '确认播放', exact: true }).click();
+  const channelOption = page.locator('.tree-channel-node').first();
+  const channelCheckbox = channelOption.getByRole('checkbox');
+  await channelOption.click();
+  await expect(channelCheckbox).toBeChecked();
+  await expect(page.locator('.selected-channel-item')).toHaveCount(1);
+  const selectedPlaybackCard = page.locator('.selected-channel-item').first();
+  const restoreDefault = selectedPlaybackCard.getByRole('button', { name: '恢复默认', exact: true });
+  const playbackFormatControl = selectedPlaybackCard.locator('.playback-output-select');
+  const playbackFormat = selectedPlaybackCard.getByLabel('通道播放格式');
+  const transportOverride = selectedPlaybackCard.getByLabel('目标广播传输覆盖');
+  const confirmPlayback = selectedPlaybackCard.getByRole('button', { name: '确认播放', exact: true });
+  await expect(playbackFormatControl).toContainText('HTTP-FLV');
+  const [restoreBox, formatBox, transportBox, confirmBox] = await Promise.all([
+    restoreDefault.boundingBox(),
+    playbackFormatControl.boundingBox(),
+    transportOverride.boundingBox(),
+    confirmPlayback.boundingBox(),
+  ]);
+  expect(restoreBox).not.toBeNull();
+  expect(formatBox).not.toBeNull();
+  expect(transportBox).not.toBeNull();
+  expect(confirmBox).not.toBeNull();
+  expect(Math.abs(restoreBox!.y - formatBox!.y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(formatBox!.y - transportBox!.y)).toBeLessThanOrEqual(2);
+  expect(Math.abs(transportBox!.y - confirmBox!.y)).toBeLessThanOrEqual(2);
+  await playbackFormatControl.click();
+  await page.getByRole('option', { name: 'HTTP-fMP4', exact: true }).click();
+  await confirmPlayback.click();
+  await expect.poll(() => playbackOutputType).toBe('fmp4');
+  await expect(playbackFormat).toBeDisabled();
 
   const multiProgress = page.locator('.grid-cell').first().getByLabel('回放进度');
   await expect(multiProgress).toBeVisible();
   const multiPlayer = page.locator('.grid-cell .gmv-player').first();
-  await multiPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  const multiPrimaryControls = multiPlayer.locator('.primary-controls');
+  await expect(multiPrimaryControls.getByLabel('截图')).toBeVisible();
+  await expect(multiPrimaryControls.getByLabel('播放倍速')).toBeVisible();
+  await expect(multiPrimaryControls.getByLabel('进入全屏')).toBeVisible();
+  holdNextPlaybackSpeed = true;
+  await multiPrimaryControls.getByLabel('播放倍速').selectOption('2');
+  await expect.poll(() => playbackSpeedRequests.length).toBe(4);
+  expect(playbackSpeedRequests[3]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    speed_rate: 2,
+    expected_generation: 1,
+  });
+  await multiPrimaryControls.getByLabel('播放倍速').selectOption('4');
+  await page.waitForTimeout(100);
+  expect(playbackSpeedRequests).toHaveLength(4);
+  releasePlaybackSpeed?.();
+  await expect.poll(() => playbackSpeedRequests.length).toBe(5);
+  expect(playbackSpeedRequests[4]).toMatchObject({
+    stream_id: playbackStream.stream_id,
+    speed_rate: 4,
+    expected_generation: 2,
+  });
+  expect(playbackSpeedRequests[4].request_id).not.toBe(playbackSpeedRequests[3].request_id);
+  await expect.poll(() => multiPlayer.locator('.gmv-video').first().evaluate((video) => (
+    video as HTMLVideoElement
+  ).playbackRate)).toBe(4);
+  await multiPlayer.locator('.gmv-video').first().evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(multiProgress).toBeHidden();
-  await multiPlayer.locator('.gmv-video').first().click({ position: { x: 20, y: 20 } });
+  await multiPlayer.locator('.gmv-video').first().evaluate((element) => {
+    element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' }));
+  });
   await expect(multiProgress).toBeVisible();
   const emitMultiProgress = async (mediaTimeMs: number) => {
     await page.locator('.grid-cell .gmv-player').first().evaluate((element, value) => {

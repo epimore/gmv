@@ -10,6 +10,7 @@ export class FlvEngine extends BaseEngine {
 
   async attach(video: HTMLVideoElement, source: GmvSource): Promise<void> {
     this.video = video;
+    const isLive = source.rateMode !== 'remote-stream';
 
     if (!mpegts.getFeatureList?.().mseLivePlayback) {
       throw new Error(`${GmvErrorCode.UnsupportedProtocol}: 当前浏览器不支持 MSE FLV 播放`);
@@ -17,7 +18,7 @@ export class FlvEngine extends BaseEngine {
 
     const mediaDataSource: Record<string, unknown> = {
       type: 'flv',
-      isLive: true,
+      isLive,
       url: source.url,
       hasVideo: true,
     };
@@ -30,7 +31,7 @@ export class FlvEngine extends BaseEngine {
         enableStashBuffer: true,
         stashInitialSize: 512 * 1024,
         liveBufferLatencyChasing: false,
-        liveSync: true,
+        liveSync: isLive,
         liveSyncTargetLatency: 1.2,
         liveSyncMaxLatency: 2,
         liveSyncPlaybackRate: 1.05,

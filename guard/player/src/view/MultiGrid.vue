@@ -51,6 +51,7 @@
           @snapshot-error="(payload) => emit('snapshotError', { index: visibleIndex(index), payload })"
           @record-start="(payload) => emit('recordStart', { index: visibleIndex(index), payload })"
           @record-stop="(payload) => emit('recordStop', { index: visibleIndex(index), payload })"
+          @broadcast-toggle="(payload) => emit('broadcastToggle', { index: visibleIndex(index), payload })"
           @ptz="(payload) => emit('ptz', { index: visibleIndex(index), payload })"
           @preset-call="(payload) => emit('presetCall', { index: visibleIndex(index), payload })"
           @preset-set="(payload) => emit('presetSet', { index: visibleIndex(index), payload })"
@@ -130,7 +131,10 @@ export interface GmvGridCell {
   playbackDurationMs?: number;
   playbackStartTimeMs?: number;
   playbackEndTimeMs?: number;
+  confirmedPlaybackRate?: number;
   cloudRecordLockedRange?: GmvCloudRecordRange;
+  broadcasting?: boolean;
+  broadcastBusy?: boolean;
 }
 
 const props = defineProps<{
@@ -145,6 +149,7 @@ const emit = defineEmits<{
   snapshotError: [{ index: number; payload: { message: string } }];
   recordStart: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   recordStop: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
+  broadcastToggle: [{ index: number; payload: { deviceId?: string; channelId?: string } }];
   ptz: [{ index: number; payload: GmvPtzCommand }];
   presetCall: [{ index: number; payload: { presetId: string } }];
   presetSet: [{ index: number; payload: { presetId: string } }];

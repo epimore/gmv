@@ -45,7 +45,7 @@ export class HlsEngine extends BaseEngine {
 
     if (Hls.isSupported()) {
       this.hls = new Hls({
-        lowLatencyMode: isLowLatencyPlaylist(source.url),
+        lowLatencyMode: source.rateMode !== 'remote-stream' && isLowLatencyPlaylist(source.url),
         backBufferLength: 30,
       });
       this.attaching = false;

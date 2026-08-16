@@ -4,6 +4,7 @@ import { nextTick } from "vue";
 import type { GmvPlayerControlsConfig, GmvPlayerControlsState } from "../../src/core/types";
 import GmvPlayerView from "../../src/view/GmvPlayerView.vue";
 import PlayerControls from "../../src/view/PlayerControls.vue";
+import SpeakerIcon from "../../src/view/SpeakerIcon.vue";
 
 const playingState: GmvPlayerControlsState = {
   playbackState: "playing",
@@ -61,6 +62,64 @@ afterEach(() => {
 });
 
 describe("PlayerControls", () => {
+  it("标准动作使用图标并按当前状态提供可访问名称", async () => {
+    const wrapper = mountControls({
+      items: ["play", "audio", "snapshot", "info", "fullscreen", "ptz", "record", "cloudRecord"],
+      visibility: "always",
+    });
+
+    expect(wrapper.findAll(".primary-controls > button .control-icon")).toHaveLength(8);
+    expect(wrapper.find('[aria-label="暂停"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="开启声音"]').exists()).toBe(true);
+    expect(wrapper.findComponent(SpeakerIcon).exists()).toBe(true);
+    expect(wrapper.find('[aria-label="显示媒体信息"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="进入全屏"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="打开云台控制"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="开始录像"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="打开下载任务"]').exists()).toBe(true);
+    expect(wrapper.get('[aria-label="暂停"]').attributes("title")).toBe("暂停");
+
+    await wrapper.setProps({
+      state: {
+        ...playingState,
+        playbackState: "idle",
+        audioEnabled: true,
+        fullscreen: true,
+        infoOpen: true,
+        ptzOpen: true,
+        recording: true,
+      },
+    });
+    expect(wrapper.find('[aria-label="播放"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="静音"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="隐藏媒体信息"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="退出全屏"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="关闭云台控制"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="停止录像"]').exists()).toBe(true);
+    expect(wrapper.get('[aria-label="隐藏媒体信息"]').classes()).toContain("active");
+    expect(wrapper.get('[aria-label="关闭云台控制"]').classes()).toContain("active");
+    expect(wrapper.get('[aria-label="停止录像"]').classes()).toContain("active");
+    wrapper.unmount();
+  });
+
+  it("语音广播使用独立麦克风动作并反映运行状态", async () => {
+    const wrapper = mountControls(
+      { items: ["audio", "broadcast"], visibility: "always" },
+      { ...playingState, broadcasting: false, broadcastBusy: false },
+    );
+
+    expect(wrapper.find('[aria-label="开启声音"]').exists()).toBe(true);
+    await wrapper.get('[aria-label="开始语音广播"]').trigger("click");
+    expect(wrapper.emitted("action")?.at(-1)).toEqual([{ type: "broadcast-toggle" }]);
+
+    await wrapper.setProps({ state: { ...playingState, broadcasting: true, broadcastBusy: false } });
+    expect(wrapper.get('[aria-label="停止语音广播"]').classes()).toContain("active");
+
+    await wrapper.setProps({ state: { ...playingState, broadcasting: true, broadcastBusy: true } });
+    expect(wrapper.get<HTMLButtonElement>('[aria-label="语音广播处理中"]').element.disabled).toBe(true);
+    wrapper.unmount();
+  });
+
   it("emits a typed stream profile action and disables the selector while switching", async () => {
     const wrapper = mountControls(
       { items: ["streamProfile"], visibility: "always" },
@@ -86,7 +145,7 @@ describe("PlayerControls", () => {
     });
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
-    await wrapper.get('[aria-label="打开下载"]').trigger("click");
+    await wrapper.get('[aria-label="打开下载任务"]').trigger("click");
 
     expect(wrapper.emitted("action")?.at(-1)).toEqual([{ type: "cloud-record-request" }]);
     expect(wrapper.find(".overflow-menu").exists()).toBe(false);
@@ -233,7 +292,7 @@ describe("PlayerControls", () => {
       attachTo: document.body,
     });
 
-    expect(wrapper.find('[aria-label="切换播放状态"]').exists()).toBe(true);
+    expect(wrapper.find('[aria-label="播放"]').exists()).toBe(true);
     wrapper.unmount();
   });
 
@@ -246,7 +305,7 @@ describe("PlayerControls", () => {
       },
       attachTo: document.body,
     });
-    const ptzButton = wrapper.get('[aria-label="切换云台控制"]');
+    const ptzButton = wrapper.get('[aria-label="打开云台控制"]');
 
     expect(ptzButton.attributes("aria-expanded")).toBe("false");
     expect(wrapper.find(".ptz-panel").exists()).toBe(false);
@@ -277,7 +336,7 @@ describe("PlayerControls", () => {
       },
       attachTo: document.body,
     });
-    const infoButton = wrapper.get('[aria-label="切换媒体信息"]');
+    const infoButton = wrapper.get('[aria-label="显示媒体信息"]');
 
     expect(wrapper.find(".player-topbar").exists()).toBe(false);
     expect(wrapper.find(".media-info-panel").exists()).toBe(false);
@@ -317,12 +376,12 @@ describe("PlayerControls", () => {
     });
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
-    await wrapper.get('[aria-label="切换云台控制"]').trigger("click");
+    await wrapper.get('[aria-label="打开云台控制"]').trigger("click");
 
     expect(wrapper.find(".overflow-menu").exists()).toBe(false);
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
-    expect(wrapper.get('[aria-label="切换云台控制"]').attributes("aria-expanded")).toBe("true");
+    expect(wrapper.get('[aria-label="关闭云台控制"]').attributes("aria-expanded")).toBe("true");
     wrapper.unmount();
   });
 
@@ -335,7 +394,7 @@ describe("PlayerControls", () => {
       },
       attachTo: document.body,
     });
-    await wrapper.get('[aria-label="切换云台控制"]').trigger("click");
+    await wrapper.get('[aria-label="打开云台控制"]').trigger("click");
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
 
     wrapper.findComponent(PlayerControls).vm.$emit("visibilityChange", false);
@@ -344,7 +403,7 @@ describe("PlayerControls", () => {
 
     wrapper.findComponent(PlayerControls).vm.$emit("visibilityChange", true);
     await nextTick();
-    expect(wrapper.get('[aria-label="切换云台控制"]').attributes("aria-expanded")).toBe("false");
+    expect(wrapper.get('[aria-label="打开云台控制"]').attributes("aria-expanded")).toBe("false");
     expect(wrapper.find(".ptz-panel").exists()).toBe(false);
     wrapper.unmount();
   });
@@ -359,7 +418,7 @@ describe("PlayerControls", () => {
 
     expect(withoutPtz.find('[aria-label="更多操作"]').exists()).toBe(false);
     await withPtz.get('[aria-label="更多操作"]').trigger("click");
-    expect(withPtz.find('[aria-label="切换云台控制"]').exists()).toBe(true);
+    expect(withPtz.find('[aria-label="打开云台控制"]').exists()).toBe(true);
     withoutPtz.unmount();
     withPtz.unmount();
   });
@@ -371,13 +430,9 @@ describe("PlayerControls", () => {
       visibility: "always",
     });
 
-    expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual([
-      "暂停",
-      "截图",
-      "全屏",
-      "更多",
-    ]);
-    expect(wrapper.find('[aria-label="切换声音"]').exists()).toBe(false);
+    expect(wrapper.findAll(".primary-controls > button .control-icon")).toHaveLength(4);
+    expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual(["", "", "", ""]);
+    expect(wrapper.find('[aria-label="开启声音"]').exists()).toBe(false);
     expect(wrapper.find('[aria-label="媒体输出格式"]').exists()).toBe(false);
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
@@ -385,9 +440,9 @@ describe("PlayerControls", () => {
     expect(wrapper.get(".overflow-menu").isVisible()).toBe(true);
     expect(wrapper.find('.overflow-menu [aria-label="媒体输出格式"]').exists()).toBe(true);
     expect(wrapper.findAll(".overflow-menu > button").map((item) => item.text())).toEqual([
-      "信息",
-      "静音",
-      "录像",
+      "显示媒体信息",
+      "开启声音",
+      "开始录像",
     ]);
     wrapper.unmount();
   });
@@ -407,7 +462,7 @@ describe("PlayerControls", () => {
 
     await audioPlayer.get('[aria-label="更多操作"]').trigger("click");
     expect(snapshotPlayer.find(".overflow-menu").exists()).toBe(false);
-    expect(audioPlayer.find('[aria-label="切换声音"]').exists()).toBe(true);
+    expect(audioPlayer.find('[aria-label="开启声音"]').exists()).toBe(true);
     snapshotPlayer.unmount();
     audioPlayer.unmount();
   });
@@ -431,7 +486,7 @@ describe("PlayerControls", () => {
     wrapper.unmount();
   });
 
-  it("点击播放表面软隐藏并恢复媒体信息和云台，随后超时硬隐藏不再恢复", async () => {
+  it("桌面点击不隐藏，触摸点击软隐藏并恢复面板，随后超时硬隐藏不再恢复", async () => {
     vi.useFakeTimers();
     const wrapper = mount(GmvPlayerView, {
       props: {
@@ -446,8 +501,8 @@ describe("PlayerControls", () => {
       attachTo: document.body,
     });
 
-    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
-    await wrapper.get('[aria-label="切换云台控制"]').trigger("click");
+    await wrapper.get('[aria-label="显示媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="打开云台控制"]').trigger("click");
     expect(wrapper.find(".media-info-panel").exists()).toBe(true);
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
 
@@ -463,6 +518,16 @@ describe("PlayerControls", () => {
     ]);
 
     await video.trigger("click");
+    expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
+
+    const touchTap = async () => {
+      const event = new Event("pointerup", { bubbles: true });
+      Object.defineProperty(event, "pointerType", { value: "touch" });
+      video.element.dispatchEvent(event);
+      await nextTick();
+    };
+
+    await touchTap();
     expect(wrapper.get(".gmv-player").classes()).toContain("player-chrome-hidden");
     expect(wrapper.find(".media-info-panel").exists()).toBe(true);
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
@@ -475,7 +540,7 @@ describe("PlayerControls", () => {
     expect(wrapper.find(".media-info-panel").exists()).toBe(true);
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
 
-    await video.trigger("click");
+    await touchTap();
     expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     expect(wrapper.find(".media-info-panel").exists()).toBe(true);
     expect(wrapper.find(".ptz-panel").exists()).toBe(true);
@@ -485,7 +550,7 @@ describe("PlayerControls", () => {
     expect(wrapper.find(".media-info-panel").exists()).toBe(false);
     expect(wrapper.find(".ptz-panel").exists()).toBe(false);
 
-    await video.trigger("click");
+    await touchTap();
     expect(wrapper.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     expect(wrapper.find(".media-info-panel").exists()).toBe(false);
     expect(wrapper.find(".ptz-panel").exists()).toBe(false);
@@ -520,8 +585,14 @@ describe("PlayerControls", () => {
       },
     });
 
-    await always.findAll(".gmv-video")[0].trigger("click");
-    await hidden.findAll(".gmv-video")[0].trigger("click");
+    const touchTap = async (element: Element) => {
+      const event = new Event("pointerup", { bubbles: true });
+      Object.defineProperty(event, "pointerType", { value: "touch" });
+      element.dispatchEvent(event);
+      await nextTick();
+    };
+    await touchTap(always.findAll(".gmv-video")[0].element);
+    await touchTap(hidden.findAll(".gmv-video")[0].element);
 
     expect(always.get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     expect(always.find(".control-bar").exists()).toBe(true);
@@ -710,7 +781,7 @@ describe("PlayerControls", () => {
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
     await dispatchTouchLeave();
     expect(wrapper.find(".overflow-menu").exists()).toBe(true);
-    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="显示媒体信息"]').trigger("click");
     expect(wrapper.find(".media-info-panel").exists()).toBe(true);
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");
@@ -734,7 +805,7 @@ describe("PlayerControls", () => {
 
     await wrapper.get('[aria-label="截图"]').trigger("click");
     await wrapper.get('[aria-label="媒体输出格式"]').setValue("hls");
-    await wrapper.get('[aria-label="切换媒体信息"]').trigger("click");
+    await wrapper.get('[aria-label="显示媒体信息"]').trigger("click");
     await wrapper.get('[aria-label="播放倍速"]').setValue("2");
 
     expect(wrapper.emitted("action")).toEqual([
@@ -765,13 +836,8 @@ describe("PlayerControls", () => {
 
     expect(wrapper.find(".playback-timeline-row .timeline").exists()).toBe(true);
     expect(wrapper.find(".primary-controls .timeline").exists()).toBe(false);
-    expect(wrapper.find('.primary-controls [aria-label="切换播放状态"]').exists()).toBe(true);
-    expect(wrapper.findAll(".primary-controls > button").map((item) => item.text())).toEqual([
-      "暂停",
-      "截图",
-      "全屏",
-      "更多",
-    ]);
+    expect(wrapper.find('.primary-controls [aria-label="暂停"]').exists()).toBe(true);
+    expect(wrapper.findAll(".primary-controls > button .control-icon")).toHaveLength(4);
     expect(wrapper.find(".primary-timeline .primary-timeline-jump").exists()).toBe(true);
 
     await wrapper.get('[aria-label="更多操作"]').trigger("click");

@@ -121,6 +121,20 @@ live-3.m4s?gmv-token=token
     engine.destroy();
   });
 
+  it('disables low-latency rate control for remote playback even on an LL-HLS URL', async () => {
+    hlsMock.instances.length = 0;
+    const engine = new HlsEngine();
+    await engine.attach(document.createElement('video'), {
+      protocol: 'hls',
+      url: 'http://127.0.0.1/playback.ll.m3u8',
+      codec: 'h264',
+      rateMode: 'remote-stream',
+    });
+
+    expect(hlsMock.instances[0].options).toMatchObject({ lowLatencyMode: false });
+    engine.destroy();
+  });
+
   it('uses native HLS when the browser has no MSE path', async () => {
     hlsMock.instances.length = 0;
     const nativeHls = vi.spyOn(BrowserProbe, 'canNativeHls').mockReturnValue(true);

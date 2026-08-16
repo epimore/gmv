@@ -35,33 +35,45 @@
         </span>
         <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
         <span class="timeline-jump primary-timeline-jump">
-          <button type="button" :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃"
+          <button type="button" class="timeline-jump-button"
+            :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃" title="向后跳跃"
             @click="emitJump(-1)">
-            后退
+            <DArrowLeft class="control-icon" aria-hidden="true" />
           </button>
           <input v-model.number="jumpSeconds" type="number" min="1"
             :max="Math.max(1, Math.floor(state.durationMs / 1000))" :disabled="capabilities.playback === false"
             aria-label="跳跃秒数" />
           <span>秒</span>
-          <button type="button" :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-            aria-label="向前跳跃" @click="emitJump(1)">
-            前进
+          <button type="button" class="timeline-jump-button"
+            :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+            aria-label="向前跳跃" title="向前跳跃" @click="emitJump(1)">
+            <DArrowRight class="control-icon" aria-hidden="true" />
           </button>
         </span>
       </div>
     </div>
     <div class="control-items primary-controls">
       <template v-for="control in primaryActionItems" :key="control">
-        <button v-if="control === 'play'" type="button" aria-label="切换播放状态" @click="emitSimple('play-toggle')">
-          {{ state.playbackState === "playing" ? "暂停" : "播放" }}
+        <button v-if="control === 'play'" type="button" class="icon-control" :aria-label="playActionLabel"
+          :title="playActionLabel" @click="emitSimple('play-toggle')">
+          <VideoPause v-if="state.playbackState === 'playing'" class="control-icon" aria-hidden="true" />
+          <VideoPlay v-else class="control-icon" aria-hidden="true" />
         </button>
-        <button v-else-if="control === 'audio'" type="button" :disabled="capabilities.audio === false" aria-label="切换声音"
+        <button v-else-if="control === 'audio'" type="button" class="icon-control"
+          :disabled="capabilities.audio === false" :aria-label="audioActionLabel" :title="audioActionLabel"
           @click="emitSimple('audio-toggle')">
-          {{ state.audioEnabled ? "声音" : "静音" }}
+          <SpeakerIcon class="control-icon" :muted="!state.audioEnabled" />
         </button>
-        <button v-else-if="control === 'snapshot'" type="button" :disabled="capabilities.snapshot === false"
-          aria-label="截图" @click="emitSimple('snapshot')">
-          截图
+        <button v-else-if="control === 'broadcast'" type="button" class="icon-control"
+          :class="{ active: state.broadcasting }"
+          :disabled="capabilities.broadcast === false || state.broadcastBusy"
+          :aria-label="broadcastActionLabel" :title="broadcastActionLabel" :aria-busy="state.broadcastBusy"
+          @click="emitSimple('broadcast-toggle')">
+          <Microphone class="control-icon" aria-hidden="true" />
+        </button>
+        <button v-else-if="control === 'snapshot'" type="button" class="icon-control"
+          :disabled="capabilities.snapshot === false" aria-label="截图" title="截图" @click="emitSimple('snapshot')">
+          <Camera class="control-icon" aria-hidden="true" />
         </button>
         <select v-else-if="control === 'outputType'" :value="state.selectedOutputType"
           :disabled="outputSwitching || !outputOptions.length" aria-label="媒体输出格式"
@@ -70,26 +82,33 @@
             {{ option.label }}
           </option>
         </select>
-        <button v-else-if="control === 'info'" type="button" :class="{ active: state.infoOpen }" aria-label="切换媒体信息"
+        <button v-else-if="control === 'info'" type="button" class="icon-control"
+          :class="{ active: state.infoOpen }" :aria-label="infoActionLabel" :title="infoActionLabel"
           :aria-expanded="state.infoOpen" @click="emitSimple('info-toggle')">
-          信息
+          <InfoFilled class="control-icon" aria-hidden="true" />
         </button>
-        <button v-else-if="control === 'fullscreen'" type="button" :disabled="!fullscreenSupported" aria-label="切换全屏"
+        <button v-else-if="control === 'fullscreen'" type="button" class="icon-control"
+          :disabled="!fullscreenSupported" :aria-label="fullscreenActionLabel" :title="fullscreenActionLabel"
           @click="emitSimple('fullscreen-toggle')">
-          {{ state.fullscreen ? "退出全屏" : "全屏" }}
+          <ScaleToOriginal v-if="state.fullscreen" class="control-icon" aria-hidden="true" />
+          <FullScreen v-else class="control-icon" aria-hidden="true" />
         </button>
-        <button v-else-if="control === 'ptz'" type="button" :class="{ active: state.ptzOpen }"
-          :disabled="capabilities.ptz === false" aria-label="切换云台控制" :aria-expanded="state.ptzOpen"
+        <button v-else-if="control === 'ptz'" type="button" class="icon-control" :class="{ active: state.ptzOpen }"
+          :disabled="capabilities.ptz === false" :aria-label="ptzActionLabel" :title="ptzActionLabel"
+          :aria-expanded="state.ptzOpen"
           @click="emitSimple('ptz-toggle')">
-          云台
+          <Aim class="control-icon" aria-hidden="true" />
         </button>
-        <button v-else-if="control === 'record'" type="button" :disabled="capabilities.record === false"
-          aria-label="切换录像状态" @click="emitSimple('record-toggle')">
-          {{ state.recording ? "停录像" : "录像" }}
+        <button v-else-if="control === 'record'" type="button" class="icon-control"
+          :class="{ active: state.recording }" :disabled="capabilities.record === false"
+          :aria-label="recordActionLabel" :title="recordActionLabel" @click="emitSimple('record-toggle')">
+          <VideoCameraFilled v-if="state.recording" class="control-icon" aria-hidden="true" />
+          <VideoCamera v-else class="control-icon" aria-hidden="true" />
         </button>
-        <button v-else-if="control === 'cloudRecord'" type="button" aria-label="打开下载"
+        <button v-else-if="control === 'cloudRecord'" type="button" class="icon-control" aria-label="打开下载任务"
+          title="打开下载任务"
           @click="emitSimple('cloud-record-request')">
-          下载
+          <Download class="control-icon" aria-hidden="true" />
         </button>
         <select v-else-if="control === 'streamProfile'" :value="state.selectedStreamProfile"
           :disabled="capabilities.streamProfile === false || streamProfileSwitching" aria-label="切换主辅码流"
@@ -118,7 +137,7 @@
               :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'" :aria-busy="clipRangeLocked"
               @click="emitCloudRecordCreate()">
               <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
-              <template v-else>DOWN</template>
+              <Download v-else class="control-icon" aria-hidden="true" />
             </button>
           </span>
         </span>
@@ -133,24 +152,37 @@
         </div>
       </template>
 
-      <button v-if="overflowItems.length" ref="moreButtonRef" type="button" class="more-button" aria-label="更多操作"
-        aria-haspopup="true" :aria-expanded="overflowOpen" @click="toggleOverflow">
-        更多
+      <button v-if="overflowItems.length" ref="moreButtonRef" type="button" class="icon-control more-button"
+        aria-label="更多操作" title="更多操作" aria-haspopup="true" :aria-expanded="overflowOpen"
+        @click="toggleOverflow">
+        <MoreFilled class="control-icon" aria-hidden="true" />
       </button>
     </div>
 
     <div v-if="overflowOpen" class="overflow-menu" aria-label="更多播放器操作">
       <template v-for="control in overflowItems" :key="control">
-        <button v-if="control === 'play'" type="button" aria-label="切换播放状态" @click="emitSimple('play-toggle', true)">
-          {{ state.playbackState === "playing" ? "暂停" : "播放" }}
+        <button v-if="control === 'play'" type="button" :aria-label="playActionLabel" :title="playActionLabel"
+          @click="emitSimple('play-toggle', true)">
+          <VideoPause v-if="state.playbackState === 'playing'" class="control-icon" aria-hidden="true" />
+          <VideoPlay v-else class="control-icon" aria-hidden="true" />
+          <span>{{ playActionLabel }}</span>
         </button>
-        <button v-else-if="control === 'audio'" type="button" :disabled="capabilities.audio === false" aria-label="切换声音"
-          @click="emitSimple('audio-toggle', true)">
-          {{ state.audioEnabled ? "声音" : "静音" }}
+        <button v-else-if="control === 'audio'" type="button" :disabled="capabilities.audio === false"
+          :aria-label="audioActionLabel" :title="audioActionLabel" @click="emitSimple('audio-toggle', true)">
+          <SpeakerIcon class="control-icon" :muted="!state.audioEnabled" />
+          <span>{{ audioActionLabel }}</span>
+        </button>
+        <button v-else-if="control === 'broadcast'" type="button" :class="{ active: state.broadcasting }"
+          :disabled="capabilities.broadcast === false || state.broadcastBusy"
+          :aria-label="broadcastActionLabel" :title="broadcastActionLabel" :aria-busy="state.broadcastBusy"
+          @click="emitSimple('broadcast-toggle', true)">
+          <Microphone class="control-icon" aria-hidden="true" />
+          <span>{{ broadcastActionLabel }}</span>
         </button>
         <button v-else-if="control === 'snapshot'" type="button" :disabled="capabilities.snapshot === false"
-          aria-label="截图" @click="emitSimple('snapshot', true)">
-          截图
+          aria-label="截图" title="截图" @click="emitSimple('snapshot', true)">
+          <Camera class="control-icon" aria-hidden="true" />
+          <span>截图</span>
         </button>
         <select v-else-if="control === 'outputType'" :value="state.selectedOutputType"
           :disabled="outputSwitching || !outputOptions.length" aria-label="媒体输出格式"
@@ -159,26 +191,37 @@
             {{ option.label }}
           </option>
         </select>
-        <button v-else-if="control === 'info'" type="button" :class="{ active: state.infoOpen }" aria-label="切换媒体信息"
-          :aria-expanded="state.infoOpen" @click="emitSimple('info-toggle', true)">
-          信息
+        <button v-else-if="control === 'info'" type="button" :class="{ active: state.infoOpen }"
+          :aria-label="infoActionLabel" :title="infoActionLabel" :aria-expanded="state.infoOpen"
+          @click="emitSimple('info-toggle', true)">
+          <InfoFilled class="control-icon" aria-hidden="true" />
+          <span>{{ infoActionLabel }}</span>
         </button>
-        <button v-else-if="control === 'fullscreen'" type="button" :disabled="!fullscreenSupported" aria-label="切换全屏"
+        <button v-else-if="control === 'fullscreen'" type="button" :disabled="!fullscreenSupported"
+          :aria-label="fullscreenActionLabel" :title="fullscreenActionLabel"
           @click="emitSimple('fullscreen-toggle', true)">
-          {{ state.fullscreen ? "退出全屏" : "全屏" }}
+          <ScaleToOriginal v-if="state.fullscreen" class="control-icon" aria-hidden="true" />
+          <FullScreen v-else class="control-icon" aria-hidden="true" />
+          <span>{{ fullscreenActionLabel }}</span>
         </button>
         <button v-else-if="control === 'ptz'" type="button" :class="{ active: state.ptzOpen }"
-          :disabled="capabilities.ptz === false" aria-label="切换云台控制" :aria-expanded="state.ptzOpen"
+          :disabled="capabilities.ptz === false" :aria-label="ptzActionLabel" :title="ptzActionLabel"
+          :aria-expanded="state.ptzOpen"
           @click="emitSimple('ptz-toggle', true)">
-          云台
+          <Aim class="control-icon" aria-hidden="true" />
+          <span>{{ ptzActionLabel }}</span>
         </button>
-        <button v-else-if="control === 'record'" type="button" :disabled="capabilities.record === false"
-          aria-label="切换录像状态" @click="emitSimple('record-toggle', true)">
-          {{ state.recording ? "停录像" : "录像" }}
+        <button v-else-if="control === 'record'" type="button" :class="{ active: state.recording }"
+          :disabled="capabilities.record === false" :aria-label="recordActionLabel" :title="recordActionLabel"
+          @click="emitSimple('record-toggle', true)">
+          <VideoCameraFilled v-if="state.recording" class="control-icon" aria-hidden="true" />
+          <VideoCamera v-else class="control-icon" aria-hidden="true" />
+          <span>{{ recordActionLabel }}</span>
         </button>
-        <button v-else-if="control === 'cloudRecord'" type="button" aria-label="打开下载"
+        <button v-else-if="control === 'cloudRecord'" type="button" aria-label="打开下载任务" title="打开下载任务"
           @click="emitSimple('cloud-record-request', true)">
-          下载
+          <Download class="control-icon" aria-hidden="true" />
+          <span>下载</span>
         </button>
         <select v-else-if="control === 'streamProfile'" :value="state.selectedStreamProfile"
           :disabled="capabilities.streamProfile === false || streamProfileSwitching" aria-label="切换主辅码流"
@@ -207,7 +250,7 @@
               :aria-label="clipRangeLocked ? '截取录像创建中' : '创建截取录像'" :aria-busy="clipRangeLocked"
               @click="emitCloudRecordCreate(true)">
               <span v-if="clipRangeLocked" class="clip-down-spinner" aria-hidden="true"></span>
-              <template v-else>DOWN</template>
+              <Download v-else class="control-icon" aria-hidden="true" />
             </button>
           </span>
         </span>
@@ -242,17 +285,19 @@
           </span>
           <span class="timeline-boundary">{{ formatTimelineBoundary(timelineEndTimeMs) }}</span>
           <span class="timeline-jump">
-            <button type="button" :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃"
+            <button type="button" class="timeline-jump-button"
+              :disabled="capabilities.playback === false || state.seekMs <= 0" aria-label="向后跳跃" title="向后跳跃"
               @click="emitJump(-1, true)">
-              后退
+              <DArrowLeft class="control-icon" aria-hidden="true" />
             </button>
             <input v-model.number="jumpSeconds" type="number" min="1"
               :max="Math.max(1, Math.floor(state.durationMs / 1000))" :disabled="capabilities.playback === false"
               aria-label="跳跃秒数" />
             <span>秒</span>
-            <button type="button" :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
-              aria-label="向前跳跃" @click="emitJump(1, true)">
-              前进
+            <button type="button" class="timeline-jump-button"
+              :disabled="capabilities.playback === false || state.seekMs >= state.durationMs"
+              aria-label="向前跳跃" title="向前跳跃" @click="emitJump(1, true)">
+              <DArrowRight class="control-icon" aria-hidden="true" />
             </button>
           </span>
         </div>
@@ -271,6 +316,22 @@
 </template>
 
 <script setup lang="ts">
+import {
+  Aim,
+  Camera,
+  DArrowLeft,
+  DArrowRight,
+  Download,
+  FullScreen,
+  InfoFilled,
+  Microphone,
+  MoreFilled,
+  ScaleToOriginal,
+  VideoCamera,
+  VideoCameraFilled,
+  VideoPause,
+  VideoPlay,
+} from "@element-plus/icons-vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type {
   GmvPlayerControlAction,
@@ -282,6 +343,7 @@ import type {
   GmvStreamProfileOption,
   GmvViewCapabilities,
 } from "../core/types";
+import SpeakerIcon from "./SpeakerIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -338,6 +400,19 @@ const renderControls = computed(() => visibility.value !== "hidden");
 const playbackRates = computed(() =>
   props.config.playbackRates?.length ? props.config.playbackRates : [0.5, 1, 2, 4],
 );
+const playActionLabel = computed(() => {
+  if (props.state.playbackState === "playing") return "暂停";
+  return props.state.playbackState === "paused" ? "继续播放" : "播放";
+});
+const audioActionLabel = computed(() => props.state.audioEnabled ? "静音" : "开启声音");
+const broadcastActionLabel = computed(() => {
+  if (props.state.broadcastBusy) return "语音广播处理中";
+  return props.state.broadcasting ? "停止语音广播" : "开始语音广播";
+});
+const infoActionLabel = computed(() => props.state.infoOpen ? "隐藏媒体信息" : "显示媒体信息");
+const fullscreenActionLabel = computed(() => props.state.fullscreen ? "退出全屏" : "进入全屏");
+const ptzActionLabel = computed(() => props.state.ptzOpen ? "关闭云台控制" : "打开云台控制");
+const recordActionLabel = computed(() => props.state.recording ? "停止录像" : "开始录像");
 const timelineStartTimeMs = computed(() => props.state.timelineStartTimeMs);
 const timelineEndTimeMs = computed(() => props.state.timelineEndTimeMs);
 const clipStartMs = computed(() => Math.min(clipHandleAMs.value, clipHandleBMs.value));
@@ -570,6 +645,7 @@ function emitSimple(
       type:
       | "play-toggle"
       | "audio-toggle"
+      | "broadcast-toggle"
       | "snapshot"
       | "info-toggle"
       | "fullscreen-toggle"
@@ -771,6 +847,31 @@ button.active {
   color: var(--accent);
 }
 
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.icon-control,
+.timeline-jump-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.icon-control {
+  width: 32px;
+}
+
+.control-icon {
+  width: 18px;
+  height: 18px;
+  pointer-events: none;
+}
+
 .playback-clip-controls {
   display: inline-flex;
   flex: 0 0 auto;
@@ -811,7 +912,7 @@ button.active {
 }
 
 .more-button {
-  min-width: 52px;
+  min-width: 32px;
 }
 
 .timeline {
@@ -1059,6 +1160,13 @@ button.active {
   width: 100%;
 }
 
+.overflow-menu>button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
 .control-bar.has-primary-timeline .overflow-menu {
   bottom: 104px;
 }
@@ -1071,6 +1179,17 @@ button.active {
 @media (max-width: 1100px) {
   .control-items {
     flex-wrap: nowrap;
+  }
+}
+
+@media (pointer: coarse) {
+  .icon-control {
+    width: 40px;
+    height: 40px;
+  }
+
+  .more-button {
+    min-width: 40px;
   }
 }
 </style>

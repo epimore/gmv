@@ -233,7 +233,7 @@
               </el-tooltip>
               <span v-if="multiMode === 'playback'" class="selected-channel-status">{{
                 multiPlaybackSelectionStatus(channel) }}</span>
-              <el-select v-if="canBroadcastChannel(channel.channel)"
+              <el-select v-if="multiMode !== 'playback' && canBroadcastChannel(channel.channel, channel.session_node_id)"
                 v-model="broadcastTransportOverrides[selectedChannelKey(channel)]" clearable size="small"
                 placeholder="继承广播传输" aria-label="目标广播传输覆盖" @click.stop>
                 <el-option label="UDP" value="udp" />
@@ -248,6 +248,20 @@
               <div class="selected-channel-actions">
                 <el-button size="small" :disabled="channel.playback_locked || !isValidPlaybackRange(multiDefaultRange)"
                   @click="restoreMultiPlaybackDefault(channel)">恢复默认</el-button>
+                <el-select :model-value="playbackSafeOutputType(channel.output_type)" size="small"
+                  class="playback-output-select" aria-label="通道播放格式" :disabled="channel.playback_locked"
+                  @click.stop
+                  @change="(outputType: PlaybackOutputType) => setSelectedMultiOutputType(selectedChannelKey(channel), outputType)">
+                  <el-option v-for="option in playbackOutputOptions" :key="option.value" :label="option.label"
+                    :value="option.value" />
+                </el-select>
+                <el-select v-if="canBroadcastChannel(channel.channel, channel.session_node_id)"
+                  v-model="broadcastTransportOverrides[selectedChannelKey(channel)]" clearable size="small"
+                  placeholder="继承广播传输" aria-label="目标广播传输覆盖" @click.stop>
+                  <el-option label="UDP" value="udp" />
+                  <el-option label="TCP 主动" value="tcp_active" />
+                  <el-option label="TCP 被动" value="tcp_passive" />
+                </el-select>
                 <el-button size="small" type="primary"
                   :disabled="channel.playback_locked || !isValidPlaybackRange(channel.playback_range)"
                   @click="confirmMultiPlayback(channel)">确认播放</el-button>
@@ -270,6 +284,7 @@
         <GmvMultiGrid ref="multiGridRef" :grid-size="multiGridSize" :cells="multiGridCells"
           :visible-start="multiVisibleStart" @update:grid-size="handleMultiGridSizeChange"
           @snapshot="handleMultiSnapshot" @snapshot-error="handleMultiSnapshotError" @ptz="handleMultiPtz"
+          @broadcast-toggle="handleMultiBroadcastToggle"
           @output-type-change="handleMultiOutputTypeChange" @playing="handleMultiPlaying"
           @playback-rate-change="handleMultiPlaybackRateChange" @playback-state-change="handleMultiPlaybackStateChange"
           @playback-seek="handleMultiPlaybackSeek" @playback-progress="handleMultiPlaybackProgress"
@@ -552,7 +567,7 @@
     </el-dialog>
 
     <el-dialog v-model="playerDialog" :title="playerDialogTitle" width="960px" class="monitor-player-dialog"
-      destroy-on-close @close="stopCurrentStream">
+      :close-on-click-modal="false" :close-on-press-escape="false" destroy-on-close @close="stopCurrentStream">
       <div v-if="selectedChannel" class="monitor-player">
         <div class="monitor-player-stage">
           <GmvPlayerView ref="singlePlayerRef" :sources="playerSources" :device-id="selectedChannel?.device_id"
@@ -563,8 +578,11 @@
             :audio-codec="lastStream?.audio_codec" :source-audio-state="lastStream?.source_audio_state"
             :output-audio-mode="lastStream?.output_audio_mode" :audio-sample-rate="lastStream?.audio_sample_rate"
             :audio-channels="lastStream?.audio_channels" :poster="playerPoster" :capabilities="playerCapabilities"
+            :broadcasting="isChannelBroadcasting(selectedChannel, lastStream?.session_node_id || selectedDevice.session_node_id)"
+            :broadcast-busy="isChannelBroadcastBusy(selectedChannel, lastStream?.session_node_id || selectedDevice.session_node_id)"
             :controls="playerControls" :playback-duration-ms="playbackDurationMs"
             :playback-start-time-ms="playbackStartTimeMs" :playback-end-time-ms="playbackEndTimeMs"
+            :confirmed-playback-rate="playerSources[0]?.rateMode === 'remote-stream' ? singlePlaybackAckRate : undefined"
             :cloud-record-locked-range="singleCloudRecordLockedRange" :output-type="singlePlayerOutputType"
             :output-options="singlePlayerOutputOptions" :output-switching="singleOutputSwitching"
             :stream-profile="lastAction === '历史回放' ? undefined : singleCommittedProfile"
@@ -575,7 +593,8 @@
             @network-degraded="handleSingleNetworkDegraded"
             :startup-text="singleMediaOperation ? singleStartupText : undefined"
             :startup-can-cancel="singleCheckpointReached" @snapshot="handleSingleSnapshot"
-            @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz" @playing="handleSinglePlaying"
+            @snapshot-error="handleSingleSnapshotError" @ptz="handlePlayerPtz"
+            @broadcast-toggle="handleSingleBroadcastToggle" @playing="handleSinglePlaying"
             @playback-error="handleSinglePlaybackError" @cloud-record-request="openCloudRecordings(selectedChannel)"
             @cloud-record-create="handleSingleCloudRecordCreate"
             @playback-switch-cancel="handleSinglePlaybackSwitchCancel" @playback-rate-change="handlePlaybackRateChange"
@@ -921,6 +940,12 @@ let recordLoadGeneration = 0;
 let lastFailedRecordBatchId = '';
 const playbackGeneration = ref(0);
 const singlePlaybackState = ref<'playing' | 'paused'>('playing');
+const singlePlaybackRate = ref(1);
+const singlePlaybackAckRate = ref(1);
+let singlePlaybackRateEpoch = 0;
+let queuedSinglePlaybackRate: number | undefined;
+let singlePlaybackRateTask: Promise<boolean> | undefined;
+let singlePlaybackRateRequestSeq = 0;
 const playbackAnchorPositionSec = ref(0);
 const playbackAnchorMediaTimeMs = ref<number>();
 const playbackLastMediaTimeMs = ref<number>();
@@ -948,6 +973,7 @@ const deviceSnapshotLoading = reactive<Record<string, boolean>>({});
 const channelOutputTypes = reactive<Record<string, LiveOutputType>>({});
 const channelPlaybackOutputTypes = reactive<Record<string, PlaybackOutputType>>({});
 const treeChannelsByDevice = reactive<Record<string, GbChannelInfo[]>>({});
+const treeResourcesByDevice = reactive<Record<string, GbResourceInfo[]>>({});
 const treeChannelLoading = reactive<Record<string, boolean>>({});
 const selectedTreeChannelKeys = ref<string[]>([]);
 const selectedTreeChannelItems = ref<SelectedChannelRef[]>([]);
@@ -968,6 +994,9 @@ const multiPlaybackStarting = ref(false);
 const multiBulkBusy = ref(false);
 const multiDesiredRate = ref(1);
 const playbackRates = [0.5, 1, 2, 4];
+const multiQueuedPlaybackRates = new Map<string, number>();
+const multiPlaybackRateTasks = new Map<string, Promise<boolean>>();
+let multiPlaybackRateRequestSeq = 0;
 const streamProfileOptions: GmvStreamProfileOption[] = [
   { value: 'main', label: '主码流' },
   { value: 'sub', label: '辅码流' },
@@ -1412,6 +1441,7 @@ const playerCapabilities = computed<GmvViewCapabilities>(() => {
     record: false,
     playback: channel ? lastAction.value === '历史回放' && canPlayback(channel) : false,
     audio: !!channel && audioState !== false,
+    broadcast: !!channel && lastAction.value !== '历史回放' && canBroadcastChannel(channel),
     streamSwitch: false,
     streamProfile: !!channel && lastAction.value !== '历史回放',
     aiOverlay: false,
@@ -1422,8 +1452,12 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   const playback = lastAction.value === '历史回放';
   const items: GmvPlayerControlsConfig['items'] = ['play', 'snapshot', 'fullscreen'];
   if (streamAudioState(lastStream.value) !== false) items.splice(1, 0, 'audio');
+  if (!playback && channel && canBroadcastChannel(channel)) {
+    items.splice(streamAudioState(lastStream.value) !== false ? 2 : 1, 0, 'broadcast');
+  }
   if (playback && channel && canPlayback(channel)) {
     items.splice(1, 0, 'playbackClip');
+    items.splice(items.indexOf('fullscreen'), 0, 'playbackRate');
     items.push('timeline');
   }
   const overflowItems: GmvPlayerControlsConfig['items'] = [];
@@ -1431,7 +1465,6 @@ const playerControls = computed<GmvPlayerControlsConfig>(() => {
   overflowItems.push('info');
   if (!playback) overflowItems.push('streamProfile');
   if (!playback && channel && canPtz(channel)) overflowItems.push('ptz');
-  if (playback && channel && canPlayback(channel)) overflowItems.push('playbackRate');
   if (playback && channel) overflowItems.push('cloudRecord');
   return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates: [0.5, 1, 2, 4] };
 });
@@ -1488,6 +1521,8 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     audioChannels: cell.stream?.audio_channels,
     poster: cell.poster,
     capabilities,
+    broadcasting: isChannelBroadcasting(cell.channel, cell.session_node_id),
+    broadcastBusy: isChannelBroadcastBusy(cell.channel, cell.session_node_id),
     controls: multiCellControls(capabilities),
     outputType: cell.mode === 'playback' ? playbackSafeOutputType(cell.output_type) : cell.output_type,
     outputOptions: cell.mode === 'playback' ? playbackOutputOptions : liveOutputOptions,
@@ -1499,6 +1534,7 @@ const multiGridCells = computed(() => multiCells.value.map((cell) => {
     playbackDurationMs: playbackCellDurationMs(cell),
     playbackStartTimeMs: cell.mode === 'playback' && cell.playback_start_sec ? cell.playback_start_sec * 1_000 : undefined,
     playbackEndTimeMs: cell.mode === 'playback' && cell.playback_end_sec ? cell.playback_end_sec * 1_000 : undefined,
+    confirmedPlaybackRate: cell.sources[0]?.rateMode === 'remote-stream' ? cell.playback_ack_rate ?? 1 : undefined,
     cloudRecordLockedRange: cell.cloud_record_locked_range,
     startupText: cell.operation ? mediaOperationText(cell.operation) : undefined,
     startupCanCancel: !!cell.operation && cell.operation.checkpoint_ms > 0 && cell.operation.elapsed_ms >= cell.operation.checkpoint_ms,
@@ -1582,6 +1618,7 @@ function multiCellCapabilities(cell: MultiViewCell): GmvViewCapabilities {
     record: false,
     playback: cell.mode === 'playback' && canPlayback(cell.channel),
     audio: mayHaveAudio,
+    broadcast: cell.mode === 'live' && canBroadcastChannel(cell.channel, cell.session_node_id),
     streamSwitch: cell.sources.length > 1,
     streamProfile: cell.mode === 'live',
     aiOverlay: false,
@@ -1592,16 +1629,18 @@ function multiCellControls(capabilities: GmvViewCapabilities): GmvPlayerControls
   const overflowItems: GmvPlayerControlsConfig['items'] = ['outputType', 'info'];
   if (capabilities.playback) {
     items.push('playbackClip');
+    items.push('snapshot');
+    items.push('playbackRate');
+    items.push('fullscreen');
     items.push('timeline');
-    overflowItems.push('snapshot', 'fullscreen');
   } else {
     items.push('snapshot', 'fullscreen');
   }
   if (capabilities.audio) items.splice(1, 0, 'audio');
+  if (capabilities.broadcast) items.splice(capabilities.audio ? 2 : 1, 0, 'broadcast');
   if (capabilities.ptz) overflowItems.push('ptz');
   if (capabilities.streamSwitch) overflowItems.push('streamSwitch');
   if (capabilities.streamProfile) overflowItems.push('streamProfile');
-  if (capabilities.playback) overflowItems.push('playbackRate');
   return { items, overflowItems, visibility: 'auto', autoHideDelayMs: 3000, playbackRates };
 }
 function playRequestKey(kind: 'preview' | 'playback', channel: GbChannelInfo) { return `${kind}:${channel.device_id}:${channel.channel_id}`; }
@@ -1663,12 +1702,45 @@ function classificationTagType(resource: GbResourceInfo): 'success' | 'warning' 
 function capabilitySourceText(resource: GbResourceInfo) {
   return resource.classification_mode.startsWith('manual') ? '人工' : `自动${resource.type_code ? `（编码 ${resource.type_code}）` : ''}`;
 }
-function channelOutputs(channel: GbChannelInfo) {
-  return audioOutputs.value.filter((resource) => resource.resource_id === channel.channel_id || resource.effective_owner_id === channel.channel_id);
+function channelResourceRows(channel: GbChannelInfo, sessionNodeId?: string) {
+  if (!sessionNodeId) return resources.value;
+  const treeRows = treeResourcesByDevice[multiDeviceKey(sessionNodeId, channel.device_id)];
+  if (treeRows) return treeRows;
+  if (selectedDevice.value?.device_id === channel.device_id && selectedDevice.value.session_node_id === sessionNodeId) {
+    return resources.value;
+  }
+  return [];
 }
-function canBroadcastChannel(channel: GbChannelInfo) { return selectedDevice.value?.monitor_status === 1 && channelOutputs(channel).some((resource) => resource.available); }
+function channelOutputs(channel: GbChannelInfo, sessionNodeId?: string) {
+  return channelResourceRows(channel, sessionNodeId)
+    .filter((resource) => resource.effective_kind === 'audio_output')
+    .filter((resource) => resource.resource_id === channel.channel_id || resource.effective_owner_id === channel.channel_id);
+}
+function canBroadcastChannel(channel: GbChannelInfo, sessionNodeId?: string) {
+  return channelOnline(channel) && bizEnabled(channel) && channelOutputs(channel, sessionNodeId).some((resource) => resource.available);
+}
+function broadcastTargetFor(channel: GbChannelInfo, sessionNodeId?: string) {
+  return broadcastSession.value?.summary.target_summaries.find((target) => (
+    target.device_id === channel.device_id
+    && target.channel_id === channel.channel_id
+    && (!sessionNodeId || target.session_node_id === sessionNodeId)
+  ));
+}
+function isChannelBroadcasting(channel?: GbChannelInfo, sessionNodeId?: string) {
+  if (!channel) return false;
+  const target = broadcastTargetFor(channel, sessionNodeId);
+  return !!target && target.state !== 'stopped' && target.state !== 'failed';
+}
+function isChannelBroadcastBusy(channel?: GbChannelInfo, sessionNodeId?: string) {
+  if (!channel) return false;
+  if (broadcastStarting.value) return true;
+  if (!broadcastSession.value) return false;
+  return broadcastTargetFor(channel, sessionNodeId)?.state !== 'running';
+}
 function channelBroadcastReason(channel: GbChannelInfo) {
   if (selectedDevice.value?.monitor_status !== 1) return broadcastReasonText('DEVICE_OFFLINE');
+  if (!channelOnline(channel)) return broadcastReasonText('OUTPUT_OFFLINE');
+  if (!bizEnabled(channel)) return broadcastReasonText('BUSINESS_DISABLED');
   const outputs = channelOutputs(channel);
   return broadcastReasonText(outputs.find((resource) => !resource.available)?.unavailable_reason || (outputs.length ? '' : 'NO_AUDIO_OUTPUT'));
 }
@@ -1726,6 +1798,7 @@ function clearTreeLoadedChannelState() {
 }
 function clearTreeChannelState() {
   clearTreeLoadedChannelState();
+  for (const key of Object.keys(treeResourcesByDevice)) delete treeResourcesByDevice[key];
   selectedTreeChannelKeys.value = [];
   selectedTreeChannelItems.value = [];
   for (const key of Object.keys(broadcastTransportOverrides)) delete broadcastTransportOverrides[key];
@@ -1854,17 +1927,20 @@ async function handleTreePageSizeChange() {
 async function loadTreeDeviceChannels(device: GbDeviceInfo) {
   if (treeChannelsByDevice[device.device_id]) return treeChannelsByDevice[device.device_id];
   treeChannelLoading[device.device_id] = true;
+  const resourceKey = multiDeviceKey(device.session_node_id || selectedMultiNodeId.value, device.device_id);
   try {
     const [channelRows, resourceRows] = await Promise.all([
       listGbChannels(device.device_id, device.session_node_id || selectedMultiNodeId.value),
       listGbResources(device.device_id, device.session_node_id || selectedMultiNodeId.value),
     ]);
+    treeResourcesByDevice[resourceKey] = resourceRows;
     const videoIds = new Set(resourceRows.filter((resource) => resource.effective_kind === 'video').map((resource) => resource.resource_id));
     treeChannelsByDevice[device.device_id] = resourceRows.length
       ? channelRows.filter((channel) => videoIds.has(channel.channel_id))
       : channelRows;
   } catch (error) {
     treeChannelsByDevice[device.device_id] = [];
+    delete treeResourcesByDevice[resourceKey];
     ElMessage.error(errorMessage(error, '通道加载失败'));
   } finally {
     treeChannelLoading[device.device_id] = false;
@@ -1950,6 +2026,8 @@ function restoreMultiPlaybackDefault(channel: SelectedChannelRef) {
 function setSelectedMultiOutputType(key: string, outputType: LiveOutputType) {
   const selected = selectedTreeChannelItems.value.find((item) => selectedChannelKey(item) === key);
   if (selected) selected.output_type = outputType;
+  const cell = multiCells.value.find((item) => item.key === key);
+  if (cell && !cell.stream && cell.output_type !== outputType) upsertMultiCell({ ...cell, output_type: outputType });
 }
 function multiPlaybackSelectionStatus(channel: SelectedChannelRef) {
   const cell = multiCells.value.find((item) => item.key === selectedChannelKey(channel));
@@ -2319,6 +2397,8 @@ async function stopMultiCell(key: string, options: { removeSelection?: boolean }
   multiPreviewAborts.delete(key);
   multiOutputAborts.get(key)?.abort();
   multiOutputAborts.delete(key);
+  multiQueuedPlaybackRates.delete(key);
+  multiPlaybackRateTasks.delete(key);
   multiPlaybackQueue.value = multiPlaybackQueue.value.filter((item) => item !== key);
   try {
     await disposeMultiCellMedia(cell);
@@ -2345,6 +2425,8 @@ async function stopAllMultiStreams(options: { quiet?: boolean } = {}) {
     for (const controller of multiOutputAborts.values()) controller.abort();
     multiOutputAborts.clear();
     multiPlaybackQueue.value = [];
+    multiQueuedPlaybackRates.clear();
+    multiPlaybackRateTasks.clear();
     const releases = await Promise.allSettled(cells.map((cell) => disposeMultiCellMedia(cell)));
     if (releases.some((release) => release.status === 'rejected')) {
       ElMessage.error('多画面资源释放失败，请重试');
@@ -2412,6 +2494,11 @@ async function stopCurrentStream(options: { closeDialog?: boolean; clearAction?:
     lastStream.value = undefined;
     singleMediaTransport.value = undefined;
     singlePlaybackState.value = 'playing';
+    singlePlaybackRate.value = 1;
+    singlePlaybackAckRate.value = 1;
+    singlePlaybackRateEpoch += 1;
+    queuedSinglePlaybackRate = undefined;
+    singlePlaybackRateTask = undefined;
     singleOutput.value = undefined;
     singlePendingSwitch.value = undefined;
     singleOutputSwitching.value = false;
@@ -2482,6 +2569,33 @@ async function focusSelectedMultiChannel(channel: SelectedChannelRef) {
 function multiCellAtVisibleIndex(index: number) {
   return multiCells.value[multiVisibleStart.value + index];
 }
+async function togglePlayerBroadcast(channel: GbChannelInfo, sessionNodeId: string, transport: MediaTransport) {
+  if (!canOperate.value || broadcastStarting.value || !canBroadcastChannel(channel, sessionNodeId)) return;
+  const session = broadcastSession.value;
+  if (session) {
+    const target = broadcastTargetFor(channel, sessionNodeId);
+    if (target?.state === 'running') await stopBroadcastLeg(target.leg_id);
+    return;
+  }
+  await startBroadcastTargets([{
+    device_id: channel.device_id,
+    channel_id: channel.channel_id,
+    session_node_id: sessionNodeId,
+    trans_mode: transport,
+  }], channel.channel_id);
+}
+async function handleSingleBroadcastToggle() {
+  const channel = selectedChannel.value;
+  const sessionNodeId = lastStream.value?.session_node_id || selectedDevice.value?.session_node_id;
+  if (!channel || !sessionNodeId) return;
+  await togglePlayerBroadcast(channel, sessionNodeId, singleMediaTransport.value || mediaTransport.value);
+}
+async function handleMultiBroadcastToggle(event: { index: number }) {
+  const cell = multiCellAtVisibleIndex(event.index);
+  if (!cell) return;
+  const transport = broadcastTransportOverrides[cell.key] || cell.media_transport || mediaTransport.value;
+  await togglePlayerBroadcast(cell.channel, cell.session_node_id, transport);
+}
 function handleMultiSnapshot(event: { payload: { fileName: string } }) {
   ElMessage.success('截图已保存：' + event.payload.fileName);
 }
@@ -2541,28 +2655,77 @@ async function applyMultiPlaybackRate(cell: MultiViewCell, rate: number, notify 
     if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, rate);
     return true;
   }
-  try {
-    const result = await setGbPlaybackSpeed(target.playbackId, {
-      request_id: `ui-multi-speed-${Date.now()}-${cell.channel_id}`,
-      stream_id: target.streamId,
-      speed_rate: rate,
-      expected_generation: cell.playback_generation ?? 0,
-    });
-    const current = multiCells.value.find((item) => item.key === cell.key);
-    if (current) upsertMultiCell({ ...current, playback_generation: result.generation, playback_rate: rate, playback_ack_rate: rate, error: undefined });
-    const index = visibleMultiIndex(cell);
-    if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, rate);
-    return true;
-  } catch (error) {
-    const current = multiCells.value.find((item) => item.key === cell.key);
-    if (current) upsertMultiCell({ ...current, error: errorMessage(error, '倍速设置失败') });
-    const index = visibleMultiIndex(cell);
-    if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, cell.playback_rate ?? 1);
-    if (notify) ElMessage.error(errorMessage(error, `${cell.title} 倍速设置失败`));
-    return false;
-  }
+  const current = multiCells.value.find((item) => item.key === cell.key);
+  if (current) upsertMultiCell({ ...current, playback_rate: rate });
+  multiQueuedPlaybackRates.set(cell.key, rate);
+  const running = multiPlaybackRateTasks.get(cell.key);
+  if (running) return running;
+
+  const task = (async () => {
+    let succeeded = true;
+    let failureMessage = '';
+    while (multiQueuedPlaybackRates.has(cell.key)) {
+      const nextRate = multiQueuedPlaybackRates.get(cell.key)!;
+      multiQueuedPlaybackRates.delete(cell.key);
+      const latest = multiCells.value.find((item) => item.key === cell.key);
+      const latestTarget = requireMultiPlayback(latest);
+      if (!latest || !latestTarget
+        || latestTarget.playbackId !== target.playbackId
+        || latestTarget.streamId !== target.streamId) return false;
+      try {
+        const result = await setGbPlaybackSpeed(latestTarget.playbackId, {
+          request_id: `ui-multi-speed-${Date.now()}-${++multiPlaybackRateRequestSeq}-${latest.channel_id}`,
+          stream_id: latestTarget.streamId,
+          speed_rate: nextRate,
+          expected_generation: latest.playback_generation ?? 0,
+        });
+        const acknowledged = multiCells.value.find((item) => item.key === cell.key);
+        if (!acknowledged?.stream
+          || acknowledged.stream.playback_id !== latestTarget.playbackId
+          || acknowledged.stream.stream_id !== latestTarget.streamId) return false;
+        upsertMultiCell({
+          ...acknowledged,
+          playback_generation: result.generation,
+          playback_rate: nextRate,
+          playback_ack_rate: nextRate,
+          error: undefined,
+        });
+        succeeded = true;
+        const index = visibleMultiIndex(acknowledged);
+        if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, nextRate);
+      } catch (error) {
+        succeeded = false;
+        failureMessage = errorMessage(error, `${latest.title} 倍速设置失败`);
+        const failed = multiCells.value.find((item) => item.key === cell.key);
+        if (failed) {
+          const acknowledgedRate = failed.playback_ack_rate ?? 1;
+          upsertMultiCell({ ...failed, playback_rate: acknowledgedRate, error: failureMessage });
+          const index = visibleMultiIndex(failed);
+          if (index !== undefined) multiGridRef.value?.confirmPlaybackRate(index, acknowledgedRate);
+        }
+      }
+    }
+    if (notify) {
+      if (succeeded) ElMessage.success(`回放倍速指令已发送`);
+      else ElMessage.error(failureMessage || `${cell.title} 倍速设置失败`);
+    }
+    return succeeded;
+  })();
+  multiPlaybackRateTasks.set(cell.key, task);
+  void task.then(
+    () => {
+      if (multiPlaybackRateTasks.get(cell.key) === task) multiPlaybackRateTasks.delete(cell.key);
+    },
+    () => {
+      if (multiPlaybackRateTasks.get(cell.key) === task) multiPlaybackRateTasks.delete(cell.key);
+    },
+  );
+  return task;
 }
 async function applyMultiPlaybackState(cell: MultiViewCell, state: 'playing' | 'paused', notify = true) {
+  const rateTask = multiPlaybackRateTasks.get(cell.key);
+  if (rateTask) await rateTask;
+  cell = multiCells.value.find((item) => item.key === cell.key) ?? cell;
   const target = requireMultiPlayback(cell);
   if (!target) return false;
   if (state === 'playing' && (cell.playback_rate ?? 1) !== (cell.playback_ack_rate ?? 1)) {
@@ -2608,7 +2771,12 @@ async function handleMultiPlaybackStateChange(event: { index: number; payload: {
   if (cell) await applyMultiPlaybackState(cell, event.payload.paused ? 'paused' : 'playing');
 }
 async function handleMultiPlaybackSeek(event: { index: number; payload: { timeMs: number } }) {
-  const cell = multiCellAtVisibleIndex(event.index);
+  let cell = multiCellAtVisibleIndex(event.index);
+  const rateTask = cell && multiPlaybackRateTasks.get(cell.key);
+  if (rateTask) {
+    await rateTask;
+    cell = multiCellAtVisibleIndex(event.index);
+  }
   const target = requireMultiPlayback(cell);
   if (!target || !cell.playback_start_sec || !cell.playback_end_sec) return;
   const positionSec = Math.min(cell.playback_end_sec, Math.max(cell.playback_start_sec, cell.playback_start_sec + event.payload.timeMs / 1_000));
@@ -4068,7 +4236,7 @@ async function startBroadcast(scopeId: string) {
 }
 async function startMultiBroadcast() {
   const targets = selectedTreeChannels.value
-    .filter((item) => canBroadcastChannel(item.channel))
+    .filter((item) => canBroadcastChannel(item.channel, item.session_node_id))
     .map<GbBroadcastTargetPayload>((item) => ({
       device_id: item.device_id,
       channel_id: item.channel_id,
@@ -4104,11 +4272,19 @@ async function startBroadcastTargets(targets: GbBroadcastTargetPayload[], scopeI
 async function stopBroadcastLeg(legId: string) {
   const session = broadcastSession.value;
   if (!session) return;
+  const activeTargets = session.summary.target_summaries.filter((target) => target.state !== 'stopped' && target.state !== 'failed');
+  if (activeTargets.length <= 1) {
+    await stopBroadcast();
+    return;
+  }
+  broadcastStarting.value = true;
   try {
     session.summary = await stopGbBroadcastTarget(session.summary.broadcast_id, legId);
     ElMessage.success('广播目标已停止');
   } catch (error) {
     ElMessage.error(errorMessage(error, '广播目标停止失败'));
+  } finally {
+    broadcastStarting.value = false;
   }
 }
 async function stopBroadcast() {
@@ -4144,24 +4320,70 @@ async function saveConfig() {
     configSaving.value = false;
   }
 }
+function queueSinglePlaybackRate(rate: number, notify = true) {
+  queuedSinglePlaybackRate = rate;
+  if (singlePlaybackRateTask) return singlePlaybackRateTask;
+  const epoch = singlePlaybackRateEpoch;
+  const task = (async () => {
+    let succeeded = true;
+    let failureMessage = '';
+    while (queuedSinglePlaybackRate !== undefined && epoch === singlePlaybackRateEpoch) {
+      const nextRate = queuedSinglePlaybackRate;
+      queuedSinglePlaybackRate = undefined;
+      const stream = lastStream.value;
+      if (!stream?.stream_id || !stream.playback_id) return false;
+      const playbackId = stream.playback_id;
+      const streamId = stream.stream_id;
+      try {
+        const response = await setGbPlaybackSpeed(playbackId, {
+          request_id: `ui-playback-speed-${Date.now()}-${++singlePlaybackRateRequestSeq}`,
+          stream_id: streamId,
+          speed_rate: nextRate,
+          expected_generation: playbackGeneration.value,
+        });
+        const current = lastStream.value;
+        if (epoch !== singlePlaybackRateEpoch
+          || current?.playback_id !== playbackId
+          || current.stream_id !== streamId) return false;
+        playbackGeneration.value = response.generation;
+        singlePlaybackRate.value = nextRate;
+        singlePlaybackAckRate.value = nextRate;
+        singlePlayerRef.value?.confirmPlaybackRate(nextRate);
+        succeeded = true;
+      } catch (error) {
+        if (epoch !== singlePlaybackRateEpoch) return false;
+        succeeded = false;
+        failureMessage = errorMessage(error, '回放倍速设置失败');
+        singlePlaybackRate.value = singlePlaybackAckRate.value;
+        singlePlayerRef.value?.confirmPlaybackRate(singlePlaybackAckRate.value);
+      }
+    }
+    if (notify && epoch === singlePlaybackRateEpoch) {
+      if (succeeded) ElMessage.success(`回放倍速指令已发送：${singlePlaybackAckRate.value}x`);
+      else ElMessage.error(failureMessage || '回放倍速设置失败');
+    }
+    return succeeded;
+  })();
+  singlePlaybackRateTask = task;
+  void task.then(
+    () => {
+      if (singlePlaybackRateTask === task) singlePlaybackRateTask = undefined;
+    },
+    () => {
+      if (singlePlaybackRateTask === task) singlePlaybackRateTask = undefined;
+    },
+  );
+  return task;
+}
+
 async function handlePlaybackRateChange({ rate }: { rate: number }) {
-  const stream = lastStream.value;
-  if (!stream?.stream_id || !stream.playback_id) return;
-  try {
-    const response = await setGbPlaybackSpeed(stream.playback_id, {
-      request_id: 'ui-playback-speed-' + Date.now(),
-      stream_id: stream.stream_id,
-      speed_rate: rate,
-      expected_generation: playbackGeneration.value,
-    });
-    playbackGeneration.value = response.generation;
-    singlePlaybackState.value = 'playing';
+  if (!playbackRates.includes(rate)) return;
+  singlePlaybackRate.value = rate;
+  if (singlePlaybackState.value === 'paused') {
     singlePlayerRef.value?.confirmPlaybackRate(rate);
-    singlePlayerRef.value?.confirmPlaybackState(false);
-    ElMessage.success(`回放倍速已切换为 ${rate}x`);
-  } catch (error) {
-    ElMessage.error(errorMessage(error, '回放倍速设置失败'));
+    return;
   }
+  await queueSinglePlaybackRate(rate);
 }
 
 async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
@@ -4170,6 +4392,7 @@ async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
   seekInFlight = true;
   try {
     while (queuedSeekMs !== undefined) {
+      if (singlePlaybackRateTask) await singlePlaybackRateTask;
       const targetMs = queuedSeekMs;
       queuedSeekMs = undefined;
       const stream = lastStream.value;
@@ -4199,6 +4422,15 @@ async function handlePlaybackSeek({ timeMs }: { timeMs: number }) {
 }
 
 async function handlePlaybackStateChange({ paused }: { paused: boolean }) {
+  if (!paused && singlePlaybackRate.value !== singlePlaybackAckRate.value) {
+    const applied = await queueSinglePlaybackRate(singlePlaybackRate.value);
+    if (applied) {
+      singlePlaybackState.value = 'playing';
+      singlePlayerRef.value?.confirmPlaybackState(false);
+    }
+    return;
+  }
+  if (singlePlaybackRateTask) await singlePlaybackRateTask;
   const stream = lastStream.value;
   if (!stream?.stream_id || !stream.playback_id) return;
   try {
@@ -5147,6 +5379,16 @@ onBeforeUnmount(() => {
   flex: 1 1 auto;
   flex-wrap: nowrap;
   gap: 6px;
+}
+
+.selected-channel-list.playback .selected-channel-actions :deep(.el-select) {
+  flex: 0 0 150px;
+  width: 150px;
+}
+
+.selected-channel-list.playback .selected-channel-actions :deep(.playback-output-select) {
+  flex-basis: 120px;
+  width: 120px;
 }
 
 .selected-channel-list.playback .selected-channel-actions :deep(.el-button + .el-button) {

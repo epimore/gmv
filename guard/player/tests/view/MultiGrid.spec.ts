@@ -113,13 +113,20 @@ describe("MultiGrid output selector", () => {
     });
     const players = wrapper.findAllComponents(GmvPlayerView);
 
-    await players[0].findAll(".gmv-video")[0].trigger("click");
+    const touchTap = async () => {
+      const event = new Event("pointerup", { bubbles: true });
+      Object.defineProperty(event, "pointerType", { value: "touch" });
+      players[0].findAll(".gmv-video")[0].element.dispatchEvent(event);
+      await wrapper.vm.$nextTick();
+    };
+
+    await touchTap();
 
     expect(players[0].get(".gmv-player").classes()).toContain("player-chrome-hidden");
     expect(players[1].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     expect(players[1].find(".playback-timeline-row").exists()).toBe(true);
 
-    await players[0].findAll(".gmv-video")[0].trigger("click");
+    await touchTap();
     expect(players[0].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     expect(players[1].get(".gmv-player").classes()).not.toContain("player-chrome-hidden");
     wrapper.unmount();
@@ -146,6 +153,7 @@ describe("MultiGrid output selector", () => {
 
     player.vm.$emit("playbackRateChange", { rate: 2 });
     player.vm.$emit("playbackStateChange", { paused: true });
+    player.vm.$emit("broadcastToggle", { deviceId: "device-a", channelId: "channel-a" });
     player.vm.$emit("playbackProgress", { mediaTimeMs: 12_000 });
     player.vm.$emit("cloudRecordCreate", { startTimeMs: 10_000, endTimeMs: 130_000 });
     await wrapper.vm.$nextTick();
@@ -156,10 +164,35 @@ describe("MultiGrid output selector", () => {
 
     expect(wrapper.emitted("playbackRateChange")).toEqual([[{ index: 0, payload: { rate: 2 } }]]);
     expect(wrapper.emitted("playbackStateChange")).toEqual([[{ index: 0, payload: { paused: true } }]]);
+    expect(wrapper.emitted("broadcastToggle")).toEqual([[
+      { index: 0, payload: { deviceId: "device-a", channelId: "channel-a" } },
+    ]]);
     expect(wrapper.emitted("playbackProgress")).toEqual([[{ index: 0, payload: { mediaTimeMs: 12_000 } }]]);
     expect(wrapper.emitted("cloudRecordCreate")).toEqual([[{ index: 0, payload: { startTimeMs: 10_000, endTimeMs: 130_000 } }]]);
     expect(player.props("mediaTransport")).toBe("TCP 被动");
     expect((wrapper.get('[aria-label="回放进度"]').element as HTMLInputElement).value).toBe("12000");
+    wrapper.unmount();
+  });
+
+  it("子播放器挂载时获得当前已确认倍速", async () => {
+    const wrapper = mount(MultiGrid, {
+      props: {
+        gridSize: 1,
+        cells: [{
+          cellId: "playback-a",
+          title: "playback-a",
+          mediaMode: "playback",
+          sources: [{ protocol: "flv", url: "playback-a.flv", rateMode: "remote-stream" }],
+          confirmedPlaybackRate: 4,
+        }],
+      },
+    });
+    await vi.waitFor(() => expect(mpegtsMock.createPlayer).toHaveBeenCalledOnce());
+    const video = wrapper.find("video").element;
+    video.dispatchEvent(new Event("playing"));
+    await wrapper.vm.$nextTick();
+
+    expect(video.playbackRate).toBe(4);
     wrapper.unmount();
   });
 
