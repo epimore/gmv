@@ -41,7 +41,7 @@ use gmv_domain::info::output::{
     DashFmp4Output, HlsFmp4Output, HlsPlaylistProfile, HttpFlvOutput, OutputEnum, OutputKind,
 };
 use gmv_protocol::common::v1::ErrorDetail;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -1643,7 +1643,7 @@ impl Register {
         if meta.closing.load(Ordering::Acquire) {
             return Ok(None);
         }
-        meta.converter.muxer.get_rx(muxer_enum).map(Some)
+        Ok(meta.converter.muxer.get_rx_if_enabled(muxer_enum))
     }
     pub fn sub_bus_mpsc_channel<T>(ssrc: &u32) -> GlobalResult<bus::mpsc::TypedReceiver<T>>
     where
@@ -1802,8 +1802,8 @@ impl Register {
                         arc.event_tx
                             .try_send((Event::Out(OutEvent::StreamRegister(info)), None))
                             .hand_log(|msg| error!("{msg}"))?;
-                        info!(
-                            "stream media playable: action=media_lifecycle, stage=playable, outcome=ready, stream_id={}, ssrc={}, generation={}, rtp_type={}",
+                        debug!(
+                            "stream media pipeline started: action=media_lifecycle, stage=converter_started, outcome=started, stream_id={}, ssrc={}, generation={}, rtp_type={}",
                             stream_id, meta.ssrc, meta.lifecycle_generation, rtp_type
                         );
                     }

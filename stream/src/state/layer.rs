@@ -416,64 +416,39 @@ pub mod muxer_layer {
         pub ts: Option<TsLayer>,
     }
     impl MuxerLayer {
-        pub fn get_rx(&self, muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
+        pub fn get_rx_if_enabled(&self, muxer_enum: MuxerEnum) -> Option<MuxPacketReceiver> {
             match muxer_enum {
-                MuxerEnum::Flv => {
-                    if self.flv.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.flv.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::Mp4 => {
-                    if self.mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.mp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::Ts => unsupported_muxer_rx(muxer_enum),
-                MuxerEnum::FMp4 => {
-                    if self.fmp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.fmp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::HlsTs => unsupported_muxer_rx(muxer_enum),
-                MuxerEnum::RtpFrame => unsupported_muxer_rx(muxer_enum),
-                MuxerEnum::RtpPs => unsupported_muxer_rx(muxer_enum),
-                MuxerEnum::RtpEnc => unsupported_muxer_rx(muxer_enum),
-                MuxerEnum::DashMp4 => {
-                    if self.dash_mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.dash_mp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::HlsMp4 => {
-                    if self.hls_mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.hls_mp4.as_ref().unwrap().tx.subscribe())
-                }
+                MuxerEnum::Flv => self.flv.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::Mp4 => self.mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::FMp4 => self.fmp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::DashMp4 => self.dash_mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::HlsMp4 => self.hls_mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::Ts
+                | MuxerEnum::HlsTs
+                | MuxerEnum::RtpFrame
+                | MuxerEnum::RtpPs
+                | MuxerEnum::RtpEnc => None,
             }
+        }
+
+        pub fn get_rx(&self, muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
+            if matches!(
+                muxer_enum,
+                MuxerEnum::Ts
+                    | MuxerEnum::HlsTs
+                    | MuxerEnum::RtpFrame
+                    | MuxerEnum::RtpPs
+                    | MuxerEnum::RtpEnc
+            ) {
+                return unsupported_muxer_rx(muxer_enum);
+            }
+            self.get_rx_if_enabled(muxer_enum).ok_or_else(|| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    &format!("muxer: {:?}未开启", muxer_enum),
+                    |msg| error!("{msg}"),
+                )
+            })
         }
         pub fn new(output: &OutputKind) -> Self {
             let mut layer = MuxerLayer::default();
@@ -704,6 +679,7 @@ pub mod codec_layer {
 #[cfg(test)]
 mod tests {
     use super::muxer_layer::MuxerLayer;
+    use crate::media::context::format::muxer::MuxerEnum;
     use gmv_domain::info::format::CMaf;
     use gmv_domain::info::output::{HlsFmp4Output, OutputKind};
 
@@ -716,5 +692,20 @@ mod tests {
 
         assert!(layer.hls_mp4.is_some());
         assert!(layer.fmp4.is_none());
+    }
+
+    #[test]
+    fn playable_muxer_lookup_distinguishes_absent_from_enabled() {
+        assert!(
+            MuxerLayer::default()
+                .get_rx_if_enabled(MuxerEnum::HlsMp4)
+                .is_none()
+        );
+
+        let layer = MuxerLayer::new(&OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: Default::default(),
+        }));
+        assert!(layer.get_rx_if_enabled(MuxerEnum::HlsMp4).is_some());
     }
 }

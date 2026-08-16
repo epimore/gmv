@@ -4,13 +4,13 @@ use crate::media::context::filter::FilterContext;
 use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::dashmp4::DashCmafMp4Context;
 use crate::media::context::format::demuxer::{
-    DemuxerContext, OutputTrackSource, SYNTHETIC_AUDIO_PACKET_INDEX,
+    DemuxerContext, OutputTrackSource, ParamRepairState, SYNTHETIC_AUDIO_PACKET_INDEX,
 };
 use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::format::fmp4::CmafFmp4Context;
 use crate::media::context::format::hlsfmp4::HlsFmp4Context;
 use crate::media::context::format::muxer::{MuxerContext, MuxerEnum};
-use crate::media::context::utils::codecpar::repair_basic_stream_info;
+use crate::media::context::utils::codecpar::{audio_parameters_ready, repair_basic_stream_info};
 use crate::media::context::utils::extradata::{self, dump_stream_info};
 use crate::media::context::utils::time_scale::{
     ProcessResult, TimelineNormalizer, repair_missing_timestamps,
@@ -31,7 +31,7 @@ use base::exception::{GlobalError, GlobalResult};
 use base::tokio_util::sync::CancellationToken;
 use gmv_domain::info::media_info_ext::MediaExt;
 use gmv_protocol::common::v1::ErrorDetail;
-use log::{debug, warn};
+use log::{debug, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
     AV_PKT_FLAG_KEY, AVERROR, AVERROR_EOF, AVERROR_EXIT, AVMediaType_AVMEDIA_TYPE_AUDIO,
@@ -207,6 +207,25 @@ fn supported_stream_params_ready(streams: impl Iterator<Item = (AVMediaType, boo
     streams
         .filter(|(media_type, _)| is_supported_av(*media_type))
         .all(|(_, ready)| ready)
+}
+
+unsafe fn repair_stream_parameters_if_needed(
+    stream: *mut rsmpeg::ffi::AVStream,
+    pkt: &AVPacket,
+    media_ext: &MediaExt,
+    param: &mut ParamRepairState,
+) {
+    let codecpar = unsafe { (*stream).codecpar };
+    let audio_still_ready = !codecpar.is_null()
+        && unsafe { (*codecpar).codec_type } == AVMediaType_AVMEDIA_TYPE_AUDIO
+        && unsafe { audio_parameters_ready(codecpar) };
+    if !param.ready
+        || (!codecpar.is_null()
+            && unsafe { (*codecpar).codec_type } == AVMediaType_AVMEDIA_TYPE_AUDIO
+            && !audio_still_ready)
+    {
+        param.ready = unsafe { repair_basic_stream_info(stream, pkt, media_ext, param) };
+    }
 }
 
 unsafe fn init_stream_timeline(
@@ -407,15 +426,18 @@ impl MediaContext {
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
-            // 统一修复流信息
+            let param = &mut self.demuxer_context.params[idx];
+            let is_video = (*codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_VIDEO;
+            if is_video {
+                repair_stream_parameters_if_needed(st, &pkt, ext, param);
+            }
             if !repair_missing_timestamps(&mut pkt, (*codecpar).video_delay) {
                 warn!("Discard packet without pts/dts; ssrc: {}", self.ssrc);
                 rsmpeg::ffi::av_packet_unref(&mut pkt);
                 continue;
             }
-            let param = &mut self.demuxer_context.params[idx];
-            if !param.ready {
-                param.ready = repair_basic_stream_info(st, &pkt, ext, param);
+            if !is_video {
+                repair_stream_parameters_if_needed(st, &pkt, ext, param);
             }
             let parameters_ready = param.ready;
             // 标记状态
@@ -693,7 +715,7 @@ impl MediaContext {
                 MuxerContext::init_collect(&self.demuxer_context, muxer_layer);
             self.muxer_context = muxer_context;
             for (muxer, error) in muxer_failures {
-                self.fail_muxer(muxer, "output_format_unsupported", error)?;
+                self.fail_muxer(muxer, "output_muxer_failed", error)?;
             }
             //消费缓存数据，以关键帧开始
             while let Some(mut pkt) = cache_info.pkts.pop_front() {
@@ -991,14 +1013,13 @@ impl MediaContext {
             if stream.is_null() || (*stream).codecpar.is_null() {
                 return Ok(());
             }
-            if !self.demuxer_context.params[index].ready && pkt.size > 0 && !pkt.data.is_null() {
-                let ready = repair_basic_stream_info(
+            if pkt.size > 0 && !pkt.data.is_null() {
+                repair_stream_parameters_if_needed(
                     stream,
                     pkt,
                     &self.media_ext,
                     &mut self.demuxer_context.params[index],
                 );
-                self.demuxer_context.params[index].ready = ready;
             }
             if self.demuxer_context.params[index].ready
                 && (*(*stream).codecpar).codec_type == AVMediaType_AVMEDIA_TYPE_AUDIO
@@ -1315,7 +1336,7 @@ impl MediaContext {
                 if let Err(error) =
                     m_event.handle_event(&mut self.muxer_context, &self.demuxer_context)
                 {
-                    self.fail_muxer(muxer, "output_format_unsupported", error)?;
+                    self.fail_muxer(muxer, "output_muxer_failed", error)?;
                 }
             }
             ContextEvent::Filter(_) => {
@@ -1357,8 +1378,21 @@ impl MediaContext {
             metadata.insert("video_codec".to_string(), profile.video_codec.clone());
             metadata.insert("audio_codec".to_string(), profile.audio_codec.clone());
         }
+        let output_type = match muxer {
+            MuxerEnum::Flv => "flv",
+            MuxerEnum::Mp4 => "mp4",
+            MuxerEnum::FMp4 => "fmp4",
+            MuxerEnum::HlsMp4 => "hls|ll_hls",
+            MuxerEnum::DashMp4 => "dash_mp4",
+            MuxerEnum::Ts => "ts",
+            MuxerEnum::HlsTs => "hls_ts",
+            MuxerEnum::RtpFrame => "rtp_frame",
+            MuxerEnum::RtpPs => "rtp_ps",
+            MuxerEnum::RtpEnc => "rtp_enc",
+        };
         warn!(
-            "stream output failed: action=output_mux, outcome=failed, stream_id={stream_id}, muxer={muxer:?}, code={code}, error={error_value}"
+            "stream output failed: action=output_mux, outcome=failed, scope=output_only, other_outputs=unaffected, stream_id={stream_id}, ssrc={}, output_type={output_type}, muxer={muxer:?}, code={code}, error={error_value}",
+            self.ssrc
         );
         Register::mark_muxer_failed(
             stream_id,
@@ -1377,11 +1411,12 @@ fn set_output_ready(
     output_type: &str,
     profile: &ActualMediaProfile,
 ) -> GlobalResult<()> {
+    let mime_codec = output_mime_codec(output_type, profile);
     let next_metadata = OutputMediaMetadata {
         state: OutputRuntimeState::Ready,
         video_codec: profile.video_codec.clone(),
         audio_codec: profile.audio_codec.clone(),
-        mime_codec: output_mime_codec(output_type, profile),
+        mime_codec: mime_codec.clone(),
         failure: None,
     };
     if Register::output_media_metadata(stream_id, output_type).as_ref() == Some(&next_metadata) {
@@ -1391,6 +1426,11 @@ fn set_output_ready(
     if !updated {
         debug!(
             "output ready state update ignored: action=output_metadata, outcome=ignored, reason=stream_finalized, stream_id={stream_id}, output_type={output_type}"
+        );
+    } else {
+        info!(
+            "stream output ready: action=output_metadata, stage=output_ready, outcome=ready, stream_id={stream_id}, output_type={output_type}, video_codec={}, audio_codec={}, mime_codec={mime_codec}",
+            profile.video_codec, profile.audio_codec
         );
     }
     Ok(())
@@ -1418,7 +1458,11 @@ fn output_mime_codec(output_type: &str, profile: &ActualMediaProfile) -> String 
 mod tests {
     use super::*;
     use base::tokio_util::sync::CancellationToken;
-    use rsmpeg::ffi::AVMediaType_AVMEDIA_TYPE_DATA;
+    use rsmpeg::ffi::{
+        AV_NOPTS_VALUE, AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_H264,
+        AVMediaType_AVMEDIA_TYPE_DATA, av_malloc, avformat_alloc_context, avformat_free_context,
+        avformat_new_stream,
+    };
 
     #[test]
     fn read_frame_classifies_packet_eof_and_failure() {
@@ -1471,6 +1515,71 @@ mod tests {
 
         assert!(usable_video_keyframe(true, true));
         assert!(initial_probe_can_finish(true, true, false, false));
+    }
+
+    #[test]
+    fn video_parameters_are_collected_before_missing_timestamps_reject_packet() {
+        unsafe {
+            let format = avformat_alloc_context();
+            assert!(!format.is_null());
+            let stream = avformat_new_stream(format, std::ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_VIDEO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_H264;
+
+            let mut annex_b = vec![
+                0, 0, 0, 1, 0x67, 0x42, 0xc0, 0x1f, 0xda, 0x01, 0xe0, 0x08, 0x9f, 0x97, 0x01, 0x6e,
+                0x40, 0, 0, 0, 1, 0x68, 0xce, 0x3c, 0x80,
+            ];
+            let mut packet = std::mem::zeroed::<AVPacket>();
+            packet.data = annex_b.as_mut_ptr();
+            packet.size = annex_b.len() as i32;
+            packet.pts = AV_NOPTS_VALUE;
+            packet.dts = AV_NOPTS_VALUE;
+            let mut state = ParamRepairState::default();
+
+            repair_stream_parameters_if_needed(stream, &packet, &MediaExt::default(), &mut state);
+
+            let parameter_sets = state.h264_ps.as_ref().expect("H.264 evidence missing");
+            assert!(parameter_sets.sps.is_some());
+            assert!(parameter_sets.pps.is_some());
+            assert!(!repair_missing_timestamps(&mut packet, 0));
+
+            avformat_free_context(format);
+        }
+    }
+
+    #[test]
+    fn stale_audio_ready_state_is_revalidated_from_later_adts() {
+        unsafe {
+            let format = avformat_alloc_context();
+            assert!(!format.is_null());
+            let stream = avformat_new_stream(format, std::ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+            (*codecpar).extradata = av_malloc(2) as *mut u8;
+            (*codecpar).extradata_size = 2;
+            std::ptr::copy_nonoverlapping([0x12, 0x00].as_ptr(), (*codecpar).extradata, 2);
+
+            let mut adts = [0xff, 0xf1, 0x4c, 0x40, 0, 0, 0];
+            let mut packet = std::mem::zeroed::<AVPacket>();
+            packet.data = adts.as_mut_ptr();
+            packet.size = adts.len() as i32;
+            let mut state = ParamRepairState {
+                ready: true,
+                ..Default::default()
+            };
+
+            repair_stream_parameters_if_needed(stream, &packet, &MediaExt::default(), &mut state);
+
+            assert!(state.ready);
+            assert_eq!((*codecpar).sample_rate, 48_000);
+            assert_eq!((*codecpar).ch_layout.nb_channels, 1);
+            avformat_free_context(format);
+        }
     }
 
     #[test]

@@ -7,9 +7,8 @@ use crate::media::context::format::{
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use base::bytes::Bytes;
 use base::exception::{GlobalError, GlobalResult};
-use base::log::warn;
+use base::log::{debug, warn};
 use base::once_cell::sync::Lazy;
-use log::error;
 use rsmpeg::ffi::{
     AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE,
     AVFormatContext, AVIOContext, AVMediaType_AVMEDIA_TYPE_AUDIO,
@@ -149,7 +148,7 @@ impl FmtMuxer for HlsFmp4Context {
             if ret < 0 {
                 return Err(GlobalError::new_sys_error(
                     &format!("FMP4 header write failed: {}", show_ffmpeg_error_msg(ret)),
-                    |msg| error!("{msg}"),
+                    |msg| debug!("{msg}"),
                 ));
             }
 
@@ -428,6 +427,32 @@ mod tests {
             offset += box_size;
         }
         assert_eq!(offset, data.len());
+    }
+
+    #[test]
+    fn silent_aac_plan_writes_valid_hls_init_without_source_audio_parameters() {
+        unsafe {
+            let fmt_ctx = avformat_alloc_context();
+            assert!(!fmt_ctx.is_null());
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx,
+                    io_buf: ptr::null_mut(),
+                    avio_ctx: ptr::null_mut(),
+                },
+                params: Vec::new(),
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: Default::default(),
+            };
+            demuxer.output_plan.add_silent_audio();
+
+            let muxer = HlsFmp4Context::init_context(&demuxer, MuxPacketSender::new(4)).unwrap();
+
+            assert_eq!(&muxer.init_segment[4..8], b"ftyp");
+        }
     }
 
     #[test]

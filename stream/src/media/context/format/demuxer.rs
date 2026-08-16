@@ -1,3 +1,4 @@
+use crate::media::context::utils::codecpar::audio_parameters_ready;
 use crate::media::{DEFAULT_IO_BUF_SIZE, rtp, rw, show_ffmpeg_error_msg};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult};
@@ -24,6 +25,7 @@ use std::ptr;
 use std::sync::Arc;
 
 type OpaquePtr = *mut rtp::RtpPacketBuffer;
+const NO_PER_STREAM_CODEC_OPTIONS: *mut *mut AVDictionary = ptr::null_mut();
 
 /// Wrapper that owns FFmpeg resources for an input (fmt_ctx + avio_ctx + io_buf + opaque)
 pub struct AvioResource {
@@ -162,7 +164,9 @@ fn ready_for_initial_output(
 ) -> bool {
     match media_type {
         AVMediaType_AVMEDIA_TYPE_VIDEO => index < ready_at_discovery.len() && currently_ready,
-        AVMediaType_AVMEDIA_TYPE_AUDIO => ready_at_discovery.get(index).copied().unwrap_or(false),
+        AVMediaType_AVMEDIA_TYPE_AUDIO => {
+            currently_ready && ready_at_discovery.get(index).copied().unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -192,13 +196,12 @@ impl DemuxerContext {
             if stream.is_null() || unsafe { (*stream).codecpar.is_null() } {
                 continue;
             }
-            let media_type = unsafe { (*(*stream).codecpar).codec_type };
-            if !ready_for_initial_output(
-                media_type,
-                index,
-                self.params[index].ready,
-                ready_at_discovery,
-            ) {
+            let codecpar = unsafe { (*stream).codecpar };
+            let media_type = unsafe { (*codecpar).codec_type };
+            let parameters_ready = self.params[index].ready
+                && (media_type != AVMediaType_AVMEDIA_TYPE_AUDIO
+                    || unsafe { audio_parameters_ready(codecpar) });
+            if !ready_for_initial_output(media_type, index, parameters_ready, ready_at_discovery) {
                 continue;
             }
             let selected = match media_type {
@@ -263,6 +266,7 @@ pub struct ParamRepairState {
     pub h265_ps: Option<H265ParameterSets>,
     pub aac_asc: Option<[u8; 2]>,
     pub ready: bool,
+    pub(crate) unsupported_codec_reported: bool,
     pub(crate) evidence: TrackParameterEvidence,
 }
 
@@ -373,12 +377,11 @@ unsafe fn alloc_avio_for_rtp(
 }
 
 /// Probe once. The custom AVIO and interrupt callback own waiting and cancellation.
-unsafe fn find_stream_info(
-    fmt_ctx: *mut AVFormatContext,
-    dict_opts: *mut AVDictionary,
-) -> Result<(), GlobalError> {
+unsafe fn find_stream_info(fmt_ctx: *mut AVFormatContext) -> Result<(), GlobalError> {
     unsafe {
-        let ret = avformat_find_stream_info(fmt_ctx, &mut (dict_opts as *mut _));
+        // The second argument is an nb_streams-sized array of per-stream codec options.
+        // This pipeline does not set such options; the demuxer options belong to open_input.
+        let ret = avformat_find_stream_info(fmt_ctx, NO_PER_STREAM_CODEC_OPTIONS);
         if ret < 0 {
             let detail = show_ffmpeg_error_msg(ret);
             return Err(GlobalError::new_biz_error(
@@ -820,7 +823,7 @@ impl DemuxerContext {
                 avio_ctx: in_pb,
             };
             // 6) find stream info once; AVIO handles waiting and interruption.
-            if let Err(e) = find_stream_info(avio.fmt_ctx, dict_opts) {
+            if let Err(e) = find_stream_info(avio.fmt_ctx) {
                 rsmpeg::ffi::av_dict_free(&mut dict_opts);
                 drop(avio);
                 return Err(e);
@@ -847,10 +850,12 @@ impl DemuxerContext {
 #[cfg(test)]
 mod tests {
     use super::{
-        OutputTrack, OutputTrackPlan, OutputTrackSource, ParamRepairState, ParameterEvidence,
-        apply_embedded_audio_declaration, audio_codec_hint, extend_param_repair_states,
-        map_audio_codec_id, ready_for_initial_output,
+        AvioResource, DemuxerContext, NO_PER_STREAM_CODEC_OPTIONS, OutputTrack, OutputTrackPlan,
+        OutputTrackSource, ParamRepairState, ParameterEvidence, apply_embedded_audio_declaration,
+        audio_codec_hint, extend_param_repair_states, map_audio_codec_id, ready_for_initial_output,
     };
+    use crate::media::rtp::RtpReadControl;
+    use base::tokio_util::sync::CancellationToken;
     use gmv_domain::info::media_info_ext::{MediaDeclarationState, MediaExt};
     use rsmpeg::ffi::{
         AVCodecID_AV_CODEC_ID_AAC, AVCodecID_AV_CODEC_ID_ADPCM_G722, AVCodecID_AV_CODEC_ID_G723_1,
@@ -863,6 +868,8 @@ mod tests {
     };
     use std::ffi::CStr;
     use std::ptr;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn extends_param_repair_state_when_demuxer_discovers_stream() {
@@ -877,6 +884,11 @@ mod tests {
         assert!(!params[1].ready);
         assert_eq!(extend_param_repair_states(&mut params, 1), 2..2);
         assert_eq!(params.len(), 2);
+    }
+
+    #[test]
+    fn stream_info_probe_does_not_reuse_demuxer_options() {
+        assert!(NO_PER_STREAM_CODEC_OPTIONS.is_null());
     }
 
     #[test]
@@ -926,11 +938,68 @@ mod tests {
             &snapshot,
         ));
         assert!(!ready_for_initial_output(
+            AVMediaType_AVMEDIA_TYPE_AUDIO,
+            1,
+            false,
+            &[true, true],
+        ));
+        assert!(!ready_for_initial_output(
             AVMediaType_AVMEDIA_TYPE_VIDEO,
             2,
             true,
             &snapshot,
         ));
+    }
+
+    #[test]
+    fn zero_parameter_aac_uses_silent_output_track() {
+        unsafe {
+            let format = avformat_alloc_context();
+            assert!(!format.is_null());
+            let video = avformat_new_stream(format, ptr::null());
+            let audio = avformat_new_stream(format, ptr::null());
+            assert!(!video.is_null());
+            assert!(!audio.is_null());
+            (*(*video).codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_VIDEO;
+            (*(*video).codecpar).codec_id = AVCodecID_AV_CODEC_ID_H264;
+            (*(*audio).codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*(*audio).codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+
+            let mut demuxer = DemuxerContext {
+                avio: AvioResource {
+                    fmt_ctx: format,
+                    io_buf: ptr::null_mut(),
+                    avio_ctx: ptr::null_mut(),
+                },
+                params: vec![
+                    ParamRepairState {
+                        ready: true,
+                        ..Default::default()
+                    },
+                    ParamRepairState {
+                        ready: true,
+                        ..Default::default()
+                    },
+                ],
+                read_control: Arc::new(RtpReadControl::new(
+                    CancellationToken::new(),
+                    Instant::now() + Duration::from_secs(60),
+                )),
+                output_plan: OutputTrackPlan::default(),
+            };
+
+            demuxer.freeze_output_plan(true, &[true, true]);
+
+            assert!(demuxer.output_plan.tracks.iter().any(|track| {
+                track.media_type == AVMediaType_AVMEDIA_TYPE_VIDEO
+                    && track.source == OutputTrackSource::Input(0)
+            }));
+            assert!(demuxer.output_plan.has_silent_audio());
+            assert!(!demuxer.output_plan.tracks.iter().any(|track| {
+                track.media_type == AVMediaType_AVMEDIA_TYPE_AUDIO
+                    && track.source == OutputTrackSource::Input(1)
+            }));
+        }
     }
 
     #[test]

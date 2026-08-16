@@ -109,19 +109,21 @@ pub unsafe fn repair_basic_stream_info(
                     }
                 }
                 OTHER => {
-                    warn!("unsupported codec_id = {}", OTHER)
+                    all_ready = false;
+                    if !param.unsupported_codec_reported {
+                        warn!("unsupported codec_id = {}", OTHER);
+                        param.unsupported_codec_reported = true;
+                    }
                 }
             }
             repair_video_stream_info(stream, media_ext);
         }
         AVMediaType_AVMEDIA_TYPE_AUDIO => {
-            if matches!((*par).codec_id, AVCodecID_AV_CODEC_ID_AAC)
-                && ((*par).extradata_size < 2 || (*par).extradata.is_null())
+            repair_audio_stream_info(stream, media_ext, param);
+            if (*par).codec_id == AVCodecID_AV_CODEC_ID_AAC
+                && !audio_parameters_ready(par)
+                && repair_codecpar(stream, pkt, param)
             {
-                if repair_codecpar(stream, pkt, param) {
-                    repair_audio_stream_info(stream, media_ext, param);
-                }
-            } else {
                 repair_audio_stream_info(stream, media_ext, param);
             }
             if ((*stream).time_base.num <= 0 || (*stream).time_base.den <= 0)
@@ -323,7 +325,22 @@ fn parse_aac_asc_from_adts(adts: &[u8]) -> Option<[u8; 2]> {
     let asc0 = (profile << 3) | (sf_index >> 1);
     let asc1 = ((sf_index & 1) << 7) | (chan_cfg << 3);
 
-    Some([asc0, asc1])
+    let asc = [asc0, asc1];
+    parse_aac_audio_specific_config(&asc).map(|_| asc)
+}
+
+fn read_aac_bits(data: &[u8], bit_offset: &mut usize, count: usize) -> Option<u32> {
+    if count > 32 || bit_offset.checked_add(count)? > data.len().checked_mul(8)? {
+        return None;
+    }
+    let mut value = 0_u32;
+    for _ in 0..count {
+        let byte = data[*bit_offset / 8];
+        let bit = (byte >> (7 - (*bit_offset % 8))) & 1;
+        value = (value << 1) | u32::from(bit);
+        *bit_offset += 1;
+    }
+    Some(value)
 }
 
 pub(super) fn parse_aac_audio_specific_config(asc: &[u8]) -> Option<(i32, i32)> {
@@ -332,12 +349,21 @@ pub(super) fn parse_aac_audio_specific_config(asc: &[u8]) -> Option<(i32, i32)> 
         8_000, 7_350,
     ];
 
-    if asc.len() < 2 {
+    let mut bit_offset = 0;
+    let audio_object_type = read_aac_bits(asc, &mut bit_offset, 5)?;
+    if audio_object_type == 31 {
+        read_aac_bits(asc, &mut bit_offset, 6)?;
+    }
+    let sample_rate_index = read_aac_bits(asc, &mut bit_offset, 4)? as usize;
+    let sample_rate = if sample_rate_index == 15 {
+        i32::try_from(read_aac_bits(asc, &mut bit_offset, 24)?).ok()?
+    } else {
+        *SAMPLE_RATES.get(sample_rate_index)?
+    };
+    if sample_rate <= 0 {
         return None;
     }
-    let sample_rate_index = (((asc[0] & 0x07) << 1) | (asc[1] >> 7)) as usize;
-    let sample_rate = *SAMPLE_RATES.get(sample_rate_index)?;
-    let channel_config = (asc[1] >> 3) & 0x0f;
+    let channel_config = read_aac_bits(asc, &mut bit_offset, 4)? as u8;
     let channels = match channel_config {
         1..=6 => i32::from(channel_config),
         7 => 8,
@@ -360,6 +386,11 @@ mod aac_audio_specific_config_tests {
             parse_aac_audio_specific_config(&[0x15, 0x88]),
             Some((8_000, 1))
         );
+        assert_eq!(
+            parse_aac_audio_specific_config(&[0x17, 0x80, 0x5d, 0xc0, 0x08]),
+            Some((48_000, 1))
+        );
+        assert_eq!(parse_aac_audio_specific_config(&[0x12, 0x00]), None);
     }
 
     #[test]
@@ -390,6 +421,43 @@ mod aac_audio_specific_config_tests {
     }
 
     #[test]
+    fn later_adts_replaces_unusable_aac_extradata() {
+        unsafe {
+            let format = rsmpeg::ffi::avformat_alloc_context();
+            assert!(!format.is_null());
+            let stream = rsmpeg::ffi::avformat_new_stream(format, ptr::null());
+            assert!(!stream.is_null());
+            let codecpar = (*stream).codecpar;
+            (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_AUDIO;
+            (*codecpar).codec_id = AVCodecID_AV_CODEC_ID_AAC;
+            (*codecpar).extradata = av_malloc(2) as *mut u8;
+            (*codecpar).extradata_size = 2;
+            ptr::copy_nonoverlapping([0x12, 0x00].as_ptr(), (*codecpar).extradata, 2);
+
+            let mut adts = [0xff, 0xf1, 0x4c, 0x40, 0, 0, 0];
+            let mut packet = std::mem::zeroed::<AVPacket>();
+            packet.data = adts.as_mut_ptr();
+            packet.size = adts.len() as i32;
+            let mut state = ParamRepairState::default();
+
+            assert!(repair_basic_stream_info(
+                stream,
+                &packet,
+                &MediaExt::default(),
+                &mut state,
+            ));
+            assert_eq!((*codecpar).sample_rate, 48_000);
+            assert_eq!((*codecpar).channels, 1);
+            assert_eq!((*codecpar).ch_layout.nb_channels, 1);
+            assert_eq!(
+                std::slice::from_raw_parts((*codecpar).extradata, 2),
+                &[0x11, 0x88]
+            );
+            rsmpeg::ffi::avformat_free_context(format);
+        }
+    }
+
+    #[test]
     fn incomplete_aac_does_not_use_protocol_or_product_defaults() {
         unsafe {
             let format = rsmpeg::ffi::avformat_alloc_context();
@@ -409,6 +477,42 @@ mod aac_audio_specific_config_tests {
             assert_eq!(state.evidence.sample_rate, ParameterEvidence::Unknown);
             assert_eq!(state.evidence.channels, ParameterEvidence::Unknown);
             rsmpeg::ffi::avformat_free_context(format);
+        }
+    }
+
+    #[test]
+    fn unknown_and_unsupported_video_codecs_are_not_ready() {
+        unsafe {
+            for codec_id in [
+                rsmpeg::ffi::AVCodecID_AV_CODEC_ID_NONE,
+                rsmpeg::ffi::AVCodecID_AV_CODEC_ID_MPEG4,
+            ] {
+                let format = rsmpeg::ffi::avformat_alloc_context();
+                assert!(!format.is_null());
+                let stream = rsmpeg::ffi::avformat_new_stream(format, ptr::null());
+                assert!(!stream.is_null());
+                let codecpar = (*stream).codecpar;
+                (*codecpar).codec_type = AVMediaType_AVMEDIA_TYPE_VIDEO;
+                (*codecpar).codec_id = codec_id;
+                let packet = std::mem::zeroed::<AVPacket>();
+                let mut state = ParamRepairState::default();
+
+                assert!(!repair_basic_stream_info(
+                    stream,
+                    &packet,
+                    &MediaExt::default(),
+                    &mut state,
+                ));
+                assert!(state.unsupported_codec_reported);
+                assert!(!repair_basic_stream_info(
+                    stream,
+                    &packet,
+                    &MediaExt::default(),
+                    &mut state,
+                ));
+
+                rsmpeg::ffi::avformat_free_context(format);
+            }
         }
     }
 
@@ -656,7 +760,7 @@ fn fixed_audio_parameters(codec_id: AVCodecID) -> Option<(i32, i32)> {
     .then_some((8_000, 1))
 }
 
-unsafe fn audio_parameters_ready(par: *const rsmpeg::ffi::AVCodecParameters) -> bool {
+pub(crate) unsafe fn audio_parameters_ready(par: *const rsmpeg::ffi::AVCodecParameters) -> bool {
     if par.is_null()
         || unsafe { (*par).sample_rate } <= 0
         || unsafe { (*par).ch_layout.nb_channels.max((*par).channels) } <= 0

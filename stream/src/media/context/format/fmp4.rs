@@ -143,7 +143,7 @@ impl FmtMuxer for CmafFmp4Context {
             if ret < 0 {
                 return Err(GlobalError::new_sys_error(
                     &format!("FMP4 header write failed: {}", show_ffmpeg_error_msg(ret)),
-                    |msg| error!("{msg}"),
+                    |msg| debug!("{msg}"),
                 ));
             }
 

@@ -1370,7 +1370,9 @@ impl StreamControlAdapter {
             .map(|stream| stream.primary_output_format.clone())
             .unwrap_or_default();
         let primary_output_metadata = self.media_tx.as_ref().and_then(|_| {
-            Register::output_media_metadata(&request.stream_id, &primary_output_format)
+            normalize_live_output_type(&primary_output_format).and_then(|output_type| {
+                Register::output_media_metadata(&request.stream_id, output_type)
+            })
         });
         let output_ready = if self.media_tx.is_some() {
             primary_output_metadata
@@ -2246,6 +2248,7 @@ mod tests {
             min_free_bytes: 0,
         });
         assert_eq!(primary_output_type_from_kind(&output), Some("mp4"));
+        assert_eq!(normalize_live_output_type("mp4"), None);
     }
 
     #[tokio::test]
