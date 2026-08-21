@@ -7,6 +7,7 @@ use gmv_guard_server::core::{GuardError, GuardResult};
 use gmv_guard_server::store::persistent::PersistentStore;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    base::daemon::install_sanitized_panic_hook();
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args.first().map(String::as_str) {
         Some("reset-admin-password") => reset_admin_password(&args[1..]),

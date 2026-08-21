@@ -55,6 +55,7 @@ fn default_capabilities() -> Vec<String> {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    base::daemon::install_sanitized_panic_hook();
     base::logger::Logger::init()?;
     let runtime = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
     let service_runtime = runtime.clone();
