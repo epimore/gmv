@@ -1,4 +1,5 @@
-use crate::io::http::call::{HttpClient, HttpSession, HttpTemplate};
+use crate::guard_integration::{GuardEventPublish, check_playback, publish_guard_event};
+use crate::io::call::{call_session_hook_rpc, decode_hook_payload};
 use crate::io::local::mp4::LocalStoreMp4Context;
 use crate::state::layer::output_layer::OutputLayer;
 use crate::state::register::{Inner, Register, TimeScheduleKey};
@@ -6,24 +7,21 @@ use base::cache::c100k::CacheEvent;
 use base::exception::GlobalResultExt;
 use base::log::{error, info, warn};
 use base::net::state::Protocol;
-use base::tokio;
+use base::serde::Serialize;
 use base::tokio::select;
 use base::tokio::sync::mpsc::Receiver;
 use base::tokio::sync::oneshot::Sender;
 use base::tokio::sync::{Semaphore, mpsc};
 use base::tokio_util::sync::CancellationToken;
-use pretend::Pretend;
-use pretend::interceptor::NoopRequestInterceptor;
-use pretend::resolver::UrlResolver;
-use pretend_reqwest::Client;
-use shared::info::obj::{
+use base::tokio_util::task::TaskTracker;
+use gmv_domain::info::obj::{
     BaseStreamInfo, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
     RtpInfo, StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
 };
+use gmv_protocol::session::v1::SessionHookResponse;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 const MAX_WORKER_POOL: usize = 128;
 pub enum Event {
@@ -62,7 +60,7 @@ pub enum OutEvent {
     StreamUnknown(UnknownStreamEvent),
     OnPlay(StreamPlayInfo),
     OffPlay(StreamPlayInfo),
-    EndRecord(StreamRecordInfo),
+    EndRecord(StreamRecordInfo, Option<String>),
 }
 pub enum EventRes {
     Out(OutEventRes),
@@ -90,37 +88,43 @@ pub enum OutEventRes {
 impl Event {
     async fn hand_event(
         rx: &mut Receiver<(Event, Option<Sender<EventRes>>)>,
-        pretend: HttpTemplate,
         semaphore: Arc<Semaphore>,
-    ) {
-        if let Some((event, tx)) = rx.recv().await {
-            match event {
-                Event::Out(out) => {
-                    if let Ok(permit) = semaphore
-                        .acquire_owned()
-                        .await
-                        .hand_log(|msg| error!("{msg}"))
-                    {
-                        tokio::spawn(async move {
-                            Self::hand_out(out, tx, pretend.clone()).await;
-                            drop(permit);
-                        });
+        tasks: &TaskTracker,
+        cancel: &CancellationToken,
+    ) -> bool {
+        let Some((event, tx)) = rx.recv().await else {
+            return false;
+        };
+        match event {
+            Event::Out(out) => {
+                let permit = select! {
+                    permit = semaphore.acquire_owned() => {
+                        let Ok(permit) = permit.hand_log(|msg| error!("{msg}")) else {
+                            return false;
+                        };
+                        permit
                     }
-                }
-                Event::Active(active) => {
-                    Self::hand_active(active, tx);
-                }
-                Event::Inner(inner) => {
-                    Self::hand_inner(inner, tx);
-                }
+                    _ = cancel.cancelled() => return false,
+                };
+                tasks.spawn(async move {
+                    Self::hand_out(out, tx).await;
+                    drop(permit);
+                });
+            }
+            Event::Active(active) => {
+                Self::hand_active(active, tx);
+            }
+            Event::Inner(inner) => {
+                Self::hand_inner(inner, tx);
             }
         }
+        true
     }
 
     fn hand_inner(inner_event: InnerEvent, tx: Option<Sender<EventRes>>) {
         match inner_event {
             InnerEvent::RecordInfo(_) => {
-                unimplemented!()
+                warn!("stream ignored unsupported record-info inner event");
             }
             InnerEvent::StreamRegister(rtp_type, stream_id, origin_trans) => {
                 //当不存在则表示数据被释放；统一由时间调度触发OutEvent::StreamInTimeout
@@ -146,98 +150,177 @@ impl Event {
         }
     }
 
-    async fn hand_out(out_event: OutEvent, tx: Option<Sender<EventRes>>, pretend: HttpTemplate) {
+    async fn call_session_hook_by_stream_id<T>(
+        stream_id: &str,
+        event_type: &str,
+        payload: &T,
+    ) -> Option<SessionHookResponse>
+    where
+        T: Serialize + ?Sized,
+    {
+        let Some(endpoint) = Register::session_hook_endpoint(stream_id) else {
+            warn!("session hook endpoint missing: stream_id={stream_id}, event_type={event_type}");
+            return None;
+        };
+        call_session_hook_rpc(&endpoint, event_type, payload).await
+    }
+
+    fn accepted(response: Option<&SessionHookResponse>) -> bool {
+        response.map(|response| response.accepted).unwrap_or(false)
+    }
+
+    async fn hand_out(out_event: OutEvent, tx: Option<Sender<EventRes>>) {
         match out_event {
             OutEvent::StreamRegister(rsi) => {
-                info!("Calling stream_register with: {:?}", rsi);
-                let res = pretend.stream_register(&rsi).await;
-                info!("stream_register returned: {:?}", res);
-                let _ = res.hand_log(|msg| error!("{msg}"));
-            }
-            OutEvent::StreamInTimeout(ss) => {
-                info!("Calling stream_input_timeout with: {:?}", ss);
-                let res = pretend.stream_input_timeout(&ss).await;
-                info!("stream_input_timeout returned: {:?}", res);
-                let mut oe = InTimeoutEventRes::CloseAll;
-                if let Ok(oer) = res {
-                    let resp = oer.value();
-                    if let Some(oer) = resp.data
-                        && resp.code == 200
-                    {
-                        oe = oer;
+                let stream_id = rsi.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.registered", &rsi)
+                        .await;
+                if Self::accepted(response.as_ref()) {
+                    base::log::debug!(
+                        "stream_register event sent to session: outcome=accepted, stream_id={stream_id}"
+                    );
+                } else {
+                    let published = publish_guard_event(
+                        "stream.registered.fallback",
+                        format!("stream_id={stream_id};code={}", rsi.code).into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "stream_register using guard fallback: outcome=queued, stream_id={stream_id}"
+                        );
                     }
                 }
-                Register::close_stream_by_input(ss, oe);
-                // let _ = res.hand_log(|msg| error!("{msg}"));
+                if let Some(tx) = tx {
+                    let result = Self::accepted(response.as_ref()).then_some(());
+                    let _ = tx.send(EventRes::Out(OutEventRes::StreamRegister(result)));
+                }
+            }
+            OutEvent::StreamInTimeout(ss) => {
+                let stream_id = ss.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.input_timeout", &ss)
+                        .await;
+                let event_res = response
+                    .as_ref()
+                    .filter(|response| response.accepted)
+                    .and_then(decode_hook_payload::<InTimeoutEventRes>)
+                    .unwrap_or_else(|| {
+                        publish_guard_event(
+                            "stream.input_timeout.fallback",
+                            format!("{ss:?}").into_bytes(),
+                        );
+                        warn!("stream_input_timeout fallback close all: stream_id={stream_id}");
+                        InTimeoutEventRes::CloseAll
+                    });
+                Register::close_stream_by_input(ss, event_res);
             }
             OutEvent::OnPlay(spi) => {
-                info!("Calling on_play with: {:?}", spi);
-                let res = pretend.on_play(&spi).await;
-                info!("on_play returned: {:?}", res);
-                if let Ok(res) = res.hand_log(|msg| error!("{msg}")) {
-                    let _ = tx
-                        .unwrap()
-                        .send(EventRes::Out(OutEventRes::OnPlay(res.value().data)));
+                let stream_id = spi.base_stream_info.stream_id.clone();
+                let accepted = check_playback(
+                    &stream_id,
+                    &spi.token,
+                    spi.remote_addr.as_deref(),
+                    &format!("{:?}", spi.play_type),
+                )
+                .await;
+                if !accepted {
+                    publish_guard_event(
+                        "stream.on_play.rejected",
+                        format!("stream_id={stream_id};play_type={:?}", spi.play_type).into_bytes(),
+                    );
+                }
+                if let Some(tx) = tx {
+                    let _ = tx.send(EventRes::Out(OutEventRes::OnPlay(Some(accepted))));
                 }
             }
             OutEvent::StreamIdle(os) => {
-                info!("Calling stream_idle with: {:?}", os);
-                let res = pretend.stream_idle(&os).await;
-                info!("stream_idle returned: {:?}", res);
-                let mut oe = if os.user_count == 0 {
-                    OutputEventRes::CloseAll
-                } else {
-                    OutputEventRes::CloseMuxer
-                };
-                if let Ok(oer) = res {
-                    let resp = oer.value();
-                    if let Some(oer) = resp.data
-                        && resp.code == 200
-                    {
-                        oe = oer;
-                    }
-                }
-                Register::close_stream_by_output(os, oe);
-                // let _ = res.hand_log(|msg| error!("{msg}"));
+                let stream_id = os.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.idle", &os).await;
+                let event_res = response
+                    .as_ref()
+                    .filter(|response| response.accepted)
+                    .and_then(decode_hook_payload::<OutputEventRes>)
+                    .unwrap_or_else(|| {
+                        publish_guard_event("stream.idle.fallback", format!("{os:?}").into_bytes());
+                        warn!("stream_idle fallback local cleanup: stream_id={stream_id}");
+                        if os.user_count == 0 {
+                            OutputEventRes::CloseAll
+                        } else {
+                            OutputEventRes::CloseMuxer
+                        }
+                    });
+                Register::close_stream_by_output(os, event_res);
             }
             OutEvent::StreamUnknown(event) => {
-                for attempt in 1..=4 {
-                    match pretend.stream_unknown(&event).await {
-                        Ok(response) => {
-                            let response = response.value();
-                            if response.code == 200 && response.data == Some(true) {
-                                info!(
-                                    "stream_unknown accepted: media_node={}, ssrc={}",
-                                    event.media_node_id, event.ssrc
-                                );
-                                break;
-                            }
-                            warn!(
-                                "stream_unknown rejected: media_node={}, ssrc={}, attempt={}, response={:?}",
-                                event.media_node_id, event.ssrc, attempt, response
-                            );
-                        }
-                        Err(err) => warn!(
-                            "stream_unknown failed: media_node={}, ssrc={}, attempt={}, err={:?}",
-                            event.media_node_id, event.ssrc, attempt, err
-                        ),
-                    }
-                    if attempt < 4 {
-                        tokio::time::sleep(Duration::from_secs(1 << (attempt - 1))).await;
+                publish_guard_event("stream.unknown", format!("{event:?}").into_bytes());
+            }
+            OutEvent::OffPlay(spi) => {
+                let stream_id = spi.base_stream_info.stream_id.clone();
+                let response =
+                    Self::call_session_hook_by_stream_id(&stream_id, "stream.off_play", &spi).await;
+                if Self::accepted(response.as_ref()) {
+                    info!(
+                        "off_play event sent to session: outcome=accepted, stream_id={stream_id}"
+                    );
+                } else {
+                    let published = publish_guard_event(
+                        "stream.off_play.fallback",
+                        format!("stream_id={stream_id};play_type={:?}", spi.play_type).into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "off_play using guard fallback: outcome=queued, stream_id={stream_id}"
+                        );
                     }
                 }
             }
-            OutEvent::OffPlay(spi) => {
-                info!("Calling off_play with: {:?}", spi);
-                let res = pretend.off_play(&spi).await;
-                info!("off_play returned: {:?}", res);
-                let _ = res.hand_log(|msg| error!("{msg}"));
-            }
-            OutEvent::EndRecord(info) => {
-                info!("Calling end_record with: {:?}", info);
-                let res = pretend.end_record(&info).await;
-                info!("end_record returned: {:?}", res);
-                let _ = res.hand_log(|msg| error!("{msg}"));
+            OutEvent::EndRecord(info, session_hook_endpoint) => {
+                let response = if let Some(endpoint) = session_hook_endpoint.as_deref() {
+                    call_session_hook_rpc(endpoint, "stream.end_record", &info).await
+                } else {
+                    match info.stream_id.as_deref() {
+                        Some(stream_id) => {
+                            Self::call_session_hook_by_stream_id(
+                                stream_id,
+                                "stream.end_record",
+                                &info,
+                            )
+                            .await
+                        }
+                        None => {
+                            warn!("end_record stream_id missing");
+                            None
+                        }
+                    }
+                };
+                if Self::accepted(response.as_ref()) {
+                    info!(
+                        "end_record event sent to session: outcome=accepted, stream_id={}, state={}",
+                        info.stream_id.as_deref().unwrap_or("<missing>"),
+                        info.state
+                    );
+                } else {
+                    let published = publish_guard_event(
+                        "stream.end_record.fallback",
+                        format!(
+                            "stream_id={};state={};file_size={};timestamp={}",
+                            info.stream_id.as_deref().unwrap_or("<missing>"),
+                            info.state,
+                            info.file_size,
+                            info.timestamp
+                        )
+                        .into_bytes(),
+                    );
+                    if published == GuardEventPublish::Queued {
+                        warn!(
+                            "end_record using guard fallback: outcome=queued, stream_id={}, state={}",
+                            info.stream_id.as_deref().unwrap_or("<missing>"),
+                            info.state
+                        );
+                    }
+                }
             }
         }
     }
@@ -247,15 +330,45 @@ pub async fn schedule_event(
     mut event_rx: Receiver<(Event, Option<Sender<EventRes>>)>,
     cancel_token: CancellationToken,
 ) {
-    let pretend = HttpClient::template().expect("Http client template init failed");
     let semaphore = Arc::new(Semaphore::new(MAX_WORKER_POOL));
+    let tasks = TaskTracker::new();
     loop {
         select! {
            biased; // 按编写顺序检查分支
-            _ = on_time_schedule(&inner)=>{},
-            _ = Event::hand_event(&mut event_rx,pretend.clone(),semaphore.clone()) => {}
             _ = cancel_token.cancelled() => {break;}
+            _ = on_time_schedule(&inner)=>{},
+            open = Event::hand_event(
+                &mut event_rx,
+                semaphore.clone(),
+                &tasks,
+                &cancel_token,
+            ) => {
+                if !open {
+                    break;
+                }
+            }
         }
+    }
+    tasks.close();
+    tasks.wait().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_receiver_reports_closed_after_all_senders_drop() {
+        let runtime = base::tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        runtime.block_on(async {
+            let (tx, mut rx) = mpsc::channel(1);
+            drop(tx);
+            let tasks = TaskTracker::new();
+            let cancel = CancellationToken::new();
+            assert!(
+                !Event::hand_event(&mut rx, Arc::new(Semaphore::new(1)), &tasks, &cancel).await
+            );
+        });
     }
 }
 
@@ -270,6 +383,21 @@ async fn on_time_schedule(inner: &Inner) {
                 }
                 TimeScheduleKey::OutSession(expire_id) => {
                     Register::clean_play_token(expire_id);
+                }
+                TimeScheduleKey::HlsViewer(stream_id, token) => {
+                    Register::clean_hls_play_token(stream_id, token);
+                }
+                TimeScheduleKey::OutputFirstSubscriber(
+                    stream_id,
+                    output_enum,
+                    lifecycle_generation,
+                ) => {
+                    Register::expire_first_subscriber(
+                        stream_id,
+                        output_enum,
+                        lifecycle_generation,
+                        inner,
+                    );
                 }
                 TimeScheduleKey::UnknownStream(key) => {
                     Register::expire_unknown_stream(key, inner);

@@ -1,0 +1,80 @@
+use gmv_pjsip::{SipAssociation, SipRuntimeEvent, SipRuntimeEventKind};
+
+pub fn normalize_gb_version(value: Option<&str>) -> Option<String> {
+    match value.map(str::trim) {
+        Some("2.0") => Some("2.0".to_string()),
+        Some("3.0") => Some("3.0".to_string()),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct GbRegisterEvent {
+    pub device_id: String,
+    pub contact: Option<String>,
+    pub support_lr: bool,
+    pub expires: u32,
+    pub call_id: String,
+    pub cseq: u32,
+    pub authorized: bool,
+    pub username: Option<String>,
+    pub association: SipAssociation,
+    pub user_agent: Option<String>,
+    pub gb_version: Option<String>,
+}
+
+impl GbRegisterEvent {
+    pub fn from_native(event: &SipRuntimeEvent) -> Option<Self> {
+        if !matches!(
+            event.kind,
+            SipRuntimeEventKind::Registered | SipRuntimeEventKind::Unregistered
+        ) {
+            return None;
+        }
+        let device_id = event.device_id.clone()?;
+        let association = SipAssociation {
+            local_addr: event.local_addr?,
+            remote_addr: event.remote_addr?,
+            protocol: event.protocol?,
+        };
+        Some(Self {
+            device_id: device_id.clone(),
+            contact: event.contact.clone(),
+            support_lr: event.contact.as_deref().is_some_and(|contact| {
+                contact
+                    .split(';')
+                    .skip(1)
+                    .any(|parameter| parameter.eq_ignore_ascii_case("lr"))
+            }),
+            expires: event.expires_seconds.unwrap_or_default(),
+            call_id: event.call_id.clone()?,
+            cseq: event.cseq?,
+            authorized: true,
+            username: Some(device_id),
+            association,
+            user_agent: event.user_agent.clone(),
+            gb_version: normalize_gb_version(event.gb_version.as_deref()),
+        })
+    }
+
+    pub fn is_unregister(&self) -> bool {
+        self.expires == 0
+    }
+
+    pub fn is_register(&self) -> bool {
+        self.expires != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_gb_version;
+
+    #[test]
+    fn only_supported_gb_versions_are_persisted() {
+        assert_eq!(normalize_gb_version(Some(" 2.0 ")).as_deref(), Some("2.0"));
+        assert_eq!(normalize_gb_version(Some("3.0")).as_deref(), Some("3.0"));
+        assert_eq!(normalize_gb_version(Some("2016")), None);
+        assert_eq!(normalize_gb_version(None), None);
+    }
+}

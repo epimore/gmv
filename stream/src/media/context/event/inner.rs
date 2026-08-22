@@ -4,7 +4,7 @@ use crate::media::context::format::FmtMuxer;
 use crate::media::context::format::flv::FlvSupperCtx;
 use crate::media::context::utils::extradata;
 use base::bytes::Bytes;
-use base::log::error;
+use base::log::{debug, error};
 use base::tokio::sync::oneshot;
 use log::info;
 
@@ -12,6 +12,7 @@ pub enum InnerEvent {
     FlvHeader(oneshot::Sender<Bytes>),
     Mp4Header(oneshot::Sender<Bytes>),
     Fmp4Header(oneshot::Sender<Bytes>),
+    HlsFmp4Header(oneshot::Sender<Bytes>),
     DashMp4Header(oneshot::Sender<Bytes>),
     MediaParam(oneshot::Sender<MediaParam>),
     //...
@@ -29,7 +30,7 @@ impl InnerEvent {
                         FlvSupperCtx::H265FlvCtx(context) => context.get_header(),
                     };
                     if let Err(_) = sender.send(header) {
-                        error!("flv_header send to the receiver dropped");
+                        debug!("flv header receiver dropped");
                     }
                 }
             },
@@ -39,7 +40,7 @@ impl InnerEvent {
                 }
                 Some(context) => {
                     if let Err(_) = sender.send(context.get_header()) {
-                        error!("mp4_header send to the receiver dropped");
+                        debug!("mp4 header receiver dropped");
                     }
                 }
             },
@@ -49,7 +50,17 @@ impl InnerEvent {
                 }
                 Some(context) => {
                     if let Err(_) = sender.send(context.get_header()) {
-                        error!("fmp4_header send to the receiver dropped");
+                        debug!("fmp4 header receiver dropped");
+                    }
+                }
+            },
+            InnerEvent::HlsFmp4Header(sender) => match &media_context.muxer_context.hls_mp4 {
+                None => {
+                    error!("no hls fmp4 context");
+                }
+                Some(context) => {
+                    if sender.send(context.get_header()).is_err() {
+                        debug!("hls fmp4 header receiver dropped");
                     }
                 }
             },
@@ -60,14 +71,14 @@ impl InnerEvent {
                 Some(context) => {
                     let init = context.get_header();
                     if let Err(_) = sender.send(init) {
-                        error!("dash_header send to the receiver dropped");
+                        debug!("dash header receiver dropped");
                     }
                 }
             },
             InnerEvent::MediaParam(sender) => {
                 let param = extradata::parse_media_param(&media_context.demuxer_context);
                 if let Err(_) = sender.send(param) {
-                    error!("media params send to the receiver dropped");
+                    debug!("media params receiver dropped");
                 }
             }
         }

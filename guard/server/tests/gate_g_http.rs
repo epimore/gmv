@@ -1,0 +1,444 @@
+use std::time::Duration;
+
+use argon2::Argon2;
+use argon2::password_hash::{PasswordHasher, SaltString};
+use axum::body::{Body, to_bytes};
+use axum::http::header::{CONTENT_TYPE, COOKIE, ORIGIN, SET_COOKIE};
+use axum::http::{Request, StatusCode};
+use base::serde_json::{Value, json};
+use gmv_guard_server::api::v2::ApiV2;
+use gmv_guard_server::api::v2::http::{HttpState, router};
+use gmv_guard_server::auth::{AuthState, Role, SessionPolicy, UserAccount};
+use gmv_guard_server::operation::OperationService;
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{
+    EventRecord, OutboxDestinationKind, OutboxRecord, OutboxState,
+};
+use tower::ServiceExt;
+
+const ORIGIN_VALUE: &str = "http://127.0.0.1:5173";
+
+fn password_hash() -> String {
+    let salt = SaltString::encode_b64(b"gmv-gate-g-tests").unwrap();
+    Argon2::default()
+        .hash_password(b"secret", &salt)
+        .unwrap()
+        .to_string()
+}
+
+fn app() -> (axum::Router, InMemoryGuardStore) {
+    let store = InMemoryGuardStore::default();
+    let hash = password_hash();
+    let auth = AuthState::new(
+        [
+            UserAccount::new("viewer", Role::Viewer, hash.clone()),
+            UserAccount::new("operator", Role::Operator, hash.clone()),
+            UserAccount::new("admin", Role::Admin, hash),
+        ],
+        SessionPolicy {
+            allowed_origins: vec![ORIGIN_VALUE.to_string()],
+            secure_cookie: false,
+            session_ttl: Duration::from_secs(3600),
+            login_window: Duration::from_secs(60),
+            max_failed_attempts: 5,
+            local_admin_username: None,
+            local_admin_login_only: false,
+        },
+    );
+    (
+        router(HttpState {
+            api: ApiV2::new(store.clone(), OperationService::default()),
+            auth,
+            outbox: OutboxRepository::from(store.clone()),
+            users: None,
+            integrations: None,
+            commands: None,
+            integration_secrets: None,
+            integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(
+                300_000, 100,
+            )
+            .unwrap(),
+            event_forwarder: None,
+            media_https_http2_verified: false,
+        }),
+        store,
+    )
+}
+
+async fn call(
+    app: &axum::Router,
+    request: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Value) {
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        base::serde_json::from_slice(&bytes).unwrap_or_else(|error| {
+            panic!(
+                "expected JSON response, status={status}, body={}: {error}",
+                String::from_utf8_lossy(&bytes)
+            )
+        })
+    };
+    (status, headers, body)
+}
+
+async fn login(app: &axum::Router, username: &str) -> (String, String) {
+    let (status, headers, body) = call(
+        app,
+        Request::post("/api/v2/auth/login")
+            .header(ORIGIN, ORIGIN_VALUE)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "username": username, "password": "secret" }).to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    (
+        headers
+            .get(SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string(),
+        body["csrf_token"].as_str().unwrap().to_string(),
+    )
+}
+
+fn write_request(path: &str, cookie: &str, csrf: &str, body: Value) -> Request<Body> {
+    Request::post(path)
+        .header(ORIGIN, ORIGIN_VALUE)
+        .header(COOKIE, cookie)
+        .header("x-csrf-token", csrf)
+        .header(CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[test]
+fn ui_api_requires_registered_nodes_for_device_operations() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, _) = app();
+            let (cookie, csrf) = login(&app, "viewer").await;
+            let (status, _, devices) = call(
+                &app,
+                Request::get("/api/v2/devices")
+                    .header(COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(devices.as_array().unwrap().len(), 0);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/devices/34020000001320000001/preview",
+                    &cookie,
+                    &csrf,
+                    json!({ "request_id": "ui-1", "channel_id": "ch-1" }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/ptz",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "deviceId": "34020000001320000001",
+                        "channelId": "ch-1",
+                        "leftRight": 1,
+                        "upDown": 0,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 0,
+                        "zoomSpeed": 0
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/preview",
+                    &cookie,
+                    &csrf,
+                    json!({ "request_id": "ui-gb-preview", "session_node_id": "session-1" }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/playback",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-gb-playback",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/records/query",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-record-query",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/devices/34020000001320000001/channels/ch-1/cloud-recordings",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-cloud-download",
+                        "session_node_id": "session-1",
+                        "start_time_sec": 1,
+                        "end_time_sec": 2
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            for (path, request_id) in [
+                (
+                    "/api/v2/devices/34020000001320000001/playback",
+                    "ui-playback",
+                ),
+                (
+                    "/api/v2/devices/34020000001320000001/download",
+                    "ui-download",
+                ),
+            ] {
+                let (status, _, _) = call(
+                    &app,
+                    write_request(
+                        path,
+                        &cookie,
+                        &csrf,
+                        json!({ "request_id": request_id, "channel_id": "ch-1" }),
+                    ),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NOT_FOUND);
+            }
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/devices/34020000001320000001/ptz",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "channel_id": "ch-1",
+                        "leftRight": 1,
+                        "upDown": 0,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 0,
+                        "zoomSpeed": 0
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::NOT_FOUND);
+
+            let (status, _, _) = call(
+                &app,
+                write_request(
+                    "/api/v2/gb28181/broadcasts/start",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "request_id": "ui-broadcast",
+                        "targets": [{
+                            "device_id": "34020000001320000001",
+                            "channel_id": "ch-1"
+                        }]
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        });
+}
+
+#[test]
+fn media_transport_defaults_to_http1_and_six_views() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, _) = app();
+            let (cookie, _) = login(&app, "viewer").await;
+            let (status, _, body) = call(
+                &app,
+                Request::get("/api/v2/media/transport")
+                    .header(COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["scheme"], "http");
+            assert_eq!(body["http_version"], "http/1.1");
+            assert_eq!(body["multi_view_limit"], 6);
+        });
+}
+
+#[test]
+fn playback_presence_heartbeat_requires_authenticated_owner_ticket() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, _store) = app();
+            let (cookie, csrf) = login(&app, "operator").await;
+
+            let (status, _, body) = call(
+                &app,
+                write_request(
+                    "/api/v2/playbacks/presence/heartbeat",
+                    &cookie,
+                    &csrf,
+                    json!({
+                        "items": [{
+                            "playback_id": "playback-1",
+                            "stream_id": "stream-1",
+                            "subscription_id": "subscription-1",
+                            "generation": 3
+                        }]
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+            assert!(body["message"].as_str().is_some());
+        });
+}
+
+#[test]
+fn outbox_manual_retry_is_exposed_safely() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, store) = app();
+            let (operator_cookie, operator_csrf) = login(&app, "operator").await;
+
+            let status = call(
+                &app,
+                Request::get("/api/v2/runtime/status")
+                    .header(COOKIE, &operator_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .2;
+            assert_eq!(status["running_streams"], 0);
+
+            store
+                .insert_event_with_outbox(
+                    EventRecord {
+                        event_id: "event-dead".to_string(),
+                        topic: "webhook.failed".to_string(),
+                        priority: 2,
+                        payload: b"{}".to_vec(),
+                    },
+                    vec![OutboxRecord {
+                        outbox_id: "outbox-dead".to_string(),
+                        event_id: "event-dead".to_string(),
+                        integration_id: String::new(),
+                        mapping_id: String::new(),
+                        destination_kind: OutboxDestinationKind::Webhook,
+                        destination: "https://example.com/hook".to_string(),
+                        payload: b"{}".to_vec(),
+                        state: OutboxState::Dead,
+                        attempts: 8,
+                        next_attempt_at_ms: 0,
+                        last_error: Some("offline".to_string()),
+                        created_at_ms: 1,
+                        updated_at_ms: 1,
+                        expires_at_ms: None,
+                    }],
+                )
+                .unwrap();
+            let list = call(
+                &app,
+                Request::get("/api/v2/integrations/outbox")
+                    .header(COOKIE, &operator_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(list.0, StatusCode::OK);
+            assert_eq!(list.2[0]["state"], "dead");
+            let retried = call(
+                &app,
+                write_request(
+                    "/api/v2/integrations/outbox/outbox-dead/retry",
+                    &operator_cookie,
+                    &operator_csrf,
+                    json!({}),
+                ),
+            )
+            .await;
+            assert_eq!(retried.0, StatusCode::OK);
+            assert_eq!(retried.2["state"], "pending");
+        });
+}
+
+#[test]
+fn devices_are_empty_without_registered_device_source() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let (app, _) = app();
+            let (cookie, _) = login(&app, "viewer").await;
+            let response = call(
+                &app,
+                Request::get("/api/v2/devices")
+                    .header(COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(response.0, StatusCode::OK);
+            assert_eq!(response.2.as_array().unwrap().len(), 0);
+        });
+}

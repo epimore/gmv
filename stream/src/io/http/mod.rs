@@ -2,58 +2,65 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
-use base::err::{BaseErrorCode, CodeOutErr};
-use base::exception::{BizError, GlobalError, GlobalResult, GlobalResultExt};
+use base::exception::{GlobalResult, GlobalResultExt};
 use base::log::error;
-use base::serde::Serialize;
-use base::tokio::net::TcpListener;
 use base::tokio::sync::mpsc::Sender;
 use base::tokio_util::sync::CancellationToken;
-use shared::info::res::Resp;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 mod api;
 pub mod call;
-#[cfg(debug_assertions)]
-mod doc;
 mod out;
 
-pub fn listen_http_server(port: u16) -> GlobalResult<std::net::TcpListener> {
-    let listener =
-        std::net::TcpListener::bind(format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
+#[derive(Debug, Clone)]
+pub struct HttpTlsConfig {
+    pub certificate_path: PathBuf,
+    pub private_key_path: PathBuf,
+}
+
+pub fn listen_http_server(addr: SocketAddr) -> GlobalResult<std::net::TcpListener> {
+    let listener = std::net::TcpListener::bind(addr).hand_log(|msg| error!("{msg}"))?;
     Ok(listener)
 }
 
 pub async fn run(
     std_http_listener: std::net::TcpListener,
-    tx: Sender<u32>,
+    tls: Option<HttpTlsConfig>,
+    _tx: Sender<u32>,
     cancel_token: CancellationToken,
 ) -> GlobalResult<()> {
     std_http_listener
         .set_nonblocking(true)
         .hand_log(|msg| error!("{msg}"))?;
-    let listener = TcpListener::from_std(std_http_listener).hand_log(|msg| error!("{msg}"))?;
-    let mut app = Router::new()
-        .merge(out::routes())
-        .merge(api::routes(tx.clone()));
-
-    #[cfg(debug_assertions)]
-    {
-        use utoipa_swagger_ui::SwaggerUi;
-        app = app.merge(SwaggerUi::new("/swagger-ui").url("/openapi.json", doc::openapi()));
-    }
-
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
+    let app = Router::new().merge(out::routes()).merge(api::routes());
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+    let handle = axum_server::Handle::new();
+    let shutdown = handle.clone();
+    base::tokio::spawn(async move {
         cancel_token.cancelled().await;
+        shutdown.graceful_shutdown(None);
     });
-    match server.await.hand_log(|msg| error!("{msg}")) {
-        Ok(()) => Ok(()),
-        error => error,
-    }
+    let result = if let Some(tls) = tls {
+        let rustls = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            tls.certificate_path,
+            tls.private_key_path,
+        )
+        .await
+        .hand_log(|msg| error!("{msg}"))?;
+        axum_server::from_tcp_rustls(std_http_listener, rustls)
+            .hand_log(|msg| error!("{msg}"))?
+            .handle(handle)
+            .serve(service)
+            .await
+    } else {
+        axum_server::from_tcp(std_http_listener)
+            .hand_log(|msg| error!("{msg}"))?
+            .handle(handle)
+            .serve(service)
+            .await
+    };
+    result.hand_log(|msg| error!("{msg}"))
 }
 
 /// 404 Not Found
@@ -72,25 +79,4 @@ pub fn res_401() -> Response<Body> {
         .status(StatusCode::UNAUTHORIZED)
         .body(Body::from("401 Unauthorized"))
         .unwrap()
-}
-
-/// 500 Internal Server Error
-pub fn res_500() -> Response<Body> {
-    Response::builder()
-        .header("Content-Type", "text/plain")
-        .status(StatusCode::INTERNAL_SERVER_ERROR)
-        .body(Body::from("500 Internal Server Error"))
-        .unwrap()
-}
-
-pub fn res_by_error<T: Serialize>(err: GlobalError) -> Resp<T> {
-    let code = match &err {
-        GlobalError::BizErr(BizError { code, .. }) => *code,
-        GlobalError::SysErr(_) => BaseErrorCode::Internal.code(),
-    };
-    Resp::build_failed_code(code, err.out_err().into_owned())
-}
-
-pub fn res_by_code<T: Serialize>(code: BaseErrorCode) -> Resp<T> {
-    Resp::build_failed_code(code.code(), code.out_msg())
 }

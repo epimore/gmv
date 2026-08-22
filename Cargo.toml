@@ -1,14 +1,19 @@
 [workspace]
 resolver = "2"
 members = [
-    "session",
-    "shared",
+    "guard/server",
+    "session/gb28181",
+    "session/core",
+    "session/onvif",
+    "shared/domain",
+    "shared/protocol",
+    "shared/nodec",
     "stream",
-#    "ruminate"
+    "avai",
 ]
 
 [workspace.package]
-version = "2.1.0-release"
+version = "2.2.0-release"
 edition = "2024"
 authors = ["Kz. <kz986542@gmail.com>"]
 #about = "致力于打造一个音视频AI平台:信令+流媒体+AI"
@@ -24,6 +29,12 @@ url = "2.5"
 uuid = { version = "1.7", features = ["v4"] }
 utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
+axum = "0.8"
+axum-server = "0.8"
+tower-http = "0.6"
+argon2 = "0.5"
+tower = "0.5"
+rumqttc = "0.25.1"
 
 [profile.dev]
 debug = true

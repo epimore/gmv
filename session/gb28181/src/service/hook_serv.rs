@@ -1,0 +1,460 @@
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use base::bytes::Bytes;
+use base::chrono::{Local, NaiveDateTime, TimeZone};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::{debug, error, warn};
+use base::serde_json;
+use gmv_domain::info::obj::{
+    BroadcastClosedEvent, InTimeoutEventRes, OutputEventRes, OutputStreamInfo, RegisterStreamInfo,
+    StreamPlayInfo, StreamRecordInfo, StreamState, UnknownStreamEvent,
+};
+
+use crate::gb::SessionConf;
+use crate::register::core::{Register, TimeScheduleKey};
+use crate::service::{KEY_STREAM_IN, broadcast_close, dialog_recovery, stream_close};
+use crate::state;
+use crate::state::DownloadConf;
+use crate::storage::dialog_session::{PlaybackPauseLease, SipDialogSessionRepository};
+
+pub async fn stream_register(register_stream_info: RegisterStreamInfo) {
+    let key_stream_in_id = format!(
+        "{}{}",
+        KEY_STREAM_IN, register_stream_info.base_stream_info.stream_id
+    );
+    if register_stream_info.code == 200 {
+        touch_durable_dialog(&register_stream_info.base_stream_info.stream_id).await;
+        let _ = state::session::Cache::notify_stream_wait(
+            &key_stream_in_id,
+            Some(register_stream_info.base_stream_info),
+        );
+    } else {
+        let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
+    }
+}
+
+pub async fn stream_input_timeout(stream_state: StreamState) -> InTimeoutEventRes {
+    let stream_id = stream_state.base_stream_info.stream_id;
+    let key_stream_in_id = format!("{}{}", KEY_STREAM_IN, stream_id);
+    let _ = state::session::Cache::notify_stream_wait(&key_stream_in_id, None);
+    if state::session::Cache::stream_is_closing(&stream_id) {
+        debug!(
+            "stream input timeout observation preserved: action=input_timeout, outcome=keep_alive, reason=stream_closing, stream_id={stream_id}"
+        );
+        return InTimeoutEventRes::KeepAlive;
+    }
+
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(lease) if keep_alive_paused_playback(lease.as_ref(), Local::now().naive_local()) => {
+            debug!(
+                "stream input timeout kept alive: action=input_timeout, outcome=keep_alive, reason=playback_paused, stream_id={stream_id}"
+            );
+            return InTimeoutEventRes::KeepAlive;
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "query playback state on input timeout failed: action=input_timeout, outcome=close_all, reason=state_query_failed, stream_id={stream_id}, err={err}"
+            );
+        }
+    }
+    stream_close::begin(stream_id.clone());
+    if state::session::Cache::stream_is_closing(&stream_id) {
+        InTimeoutEventRes::KeepAlive
+    } else {
+        InTimeoutEventRes::CloseAll
+    }
+}
+
+fn keep_alive_paused_playback(lease: Option<&PlaybackPauseLease>, now: NaiveDateTime) -> bool {
+    lease.is_some_and(|lease| {
+        lease.state == "PAUSED" && lease.expire_at.is_some_and(|expire_at| expire_at > now)
+    })
+}
+
+pub fn schedule_playback_pause_deadline(
+    stream_id: &str,
+    generation: u64,
+    expire_at: NaiveDateTime,
+) {
+    let remaining_ms = expire_at
+        .signed_duration_since(Local::now().naive_local())
+        .num_milliseconds()
+        .max(1) as u64;
+    if let Err(err) = Register::scheduler().insert_register(
+        TimeScheduleKey::PlaybackPauseExpiry(Arc::from(stream_id), generation),
+        Duration::from_millis(remaining_ms),
+    ) {
+        error!(
+            "schedule playback pause deadline failed: outcome=close_all, stream_id={stream_id}, generation={generation}, err={err}"
+        );
+        stream_close::begin(stream_id.to_string());
+    }
+}
+
+pub fn clear_playback_pause_deadline(stream_id: &str, generation: u64) {
+    let _ = Register::scheduler().remove_register(&TimeScheduleKey::PlaybackPauseExpiry(
+        Arc::from(stream_id),
+        generation,
+    ));
+}
+
+pub async fn expire_playback_pause(stream_id: Arc<str>, generation: u64) {
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(Some(lease)) if lease.state == "PAUSED" && lease.generation == generation => {
+            let now = Local::now().naive_local();
+            match lease.expire_at {
+                Some(expire_at) if expire_at > now => {
+                    schedule_playback_pause_deadline(&stream_id, generation, expire_at);
+                }
+                _ => {
+                    warn!(
+                        "playback pause lease expired: action=pause_expiry, outcome=close_all, stream_id={stream_id}, generation={generation}"
+                    );
+                    crate::service::playback_presence::clear_for_stream(&stream_id);
+                    stream_close::begin(stream_id.to_string());
+                }
+            }
+        }
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "query playback pause lease failed: action=pause_expiry, outcome=close_all, stream_id={stream_id}, generation={generation}, err={err}"
+            );
+            stream_close::begin(stream_id.to_string());
+        }
+    }
+}
+
+pub async fn restore_playback_pause_deadline(stream_id: &str) {
+    match SipDialogSessionRepository::find_playback_pause_lease(stream_id).await {
+        Ok(Some(lease)) if lease.state == "PAUSED" => match lease.expire_at {
+            Some(expire_at) if expire_at > Local::now().naive_local() => {
+                schedule_playback_pause_deadline(stream_id, lease.generation, expire_at);
+                crate::service::playback_presence::restore(
+                    &lease.playback_id,
+                    stream_id,
+                    lease.generation,
+                );
+            }
+            _ => stream_close::begin(stream_id.to_string()),
+        },
+        Ok(_) => {}
+        Err(err) => {
+            error!(
+                "restore playback pause deadline failed: outcome=close_all, stream_id={stream_id}, err={err}"
+            );
+            stream_close::begin(stream_id.to_string());
+        }
+    }
+}
+
+pub fn on_play(stream_play_info: StreamPlayInfo) -> bool {
+    let gmv_token = stream_play_info.token;
+    let stream_id = stream_play_info.base_stream_info.stream_id;
+    let accepted = state::session::Cache::stream_map_contains_token(&stream_id, &gmv_token);
+    if accepted {
+        base::tokio::spawn(async move {
+            touch_durable_dialog(&stream_id).await;
+        });
+    }
+    accepted
+}
+
+pub async fn off_play(stream_play_info: StreamPlayInfo) {
+    let stream_id = stream_play_info.base_stream_info.stream_id;
+    let gmv_token = stream_play_info.token;
+    state::session::Cache::stream_map_remove(&stream_id, Some(&gmv_token));
+}
+
+pub async fn stream_idle(out_stream_info: OutputStreamInfo) -> OutputEventRes {
+    if out_stream_info.user_count > 0 {
+        return OutputEventRes::CloseMuxer;
+    }
+
+    let stream_id = out_stream_info.base_stream_info.stream_id;
+    match SipDialogSessionRepository::find_playback_pause_lease(&stream_id).await {
+        Ok(lease) if keep_alive_paused_playback(lease.as_ref(), Local::now().naive_local()) => {
+            return OutputEventRes::KeepMuxer;
+        }
+        Ok(_) => {}
+        Err(err) => error!(
+            "query playback pause lease on stream idle failed: stream_id={stream_id}, err={err}"
+        ),
+    }
+
+    stream_close::begin(stream_id.clone());
+
+    if state::session::Cache::stream_is_closing(&stream_id) {
+        OutputEventRes::CloseMuxer
+    } else {
+        OutputEventRes::CloseAll
+    }
+}
+
+pub async fn stream_unknown(event: UnknownStreamEvent) -> bool {
+    if crate::guard_integration::ensure_stream_node(&event.media_node_id)
+        .await
+        .is_err()
+    {
+        warn!(
+            "unknown stream callback rejected: media_node={}, ssrc={}, reason=unknown node",
+            event.media_node_id, event.ssrc
+        );
+        return false;
+    }
+
+    if event.ssrc >= 2_000_000_000 || event.ssrc % 10_000 == 0 {
+        warn!(
+            "unknown stream callback rejected: media_node={}, ssrc={}, reason=invalid protocol SSRC",
+            event.media_node_id, event.ssrc
+        );
+        return false;
+    }
+
+    let domain_id = SessionConf::get_session_by_conf().domain_id;
+    let ssrc = format!("{:010}", event.ssrc);
+    let realtime_prefix = match crate::storage::ssrc_sequence::prefix(
+        &domain_id,
+        crate::storage::ssrc_sequence::SsrcKind::Realtime,
+    ) {
+        Ok(prefix) => prefix,
+        Err(err) => {
+            warn!("unknown stream callback rejected: {err}");
+            return false;
+        }
+    };
+    let history_prefix = crate::storage::ssrc_sequence::prefix(
+        &domain_id,
+        crate::storage::ssrc_sequence::SsrcKind::History,
+    )
+    .unwrap_or_default();
+    if !ssrc.starts_with(&realtime_prefix) && !ssrc.starts_with(&history_prefix) {
+        warn!(
+            "unknown stream callback uses legacy SSRC prefix: media_node={}, ssrc={}",
+            event.media_node_id, ssrc
+        );
+    }
+
+    let stream_ids =
+        state::session::Cache::stream_ids_by_node_ssrc(&event.media_node_id, event.ssrc);
+    if stream_ids.len() == 1 {
+        stream_close::begin(stream_ids[0].clone());
+        return true;
+    }
+    if stream_ids.len() > 1 {
+        warn!(
+            "unknown stream callback ambiguous in memory: media_node={}, ssrc={}, matches={}",
+            event.media_node_id,
+            ssrc,
+            stream_ids.len()
+        );
+        return false;
+    }
+
+    let Ok(first_seen_at_ms) = i64::try_from(event.first_seen_at_ms) else {
+        warn!("unknown stream callback rejected: invalid first_seen_at_ms");
+        return false;
+    };
+    let Some(first_seen_at) = Local
+        .timestamp_millis_opt(first_seen_at_ms)
+        .single()
+        .map(|value| value.naive_local())
+    else {
+        warn!("unknown stream callback rejected: invalid first_seen_at_ms");
+        return false;
+    };
+    let sessions = match SipDialogSessionRepository::find_active_by_media_ssrc_before(
+        &domain_id,
+        &event.media_node_id,
+        &ssrc,
+        first_seen_at,
+        Local::now().naive_local(),
+    )
+    .await
+    {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            warn!(
+                "unknown stream durable lookup failed: media_node={}, ssrc={}, err={err}",
+                event.media_node_id, ssrc
+            );
+            return false;
+        }
+    };
+    if sessions.len() != 1 {
+        warn!(
+            "unknown stream durable match is not unique: media_node={}, ssrc={}, matches={}",
+            event.media_node_id,
+            ssrc,
+            sessions.len()
+        );
+        return false;
+    }
+    let session = &sessions[0];
+    if let Err(err) = dialog_recovery::recover_dialog(session).await {
+        warn!(
+            "unknown stream durable recovery failed: stream_id={}, ssrc={}, err={err}",
+            session.stream_id, ssrc
+        );
+        return false;
+    }
+    stream_close::begin(session.stream_id.clone());
+    true
+}
+
+async fn touch_durable_dialog(stream_id: &str) {
+    let Ok(Some(session)) = SipDialogSessionRepository::find_by_stream_id(stream_id).await else {
+        return;
+    };
+    let now = base::chrono::Local::now().naive_local();
+    match SipDialogSessionRepository::cas_touch(
+        stream_id,
+        &session.signal_node_id,
+        session.version,
+        now,
+        now + base::chrono::Duration::hours(8),
+    )
+    .await
+    {
+        Ok(true) | Ok(false) => {}
+        Err(err) => base::log::warn!(
+            "refresh durable dialog activity failed: stream_id={stream_id}; err={err}"
+        ),
+    }
+}
+
+pub async fn end_record(stream_record_info: StreamRecordInfo) -> GlobalResult<()> {
+    let Some(path_file_name) = stream_record_info.path_file_name else {
+        return Ok(());
+    };
+    let (abs_path, dir_path, biz_id, extension) = get_path(&path_file_name)?;
+    crate::guard_integration::guard_record_finished(
+        &biz_id,
+        stream_record_info.state,
+        stream_record_info.file_size,
+        u64::from(stream_record_info.timestamp),
+        &extension,
+        &dir_path,
+        &abs_path,
+    )
+    .await?;
+    Ok(())
+}
+
+pub async fn broadcast_closed(event: BroadcastClosedEvent) -> bool {
+    let leg_id = if event.leg_id.is_empty() {
+        event.broadcast_id.clone()
+    } else {
+        event.leg_id.clone()
+    };
+    let closed = broadcast_close::begin(leg_id.clone());
+    if !closed {
+        debug!(
+            "ignore duplicate or late broadcast_closed event: outcome=duplicate_or_late, broadcast_id={}, leg_id={}, reason={}",
+            event.broadcast_id, leg_id, event.reason
+        );
+    }
+    closed
+}
+
+fn get_path(path_file_name: &str) -> GlobalResult<(String, String, String, String)> {
+    let path = Path::new(path_file_name);
+    let biz_id = path
+        .file_stem()
+        .ok_or_else(invalid_file_name_error)?
+        .to_str()
+        .ok_or_else(invalid_file_name_error)?
+        .to_string();
+    let extension = path
+        .extension()
+        .ok_or_else(invalid_file_name_error)?
+        .to_str()
+        .ok_or_else(invalid_file_name_error)?
+        .to_string();
+    let parent = path.parent().ok_or_else(invalid_file_name_error)?;
+    let storage_root = Path::new(&DownloadConf::get_download_conf().storage_path)
+        .canonicalize()
+        .hand_log(|msg| error!("{msg}"))?;
+    let canonical_parent = parent.canonicalize().hand_log(|msg| error!("{msg}"))?;
+    let dir_path = canonical_parent
+        .strip_prefix(&storage_root)
+        .map_err(|_| invalid_file_name_error())?
+        .to_str()
+        .ok_or_else(invalid_file_name_error)?
+        .to_string();
+    Ok((String::new(), dir_path, biz_id, extension))
+}
+
+fn invalid_file_name_error() -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "文件名错误",
+        |msg| error!("{msg}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{keep_alive_paused_playback, stream_input_timeout};
+    use crate::state::session::{AccessMode, Cache};
+    use crate::storage::dialog_session::PlaybackPauseLease;
+    use base::chrono::{Duration, Local};
+    use gmv_domain::info::obj::{BaseStreamInfo, InTimeoutEventRes, RtpInfo, StreamState};
+
+    #[test]
+    fn input_timeout_only_keeps_acknowledged_paused_playback_alive() {
+        let now = Local::now().naive_local();
+        let mut lease = PlaybackPauseLease {
+            playback_id: "playback-a".to_string(),
+            state: "PAUSED".to_string(),
+            expire_at: Some(now + Duration::seconds(1)),
+            generation: 1,
+        };
+        assert!(keep_alive_paused_playback(Some(&lease), now));
+        lease.expire_at = Some(now);
+        assert!(!keep_alive_paused_playback(Some(&lease), now));
+        lease.state = "PLAYING".to_string();
+        lease.expire_at = Some(now + Duration::seconds(1));
+        assert!(!keep_alive_paused_playback(Some(&lease), now));
+        assert!(!keep_alive_paused_playback(None, now));
+    }
+
+    #[test]
+    fn input_timeout_preserves_observation_while_stream_is_closing() {
+        base::tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(async {
+                let stream_id = "closing-input-timeout".to_string();
+                Cache::stream_map_remove(&stream_id, None);
+                Cache::stream_map_insert_info(
+                    stream_id.clone(),
+                    "device-id".to_string(),
+                    "channel-id".to_string(),
+                    200_000_016,
+                    String::new(),
+                    "stream-node".to_string(),
+                    "call-id".to_string(),
+                    1,
+                    AccessMode::Live,
+                );
+                Cache::stream_close_begin(&stream_id, "manual_stop")
+                    .expect("stream close should begin");
+                let response = stream_input_timeout(StreamState::new(
+                    BaseStreamInfo::new(
+                        RtpInfo::new(200_000_016, None, "stream-node".to_string(), String::new()),
+                        stream_id.clone(),
+                        0,
+                    ),
+                    0,
+                ))
+                .await;
+
+                assert!(matches!(response, InTimeoutEventRes::KeepAlive));
+                Cache::stream_map_remove(&stream_id, None);
+            });
+    }
+}

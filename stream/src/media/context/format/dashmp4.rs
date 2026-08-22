@@ -1,18 +1,18 @@
 use crate::media::context::format::demuxer::DemuxerContext;
-use crate::media::context::format::fmp4::CmafFmp4Context;
-use crate::media::context::format::{FmtMuxer, MuxPacket, fmp4, write_callback};
+use crate::media::context::format::fmp4::{CmafFmp4Context, clone_packet_for_mp4};
+use crate::media::context::format::{
+    FmtMuxer, MuxPacket, MuxPacketSender, PlannedStreamMap, copy_output_plan, write_callback,
+};
 use crate::media::{DEFAULT_IO_BUF_SIZE, show_ffmpeg_error_msg};
 use axum::body::Bytes;
 use base::exception::{GlobalError, GlobalResult};
 use base::once_cell::sync::Lazy;
-use base::tokio::sync::broadcast;
-use base::tokio::sync::broadcast::Sender;
 use log::{debug, error, info, warn};
 use rsmpeg::avutil::AVRational;
 use rsmpeg::ffi::{
-    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVFMT_FLAG_AUTO_BSF, AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE,
-    AVFormatContext, AVIOContext, AVPacket, av_dict_set, av_free, av_guess_format,
-    av_interleaved_write_frame, av_malloc, av_packet_ref, av_packet_rescale_ts, av_packet_unref,
+    AV_NOPTS_VALUE, AV_PKT_FLAG_KEY, AVCodecID_AV_CODEC_ID_AAC, AVFMT_FLAG_AUTO_BSF,
+    AVFMT_FLAG_FLUSH_PACKETS, AVFMT_NOFILE, AVFormatContext, AVIOContext, AVPacket, av_dict_set,
+    av_free, av_guess_format, av_interleaved_write_frame, av_malloc, av_packet_rescale_ts,
     av_write_frame, av_write_trailer, avformat_alloc_context, avformat_write_header,
     avio_alloc_context, avio_context_free, avio_flush,
 };
@@ -25,14 +25,14 @@ use std::time::Instant;
 static MP4: Lazy<CString> = Lazy::new(|| CString::new("mp4").unwrap());
 pub struct DashCmafMp4Context {
     pub init_segment: Bytes, // CMAF init.mp4
-    pub pkt_tx: Sender<Arc<MuxPacket>>,
+    pub pkt_tx: MuxPacketSender,
 
     pub fmt_ctx: *mut AVFormatContext,
     pub avio_ctx: *mut AVIOContext,
     pub io_buf: *mut u8,
     out_buf_ptr: *mut Vec<u8>,
 
-    in_timebase_map: HashMap<c_int, AVRational>,
+    stream_map: PlannedStreamMap,
     v_idx: c_int,
     fragment_started_with_key: bool, // 当前片段是否以关键帧开始
     fragment_start_timestamp: u64,   // 当前片段的第一帧时间戳
@@ -57,10 +57,7 @@ impl Drop for DashCmafMp4Context {
     }
 }
 impl FmtMuxer for DashCmafMp4Context {
-    fn init_context(
-        demuxer_context: &DemuxerContext,
-        pkt_tx: Sender<Arc<MuxPacket>>,
-    ) -> GlobalResult<Self>
+    fn init_context(demuxer_context: &DemuxerContext, pkt_tx: MuxPacketSender) -> GlobalResult<Self>
     where
         Self: Sized,
     {
@@ -127,9 +124,7 @@ impl FmtMuxer for DashCmafMp4Context {
                 frag_duration.as_ptr(),
                 0,
             );
-            let mut in_timebase_map = HashMap::with_capacity(8);
-            let in_fmt_ctx = demuxer_context.avio.fmt_ctx;
-            let v_idx = fmp4::copy_streams(&mut in_timebase_map, in_fmt_ctx, out_fmt_ctx)?;
+            let (stream_map, v_idx) = copy_output_plan(demuxer_context, out_fmt_ctx)?;
 
             let ret = avformat_write_header(out_fmt_ctx, &mut options);
             // 释放选项字典
@@ -159,7 +154,7 @@ impl FmtMuxer for DashCmafMp4Context {
                 avio_ctx,
                 io_buf,
                 out_buf_ptr,
-                in_timebase_map,
+                stream_map,
                 v_idx,
                 fragment_started_with_key: true,
                 fragment_start_timestamp: 0,
@@ -174,7 +169,7 @@ impl FmtMuxer for DashCmafMp4Context {
 
     fn write_packet(&mut self, pkt: &AVPacket, timestamp: u64) -> GlobalResult<()> {
         unsafe {
-            match self.in_timebase_map.get(&pkt.stream_index) {
+            match self.stream_map.get(&pkt.stream_index) {
                 None => {
                     warn!(
                         "dash MP4 write failed,stream index error: {}",
@@ -182,20 +177,27 @@ impl FmtMuxer for DashCmafMp4Context {
                     );
                     return Ok(());
                 }
-                Some(&in_tb) => {
-                    let mut cloned = std::mem::zeroed::<AVPacket>();
-                    // 写入当前帧
-                    av_packet_ref(&mut cloned, pkt);
-                    let out_st = *(*self.fmt_ctx).streams.add(pkt.stream_index as usize);
-                    av_packet_rescale_ts(&mut cloned, in_tb, (*out_st).time_base);
-                    cloned.pos = -1;
-                    let ret = av_interleaved_write_frame(self.fmt_ctx, &mut cloned);
+                Some(planned) => {
+                    let out_st = *(*self.fmt_ctx).streams.add(planned.output_index as usize);
+                    let codecpar = (*out_st).codecpar;
+                    let strip_aac_adts = (*codecpar).codec_id == AVCodecID_AV_CODEC_ID_AAC
+                        && !(*codecpar).extradata.is_null()
+                        && (*codecpar).extradata_size > 0;
+                    let mut cloned = clone_packet_for_mp4(pkt, strip_aac_adts)?;
+                    (*cloned.as_mut_ptr()).stream_index = planned.output_index;
+                    av_packet_rescale_ts(
+                        cloned.as_mut_ptr(),
+                        planned.input_time_base,
+                        (*out_st).time_base,
+                    );
+                    (*cloned.as_mut_ptr()).pos = -1;
+                    let ret = av_interleaved_write_frame(self.fmt_ctx, cloned.as_mut_ptr());
                     if ret < 0 {
-                        warn!("dash MP4 write failed:{}", show_ffmpeg_error_msg(ret));
-                        av_packet_unref(&mut cloned);
-                        return Ok(());
+                        return Err(GlobalError::new_sys_error(
+                            &format!("dash MP4 write failed: {}", show_ffmpeg_error_msg(ret)),
+                            |msg| warn!("{msg}"),
+                        ));
                     }
-                    av_packet_unref(&mut cloned);
                     let is_keyframe =
                         self.v_idx == pkt.stream_index && (pkt.flags & AV_PKT_FLAG_KEY as i32) != 0;
                     if self.flush_fragment(
@@ -258,6 +260,7 @@ impl DashCmafMp4Context {
                 timestamp,
                 epoch: self.epoch,
                 seq: 0,
+                hls: None,
             }));
             true
         }

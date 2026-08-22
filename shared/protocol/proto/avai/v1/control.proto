@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package gmv.avai.v1;
+
+import "common/v1/types.proto";
+
+service AvaiControl {
+  rpc CreateTask(CreateTaskRequest) returns (CreateTaskResponse);
+  rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
+  rpc QueryTask(QueryTaskRequest) returns (QueryTaskResponse);
+  rpc QueryCapabilities(QueryCapabilitiesRequest) returns (QueryCapabilitiesResponse);
+}
+
+message CreateTaskRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string task_id = 2;
+  string task_type = 3;
+  string route_id = 4;
+  gmv.common.v1.NodeIdentity expected_avai = 5;
+  bytes payload = 6;
+}
+
+message CreateTaskResponse {
+  string task_id = 1;
+  AiTaskState state = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+}
+
+message CancelTaskRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string task_id = 2;
+  string reason = 3;
+}
+
+message CancelTaskResponse {
+  AiTaskState state = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message QueryTaskRequest {
+  string task_id = 1;
+}
+
+message QueryTaskResponse {
+  string task_id = 1;
+  AiTaskState state = 2;
+  bytes result = 3;
+  gmv.common.v1.ErrorDetail error = 4;
+}
+
+message QueryCapabilitiesRequest {
+  gmv.common.v1.PageRequest page = 1;
+}
+
+message QueryCapabilitiesResponse {
+  repeated string capabilities = 1;
+  gmv.common.v1.PageResponse page = 2;
+}
+
+enum AiTaskState {
+  AI_TASK_STATE_UNSPECIFIED = 0;
+  AI_TASK_STATE_PENDING = 1;
+  AI_TASK_STATE_RUNNING = 2;
+  AI_TASK_STATE_SUCCEEDED = 3;
+  AI_TASK_STATE_FAILED = 4;
+  AI_TASK_STATE_CANCELLED = 5;
+}

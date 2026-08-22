@@ -1,0 +1,815 @@
+syntax = "proto3";
+
+package gmv.session.v1;
+
+import "common/v1/types.proto";
+
+service SessionControl {
+  rpc GetSessionConfig(GetSessionConfigRequest) returns (GetSessionConfigResponse);
+  rpc StartLive(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartPlayback(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartDownload(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StartBroadcast(StartDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc StopDeviceStream(StopDeviceStreamRequest) returns (DeviceStreamResponse);
+  rpc ListActiveStreams(ListActiveStreamsRequest) returns (ListActiveStreamsResponse);
+  rpc ListActiveStreamDialogs(ListActiveStreamDialogsRequest) returns (ListActiveStreamDialogsResponse);
+  rpc GetActiveStreamManagement(GetActiveStreamManagementRequest) returns (GetActiveStreamManagementResponse);
+  rpc ListStreamHistory(ListStreamHistoryRequest) returns (ListStreamHistoryResponse);
+  rpc SetPlaybackSpeed(SetPlaybackSpeedRequest) returns (SetPlaybackSpeedResponse);
+  rpc SeekPlayback(SeekPlaybackRequest) returns (PlaybackControlResponse);
+  rpc SetPlaybackState(SetPlaybackStateRequest) returns (PlaybackControlResponse);
+  rpc RefreshPlaybackPresence(RefreshPlaybackPresenceRequest) returns (RefreshPlaybackPresenceResponse);
+  rpc ControlPtz(ControlPtzRequest) returns (ControlPtzResponse);
+  rpc SnapshotImage(SnapshotImageRequest) returns (SnapshotImageResponse);
+  rpc ListGbDevices(ListGbDevicesRequest) returns (ListGbDevicesResponse);
+  rpc GetGbDevice(GetGbDeviceRequest) returns (GetGbDeviceResponse);
+  rpc CreateGbDevice(CreateGbDeviceRequest) returns (CreateGbDeviceResponse);
+  rpc UpdateGbDevice(UpdateGbDeviceRequest) returns (UpdateGbDeviceResponse);
+  rpc DeleteGbDevice(DeleteGbDeviceRequest) returns (DeleteGbDeviceResponse);
+  rpc ListGbChannels(ListGbChannelsRequest) returns (ListGbChannelsResponse);
+  rpc GetGbChannel(GetGbChannelRequest) returns (GetGbChannelResponse);
+  rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
+  rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
+  rpc IssueGbChannelImageAccess(IssueGbChannelImageAccessRequest) returns (IssueGbChannelImageAccessResponse);
+  rpc SetGbChannelCover(SetGbChannelCoverRequest) returns (UpdateGbChannelResponse);
+  rpc GetGbChannelRecords(GetGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
+  rpc QueryGbChannelRecords(QueryGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
+  rpc ListGbResources(ListGbResourcesRequest) returns (ListGbResourcesResponse);
+  rpc SaveGbResourceConfirmation(SaveGbResourceConfirmationRequest) returns (GbResourceResponse);
+  rpc ResetGbResourceConfirmation(ResetGbResourceConfirmationRequest) returns (GbResourceResponse);
+  rpc CreateCloudRecording(CreateCloudRecordingRequest) returns (CloudRecordingResponse);
+  rpc ListCloudRecordings(ListCloudRecordingsRequest) returns (ListCloudRecordingsResponse);
+  rpc GetCloudRecording(GetCloudRecordingRequest) returns (CloudRecordingResponse);
+  rpc StopCloudRecording(StopCloudRecordingRequest) returns (CloudRecordingResponse);
+  rpc DeleteCloudRecording(DeleteCloudRecordingRequest) returns (CloudRecordingResponse);
+  rpc IssueCloudRecordingAccess(IssueCloudRecordingAccessRequest) returns (IssueCloudRecordingAccessResponse);
+}
+
+service SessionHook {
+  rpc HandleHook(SessionHookRequest) returns (SessionHookResponse);
+}
+
+message SessionHookRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string event_type = 2;
+  bytes payload_json = 3;
+}
+
+message SessionHookResponse {
+  bool accepted = 1;
+  bytes payload_json = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+}
+
+message StartDeviceStreamRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string route_id = 4;
+  string lease_id = 5;
+  gmv.common.v1.NodeIdentity expected_session = 6;
+  string token = 7;
+  uint32 start_time_sec = 8;
+  uint32 end_time_sec = 9;
+  string trans_mode = 10;
+  string output_type = 11;
+  string broadcast_codec = 12;
+  uint32 broadcast_sample_rate = 13;
+  uint32 broadcast_channel_count = 14;
+  uint32 broadcast_frame_duration_ms = 15;
+  string audio_codec = 16;
+  string playback_id = 17;
+  string broadcast_id = 18;
+  string broadcast_leg_id = 19;
+  string expected_stream_node_id = 20;
+  VideoStreamProfile video_stream_profile = 21;
+}
+
+enum VideoStreamProfile {
+  VIDEO_STREAM_PROFILE_UNSPECIFIED = 0;
+  VIDEO_STREAM_PROFILE_MAIN = 1;
+  VIDEO_STREAM_PROFILE_SUB = 2;
+}
+
+enum StreamProfileVerification {
+  STREAM_PROFILE_VERIFICATION_UNSPECIFIED = 0;
+  STREAM_PROFILE_VERIFICATION_CONFIRMED = 1;
+  STREAM_PROFILE_VERIFICATION_UNVERIFIED = 2;
+}
+
+message StopDeviceStreamRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  string reason = 3;
+  string subscription_id = 4;
+  bool force = 5;
+  gmv.common.v1.NodeIdentity expected_session = 6;
+  string stop_reason = 7;
+}
+
+message ListActiveStreamsRequest {
+  string after_stream_id = 1;
+  uint32 limit = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListActiveStreamsResponse {
+  repeated ActiveStreamItem items = 1;
+  string next_after_id = 2;
+  int64 server_time_ms = 3;
+}
+
+message ActiveStreamItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string session_instance_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  string dialog_state = 9;
+  string media_state = 10;
+  bool media_ready = 11;
+  int64 created_at_ms = 12;
+  int64 established_at_ms = 13;
+  int64 started_at_ms = 14;
+  string diagnostic_reason = 15;
+  string session_type = 16;
+  uint32 viewer_count = 17;
+  repeated ActiveStreamViewerFormat viewer_formats = 18;
+  repeated string supported_formats = 19;
+  string output_format = 20;
+  VideoStreamProfile requested_stream_profile = 21;
+  VideoStreamProfile effective_stream_profile = 22;
+  StreamProfileVerification stream_profile_verification = 23;
+}
+
+message ActiveStreamViewerFormat {
+  string media_format = 1;
+  uint32 viewer_count = 2;
+}
+
+message ListActiveStreamDialogsRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string dialog_state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListActiveStreamDialogsResponse {
+  repeated ActiveStreamDialogItem items = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+  int64 server_time_ms = 5;
+}
+
+message ActiveStreamDialogItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string session_instance_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string dialog_state = 8;
+  int64 created_at_ms = 9;
+  int64 established_at_ms = 10;
+  int64 started_at_ms = 11;
+  string session_type = 12;
+  VideoStreamProfile requested_stream_profile = 13;
+  VideoStreamProfile effective_stream_profile = 14;
+  StreamProfileVerification stream_profile_verification = 15;
+}
+
+message GetActiveStreamManagementRequest {
+  string stream_id = 1;
+  gmv.common.v1.NodeIdentity expected_session = 2;
+}
+
+enum ActiveStreamManagementState {
+  ACTIVE_STREAM_MANAGEMENT_STATE_UNSPECIFIED = 0;
+  ACTIVE_STREAM_MANAGEMENT_STATE_ACTIVE = 1;
+  ACTIVE_STREAM_MANAGEMENT_STATE_ENDED = 2;
+}
+
+message GetActiveStreamManagementResponse {
+  ActiveStreamManagementState state = 1;
+  ActiveStreamItem active = 2;
+  StreamHistoryItem ended = 3;
+}
+
+message ListStreamHistoryRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string stream_id = 3;
+  string stream_node_id = 4;
+  string device_id = 5;
+  string channel_id = 6;
+  string ssrc = 7;
+  string state = 8;
+  gmv.common.v1.NodeIdentity expected_session = 9;
+}
+
+message ListStreamHistoryResponse {
+  repeated StreamHistoryItem items = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+  int64 server_time_ms = 5;
+}
+
+message StreamHistoryItem {
+  string stream_id = 1;
+  string session_node_id = 2;
+  string stream_node_id = 3;
+  string device_id = 4;
+  string channel_id = 5;
+  string ssrc = 6;
+  string session_type = 7;
+  string state = 8;
+  int64 created_at_ms = 9;
+  int64 established_at_ms = 10;
+  int64 terminated_at_ms = 11;
+  int64 duration_ms = 12;
+  string terminal_reason = 13;
+  string error_code = 14;
+  bool legacy_terminal_time = 15;
+  string terminal_reason_label = 16;
+  string stop_reason = 17;
+  VideoStreamProfile requested_stream_profile = 18;
+  VideoStreamProfile effective_stream_profile = 19;
+  StreamProfileVerification stream_profile_verification = 20;
+}
+
+message SetPlaybackSpeedRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string stream_id = 2;
+  float speed_rate = 3;
+  string playback_id = 4;
+  uint64 expected_generation = 5;
+}
+
+message SetPlaybackSpeedResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+  uint64 generation = 3;
+}
+
+message SeekPlaybackRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string playback_id = 2;
+  string stream_id = 3;
+  uint32 position_sec = 4;
+  uint64 expected_generation = 5;
+}
+
+message SetPlaybackStateRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string playback_id = 2;
+  string stream_id = 3;
+  PlaybackState state = 4;
+  uint64 expected_generation = 5;
+  string subscription_id = 6;
+}
+
+message RefreshPlaybackPresenceRequest {
+  repeated PlaybackPresenceHeartbeat items = 1;
+}
+
+message PlaybackPresenceHeartbeat {
+  string playback_id = 1;
+  string stream_id = 2;
+  string subscription_id = 3;
+  uint64 generation = 4;
+}
+
+message RefreshPlaybackPresenceResponse {
+  int64 server_time_ms = 1;
+  repeated PlaybackPresenceHeartbeatResult items = 2;
+}
+
+message PlaybackPresenceHeartbeatResult {
+  string playback_id = 1;
+  string stream_id = 2;
+  bool accepted = 3;
+  bool terminal = 4;
+  uint64 generation = 5;
+  optional int64 presence_deadline_ms = 6;
+}
+
+message PlaybackControlResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+  uint64 generation = 3;
+  uint32 acknowledged_position_sec = 4;
+  float acknowledged_speed_rate = 5;
+  PlaybackState state = 6;
+}
+
+enum PlaybackState {
+  PLAYBACK_STATE_UNSPECIFIED = 0;
+  PLAYBACK_STATE_PLAYING = 1;
+  PLAYBACK_STATE_PAUSED = 2;
+}
+
+message DeviceStreamResponse {
+  string stream_id = 1;
+  DeviceStreamState state = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+  string endpoint = 4;
+  string video_codec = 5;
+  string audio_codec = 6;
+  string subscription_id = 7;
+  string session_node_id = 8;
+  string session_instance_id = 9;
+  string playback_id = 10;
+  uint64 playback_generation = 11;
+  string broadcast_profile = 12;
+  VideoStreamProfile requested_stream_profile = 13;
+  VideoStreamProfile effective_stream_profile = 14;
+  StreamProfileVerification stream_profile_verification = 15;
+  string mime_codec = 16;
+}
+
+enum DeviceStreamState {
+  DEVICE_STREAM_STATE_UNSPECIFIED = 0;
+  DEVICE_STREAM_STATE_STARTING = 1;
+  DEVICE_STREAM_STATE_RUNNING = 2;
+  DEVICE_STREAM_STATE_STOPPING = 3;
+  DEVICE_STREAM_STATE_STOPPED = 4;
+  DEVICE_STREAM_STATE_FAILED = 5;
+}
+
+message ControlPtzRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string command = 4;
+  uint32 speed = 5;
+}
+
+message ControlPtzResponse {
+  bool accepted = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message SnapshotImageRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  uint32 count = 4;
+  uint32 interval = 5;
+}
+
+message SnapshotImageResponse {
+  string session_id = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message GetSessionConfigRequest {}
+
+message GetSessionConfigResponse {
+  string domain = 1;
+  string domain_id = 2;
+  string wan_ip = 3;
+  uint32 wan_port = 4;
+}
+
+message ListGbDevicesRequest {
+  uint32 page = 1;
+  uint32 page_size = 2;
+  string domain_id = 3;
+  string device_id = 4;
+  string device_name = 5;
+  bool registered_only = 6;
+  optional int64 monitor_status = 7;
+}
+
+message GetGbDeviceRequest {
+  string device_id = 1;
+}
+
+message ListGbDevicesResponse {
+  repeated GbDevice devices = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+}
+
+message GetGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message CreateGbDeviceRequest {
+  GbDevice device = 1;
+}
+
+message CreateGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message UpdateGbDeviceRequest {
+  GbDevice device = 1;
+}
+
+message UpdateGbDeviceResponse {
+  GbDevice device = 1;
+}
+
+message DeleteGbDeviceRequest {
+  string device_id = 1;
+  string domain_id = 2;
+}
+
+message DeleteGbDeviceResponse {
+  bool deleted = 1;
+}
+
+message GbDevice {
+  string device_id = 1;
+  string session_node_id = 2;
+  string domain_id = 3;
+  string domain = 4;
+  string longitude = 5;
+  string latitude = 6;
+  string address = 7;
+  string pwd = 8;
+  int64 pwd_check = 9;
+  string alias = 10;
+  int64 status = 11;
+  int64 heartbeat_sec = 12;
+  int64 del = 13;
+  string create_time = 14;
+  string tenant_id = 15;
+  string sys_org_code = 16;
+  string create_by = 17;
+  string update_by = 18;
+  string update_time = 19;
+  int64 monitor_status = 20;
+  string device_type = 21;
+  string manufacturer = 22;
+  string model = 23;
+  string firmware = 24;
+  string gb_version = 25;
+  int64 max_camera = 26;
+  int64 camera_in_count = 27;
+  int64 camera_off_count = 28;
+  string register_time = 29;
+  int64 snapshot_to_mode = 30;
+}
+
+message ListGbChannelsRequest {
+  string device_id = 1;
+}
+
+message GetGbChannelRequest {
+  string device_id = 1;
+  string channel_id = 2;
+}
+
+message ListGbChannelsResponse {
+  repeated GbChannel channels = 1;
+}
+
+message GetGbChannelResponse {
+  GbChannel channel = 1;
+}
+
+message UpdateGbChannelRequest {
+  GbChannel channel = 1;
+}
+
+message UpdateGbChannelResponse {
+  GbChannel channel = 1;
+}
+
+message GbChannel {
+  string device_id = 1;
+  string channel_id = 2;
+  string name = 3;
+  string manufacturer = 4;
+  string model = 5;
+  string owner = 6;
+  string status = 7;
+  string civil_code = 8;
+  string address = 9;
+  string parent_id = 10;
+  string ip_address = 11;
+  int64 port = 12;
+  string longitude = 13;
+  string latitude = 14;
+  string ptz_type = 15;
+  string alias_name = 16;
+  string pic_url = 17;
+  int64 snapshot = 18;
+  string over_pic_id = 19;
+  int64 ptz_enable = 20;
+  int64 broadcast_enable = 21;
+  int64 audio_enable = 22;
+  int64 record_enable = 23;
+  int64 playback_enable = 24;
+  int64 alarm_enable = 25;
+  int64 biz_enable = 26;
+  int64 sort_no = 27;
+  int64 created_at_ms = 28;
+  int64 updated_at_ms = 29;
+  string cover_image_id = 30;
+}
+
+message ListGbChannelImagesRequest {
+  string device_id = 1;
+  string channel_id = 2;
+  int64 start_time_ms = 3;
+  int64 end_time_ms = 4;
+  uint32 page = 5;
+  uint32 page_size = 6;
+}
+
+message ListGbChannelImagesResponse {
+  repeated GbChannelImage images = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+}
+
+message GbChannelImage {
+  string image_id = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string image_url = 4;
+  int64 created_at_ms = 5;
+  string file_name = 6;
+  string content_type = 7;
+  uint64 file_size = 8;
+  bool can_preview = 9;
+  string session_node_id = 10;
+}
+
+message IssueGbChannelImageAccessRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string image_id = 2;
+  string device_id = 3;
+  string channel_id = 4;
+  string mode = 5;
+}
+
+message IssueGbChannelImageAccessResponse {
+  string url = 1;
+  int64 expires_at_ms = 2;
+  string content_type = 3;
+  string file_name = 4;
+  uint64 file_size = 5;
+}
+
+message SetGbChannelCoverRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  string image_id = 4;
+}
+
+message GetGbChannelRecordsRequest {
+  string device_id = 1;
+  string channel_id = 2;
+  int64 start_time_sec = 3;
+  int64 end_time_sec = 4;
+  uint32 page = 5;
+  uint32 page_size = 6;
+}
+
+message QueryGbChannelRecordsRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string device_id = 2;
+  string channel_id = 3;
+  int64 start_time_sec = 4;
+  int64 end_time_sec = 5;
+}
+
+message GetGbChannelRecordsResponse {
+  GbRecordQueryBatch current_batch = 1;
+  GbRecordQueryBatch attempt_batch = 2;
+  repeated GbRecordSegment segments = 3;
+  int64 next_query_at_ms = 4;
+  int64 server_time_ms = 5;
+  int64 total = 6;
+  uint32 page = 7;
+  uint32 page_size = 8;
+}
+
+message GbRecordQueryBatch {
+  string batch_id = 1;
+  string status = 2;
+  int64 start_time_sec = 3;
+  int64 end_time_sec = 4;
+  int64 created_at_ms = 5;
+}
+
+message GbRecordSegment {
+  int64 segment_id = 1;
+  string batch_id = 2;
+  string device_id = 3;
+  string channel_id = 4;
+  string remote_device_id = 5;
+  string name = 6;
+  string file_path = 7;
+  string address = 8;
+  int64 start_time_sec = 9;
+  int64 end_time_sec = 10;
+  int64 secrecy = 11;
+  string record_type = 12;
+  string recorder_id = 13;
+  int64 file_size = 14;
+}
+
+message ListGbResourcesRequest {
+  string device_id = 1;
+}
+
+message ListGbResourcesResponse {
+  repeated GbResource resources = 1;
+}
+
+message SaveGbResourceConfirmationRequest {
+  string device_id = 1;
+  string resource_id = 2;
+  string resource_kind = 3;
+  string owner_scope = 4;
+  string owner_id = 5;
+  string suggested_enum_id = 6;
+  string source_parent_id = 7;
+  string confirmed_by = 8;
+  string remark = 9;
+  string request_id = 10;
+}
+
+message ResetGbResourceConfirmationRequest {
+  string device_id = 1;
+  string resource_id = 2;
+  string confirmed_by = 3;
+  string request_id = 4;
+}
+
+message GbResourceResponse {
+  GbResource resource = 1;
+}
+
+message GbResource {
+  string device_id = 1;
+  string resource_id = 2;
+  string name = 3;
+  string status = 4;
+  string parent_id = 5;
+  string type_code = 6;
+  string enum_id = 7;
+  string enum_name = 8;
+  string suggested_kind = 9;
+  string classification_mode = 10;
+  string effective_kind = 11;
+  string effective_owner_scope = 12;
+  string effective_owner_id = 13;
+  string warning = 14;
+  int64 biz_enable = 15;
+  int64 owner_biz_enable = 16;
+  bool supported = 17;
+  bool available = 18;
+  string unavailable_reason = 19;
+  GbResourceConfirmation confirmation = 20;
+}
+
+message GbResourceConfirmation {
+  int64 status = 1;
+  string resource_kind = 2;
+  string owner_scope = 3;
+  string owner_id = 4;
+  string suggested_enum_id = 5;
+  string source_parent_id = 6;
+  string confirmed_by = 7;
+  int64 confirmed_at_ms = 8;
+  string remark = 9;
+}
+
+message CreateCloudRecordingRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string request_id = 2;
+  string session_node_id = 3;
+  string device_id = 4;
+  string channel_id = 5;
+  int64 start_time_sec = 6;
+  int64 end_time_sec = 7;
+  string requested_by = 8;
+}
+
+message ListCloudRecordingsRequest {
+  string device_id = 1;
+  string channel_id = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+  bool include_deleted = 5;
+}
+
+message GetCloudRecordingRequest {
+  string task_id = 1;
+}
+
+message StopCloudRecordingRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string task_id = 2;
+  string request_id = 3;
+}
+
+message DeleteCloudRecordingRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string task_id = 2;
+  string request_id = 3;
+}
+
+message IssueCloudRecordingAccessRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string task_id = 2;
+  string mode = 3;
+}
+
+message CloudRecordingResponse {
+  CloudRecordingSummary recording = 1;
+}
+
+message ListCloudRecordingsResponse {
+  repeated CloudRecordingSummary recordings = 1;
+  uint64 total = 2;
+  uint32 page = 3;
+  uint32 page_size = 4;
+}
+
+message IssueCloudRecordingAccessResponse {
+  string url = 1;
+  int64 expires_at_ms = 2;
+  string content_type = 3;
+  string file_name = 4;
+  uint64 file_size = 5;
+}
+
+message CloudRecordingSummary {
+  string task_id = 1;
+  string request_id = 2;
+  string session_node_id = 3;
+  string device_id = 4;
+  string channel_id = 5;
+  int64 start_time_sec = 6;
+  int64 end_time_sec = 7;
+  uint64 requested_duration_sec = 8;
+  CloudRecordingStatus status = 9;
+  CloudRecordingFileState file_state = 10;
+  uint32 progress_percent = 11;
+  uint64 recorded_duration_ms = 12;
+  bool progress_stale = 13;
+  uint64 current_size_bytes = 14;
+  uint64 final_size_bytes = 15;
+  string file_format = 16;
+  string requested_by = 17;
+  int64 created_at_ms = 18;
+  int64 started_at_ms = 19;
+  int64 finished_at_ms = 20;
+  int64 updated_at_ms = 21;
+  string error_code = 22;
+  string error_message = 23;
+  bool can_stop = 24;
+  bool can_play = 25;
+  bool can_download = 26;
+  bool can_delete = 27;
+  string stream_id = 28;
+}
+
+enum CloudRecordingStatus {
+  CLOUD_RECORDING_STATUS_UNSPECIFIED = 0;
+  CLOUD_RECORDING_STATUS_STARTING = 1;
+  CLOUD_RECORDING_STATUS_RUNNING = 2;
+  CLOUD_RECORDING_STATUS_STOPPING = 3;
+  CLOUD_RECORDING_STATUS_COMPLETED = 4;
+  CLOUD_RECORDING_STATUS_STOPPED = 5;
+  CLOUD_RECORDING_STATUS_PARTIAL = 6;
+  CLOUD_RECORDING_STATUS_FAILED = 7;
+  CLOUD_RECORDING_STATUS_DELETING = 8;
+  CLOUD_RECORDING_STATUS_DELETED = 9;
+}
+
+enum CloudRecordingFileState {
+  CLOUD_RECORDING_FILE_STATE_UNSPECIFIED = 0;
+  CLOUD_RECORDING_FILE_STATE_NONE = 1;
+  CLOUD_RECORDING_FILE_STATE_WRITING = 2;
+  CLOUD_RECORDING_FILE_STATE_READY = 3;
+  CLOUD_RECORDING_FILE_STATE_MISSING = 4;
+  CLOUD_RECORDING_FILE_STATE_DELETED = 5;
+}

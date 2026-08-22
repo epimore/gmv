@@ -1,0 +1,323 @@
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult};
+use base::log::error;
+use gmv_domain::info::obj::BroadcastStartModel;
+
+use crate::gb::sip::GbIncomingInviteEvent;
+use crate::state::model::TransMode;
+
+const DEFAULT_BROADCAST_CODEC: &str = "PCMA";
+const DEFAULT_BROADCAST_SAMPLE_RATE: u32 = 8000;
+const DEFAULT_BROADCAST_CHANNEL_COUNT: u8 = 1;
+const DEFAULT_BROADCAST_FRAME_DURATION_MS: u16 = 20;
+
+pub(super) const DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS: u16 = 15;
+
+pub(super) struct BroadcastAudioOptions {
+    pub codec: String,
+    pub payload_type: u8,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub frame_duration_ms: u16,
+    pub trans_mode: TransMode,
+}
+
+impl BroadcastAudioOptions {
+    pub fn try_from_model(model: &BroadcastStartModel) -> GlobalResult<Self> {
+        let codec_input = model.codec.as_deref().unwrap_or(DEFAULT_BROADCAST_CODEC);
+        let Some((codec, payload_type)) = normalize_broadcast_codec(codec_input) else {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "unsupported broadcast codec",
+                |msg| error!("{msg}: {codec_input}"),
+            ));
+        };
+        if codec != DEFAULT_BROADCAST_CODEC {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "only PCMA broadcast audio is supported",
+                |msg| error!("{msg}: codec={codec_input}"),
+            ));
+        }
+        let sample_rate = model.sample_rate.unwrap_or(DEFAULT_BROADCAST_SAMPLE_RATE);
+        let channel_count = model
+            .channel_count
+            .unwrap_or(DEFAULT_BROADCAST_CHANNEL_COUNT);
+        let frame_duration_ms = model
+            .frame_duration_ms
+            .unwrap_or(DEFAULT_BROADCAST_FRAME_DURATION_MS);
+        let trans_mode = normalize_broadcast_transport(model.transport.as_deref())?;
+
+        if sample_rate != DEFAULT_BROADCAST_SAMPLE_RATE
+            || channel_count != DEFAULT_BROADCAST_CHANNEL_COUNT
+        {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "only 8kHz mono broadcast audio is supported",
+                |msg| error!("{msg}: sample_rate={sample_rate}, channel_count={channel_count}"),
+            ));
+        }
+        if !(10..=60).contains(&frame_duration_ms)
+            || sample_rate.saturating_mul(frame_duration_ms as u32) % 1000 != 0
+        {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "invalid broadcast frame duration",
+                |msg| error!("{msg}: frame_duration_ms={frame_duration_ms}"),
+            ));
+        }
+
+        Ok(Self {
+            codec: codec.to_string(),
+            payload_type,
+            sample_rate,
+            channel_count,
+            frame_duration_ms,
+            trans_mode,
+        })
+    }
+
+    pub fn compatible_answer(&self, codec: &str, sample_rate: u32) -> bool {
+        if codec.eq_ignore_ascii_case("PS") {
+            return sample_rate == 90_000 && self.codec == "PCMA";
+        }
+        normalize_broadcast_codec(codec)
+            .map(|(answer_codec, _)| answer_codec == self.codec && sample_rate == self.sample_rate)
+            .unwrap_or(false)
+    }
+}
+
+pub(super) struct BroadcastSdpAnswer {
+    pub device_ip: String,
+    pub device_port: u16,
+    pub protocol: base::net::state::Protocol,
+    pub payload_type: u8,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub packetization: &'static str,
+    pub inner_codec: &'static str,
+    pub rtp_clock_rate: u32,
+}
+
+pub(super) fn parse_broadcast_invite(
+    invite: &GbIncomingInviteEvent,
+) -> GlobalResult<BroadcastSdpAnswer> {
+    parse_broadcast_sdp(&invite.remote_sdp, &invite.call_id)
+}
+
+fn parse_broadcast_sdp(remote_sdp: &str, call_id: &str) -> GlobalResult<BroadcastSdpAnswer> {
+    let sdp = gmv_pjsip::gb28181::sdp::SdpInfo::parse_lossy(remote_sdp);
+    let has_audio = remote_sdp
+        .lines()
+        .map(str::trim)
+        .any(|line| line.starts_with("m=audio "));
+    let recvonly = remote_sdp
+        .lines()
+        .map(str::trim)
+        .any(|line| line.eq_ignore_ascii_case("a=recvonly"));
+    if sdp.session_name.as_deref() != Some("Play") || !has_audio || !recvonly {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "invalid broadcast INVITE SDP",
+            |msg| error!("call_id={call_id}; {msg}"),
+        ));
+    }
+    parse_broadcast_profile(remote_sdp, &sdp)
+}
+
+fn parse_broadcast_profile(
+    remote_sdp: &str,
+    sdp: &gmv_pjsip::gb28181::sdp::SdpInfo,
+) -> GlobalResult<BroadcastSdpAnswer> {
+    let device_ip = sdp.connection_addr.clone().ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "broadcast sdp missing audio connection address",
+            |msg| error!("{msg}"),
+        )
+    })?;
+    let device_port = sdp.media_port.ok_or_else(|| {
+        GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "broadcast sdp missing audio media port",
+            |msg| error!("{msg}"),
+        )
+    })?;
+    let payload_type = sdp
+        .media_payloads
+        .first()
+        .and_then(|value| value.parse::<u8>().ok())
+        .unwrap_or(8);
+    let (codec, sample_rate) =
+        parse_rtpmap_from_sdp(remote_sdp, payload_type).unwrap_or_else(|| match payload_type {
+            0 => ("PCMU".to_string(), 8000),
+            8 => ("PCMA".to_string(), 8000),
+            _ => (String::new(), 8000),
+        });
+    if codec.is_empty() {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unsupported.code(),
+            "unsupported broadcast payload type",
+            |msg| error!("{msg}: pt={payload_type}"),
+        ));
+    }
+    let protocol = sdp
+        .media_proto
+        .as_deref()
+        .map(|proto| {
+            if proto.to_ascii_uppercase().contains("TCP") {
+                base::net::state::Protocol::TCP
+            } else {
+                base::net::state::Protocol::UDP
+            }
+        })
+        .unwrap_or(base::net::state::Protocol::UDP);
+    let (packetization, inner_codec, rtp_clock_rate) = if codec == "PS" {
+        let has_pcma_evidence = remote_sdp.lines().map(str::trim).any(|line| {
+            line.strip_prefix("f=")
+                .is_some_and(|value| value.split('/').collect::<Vec<_>>().get(6) == Some(&"1"))
+        });
+        if sample_rate != 90_000 || !has_pcma_evidence {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::Unsupported.code(),
+                "broadcast_inner_codec_unknown",
+                |msg| {
+                    error!(
+                        "{msg}: codec={codec}, clock_rate={sample_rate}, call_id evidence missing"
+                    )
+                },
+            ));
+        }
+        ("rtp_ps_g711", "PCMA", 90_000)
+    } else {
+        ("raw_g711", "PCMA", sample_rate)
+    };
+    Ok(BroadcastSdpAnswer {
+        device_ip,
+        device_port,
+        protocol,
+        payload_type,
+        codec,
+        sample_rate,
+        packetization,
+        inner_codec,
+        rtp_clock_rate,
+    })
+}
+
+pub(super) fn append_gmv_token(input_url: String, token: &str) -> String {
+    let encoded = url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>();
+    let sep = if input_url.contains('?') { '&' } else { '?' };
+    format!("{input_url}{sep}gmv-token={encoded}")
+}
+
+fn normalize_broadcast_transport(transport: Option<&str>) -> GlobalResult<TransMode> {
+    let Some(transport) = transport else {
+        return Ok(TransMode::Udp);
+    };
+    match transport.trim().to_ascii_lowercase().as_str() {
+        "" | "udp" => Ok(TransMode::Udp),
+        "tcp_passive" => Ok(TransMode::TcpPassive),
+        "tcp_active" => Ok(TransMode::TcpActive),
+        _ => Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "unsupported broadcast transport",
+            |msg| error!("{msg}: transport={transport}"),
+        )),
+    }
+}
+
+fn normalize_broadcast_codec(codec: &str) -> Option<(&'static str, u8)> {
+    let compact = codec
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect::<String>();
+    match compact.as_str() {
+        "PCMA" | "G711A" | "ALAW" => Some(("PCMA", 8)),
+        "PCMU" | "G711U" | "MULAW" | "ULAW" => Some(("PCMU", 0)),
+        _ => None,
+    }
+}
+
+fn parse_rtpmap_from_sdp(sdp: &str, payload_type: u8) -> Option<(String, u32)> {
+    let prefix = format!("a=rtpmap:{payload_type}");
+    for line in sdp.lines().map(str::trim) {
+        let Some(rest) = line.strip_prefix(&prefix) else {
+            continue;
+        };
+        let rest = rest.trim_start_matches([' ', ':']).trim();
+        let mut parts = rest.split('/');
+        let codec = parts.next()?.trim().to_uppercase();
+        let sample_rate = parts
+            .next()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .unwrap_or(8000);
+        return Some((codec, sample_rate));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::state::model::TransMode;
+
+    use super::{BroadcastAudioOptions, parse_broadcast_sdp};
+
+    fn fixture_sdp(packet: &str) -> &str {
+        packet
+            .split_once("\r\n\r\n")
+            .expect("SIP fixture contains header/body separator")
+            .1
+    }
+
+    #[test]
+    fn broadcast_invite_requires_play_audio_recvonly_pcma() {
+        let valid = "v=0\r\ns=Play\r\nc=IN IP4 192.0.2.10\r\nt=0 0\r\nm=audio 30000 RTP/AVP 8\r\na=recvonly\r\na=rtpmap:8 PCMA/8000\r\n";
+        let answer = parse_broadcast_sdp(valid, "call-1").expect("valid broadcast SDP");
+        assert_eq!(answer.device_ip, "192.0.2.10");
+        assert_eq!(answer.device_port, 30000);
+        assert_eq!(answer.payload_type, 8);
+        assert_eq!(answer.codec, "PCMA");
+        assert_eq!(answer.sample_rate, 8000);
+
+        assert!(parse_broadcast_sdp(&valid.replace("a=recvonly", "a=sendrecv"), "call-2").is_err());
+        assert!(parse_broadcast_sdp(&valid.replace("s=Play", "s=Broadcast"), "call-3").is_err());
+    }
+
+    #[test]
+    fn raw_and_vendor_ps_fixtures_reproduce_current_codec_gate() {
+        let raw = fixture_sdp(include_str!(
+            "../../tests/fixtures/sip/generated/broadcast-raw-pcma-01-invite.sip"
+        ));
+        let raw_answer = parse_broadcast_sdp(raw, "raw-call").expect("raw PCMA fixture");
+        assert_eq!(raw_answer.payload_type, 8);
+        assert_eq!(raw_answer.codec, "PCMA");
+        assert_eq!(raw_answer.sample_rate, 8_000);
+
+        let vendor = fixture_sdp(include_str!(
+            "../../tests/fixtures/sip/generated/broadcast-vendor-ps-pcma-01-invite.sip"
+        ));
+        let ps_answer = parse_broadcast_sdp(vendor, "ps-call").expect("vendor PS fixture");
+        assert_eq!(ps_answer.device_ip, "192.168.110.254");
+        assert_eq!(ps_answer.device_port, 63_086);
+        assert_eq!(ps_answer.payload_type, 96);
+        assert_eq!(ps_answer.codec, "PS");
+        assert_eq!(ps_answer.sample_rate, 90_000);
+        assert!(vendor.contains("f=v/////a/1/8/1"));
+
+        let requested = BroadcastAudioOptions {
+            codec: "PCMA".to_string(),
+            payload_type: 8,
+            sample_rate: 8_000,
+            channel_count: 1,
+            frame_duration_ms: 20,
+            trans_mode: TransMode::Udp,
+        };
+        assert!(requested.compatible_answer(&raw_answer.codec, raw_answer.sample_rate));
+        assert!(requested.compatible_answer(&ps_answer.codec, ps_answer.sample_rate));
+        assert_eq!(ps_answer.packetization, "rtp_ps_g711");
+        assert_eq!(ps_answer.inner_codec, "PCMA");
+        assert_eq!(ps_answer.rtp_clock_rate, 90_000);
+    }
+}

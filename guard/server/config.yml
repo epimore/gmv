@@ -1,0 +1,90 @@
+log:
+  level: warn
+  stdout: true
+  file: true
+  prefix: guard
+  store_path: ./logs
+  specify:
+    - crate_name: gmv_guard_server
+      level: info
+    - crate_name: gmv_nodec
+      level: debug
+    - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
+      level: warn #日志等级
+    - crate_name: h2 #h2日志等级
+      level: warn #日志等级
+
+guard:
+  http:
+    bind_addr: 0.0.0.0:8080
+    origins:
+      - http://127.0.0.1:5173
+      - http://localhost:5173
+      - http://127.0.0.1:8080
+    ui_dist_dir: guard/ui/dist
+    tls:
+      enabled: false
+      certificate_path: ""
+      private_key_path: ""
+    # 仅在 nginx/OpenResty 已验证浏览器侧 HTTPS ALPN 协商为 h2 后设为 true。
+    media_https_http2_verified: false
+    session_cookie_secure: false #公网由Nginx终止HTTPS时设为true；本机tls.enabled=true时自动生效
+    session_ttl_sec: 28800
+    login_window_sec: 60
+    max_failed_attempts: 5
+
+  grpc:
+    bind_addr: 127.0.0.1:18080
+    heartbeat_interval_ms: 5000
+    heartbeat_timeout_ms: 20000
+    tls:
+      enabled: false # TLS 默认启用；开发/受控内网可显式关闭。
+      certificate_path: ""
+      private_key_path: ""
+
+  registry:
+    node_check_enabled: true # true时仅允许allowed_nodes中声明的节点注册
+    allowed_nodes:
+      - id: "51010000002000000001"
+        kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
+      - id: "34020000002000000001"
+        kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
+      - id: "s1"
+        kind: STREAM # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
+
+  database:
+    backend: sqlite # sqlite | mysql
+    auto_migrate: true
+    pool:
+      max_connections: 10
+      min_connections: 0
+      connection_timeout_sec: 8
+      max_lifetime_sec: 1800
+      idle_timeout_sec: 60
+      check_health: false
+    sqlite:
+      path: data/guard.db
+    # mysql:
+    #   host: 127.0.0.1
+    #   port: 3306
+    #   database: gmv
+    #   username: root
+    #   pass_crypto_enable: false
+    #   pass: "" # 部署时通过受控配置注入，不得使用示例密码。
+    #   ssl_mode: preferred # disabled | preferred | required | verify_ca | verify_identity
+    #   attrs:
+    #     log_global_sql_level: debug
+    #     log_slow_sql_timeout_sec: 3
+    #     timezone: "+8:00"
+    #     charset: utf8mb4
+    #     ssl_ca_crt_file: path/to/ca.crt
+    #     ssl_client_cert_file: path/to/client.crt
+    #     ssl_client_key_file: path/to/client.key
+
+  bootstrap:
+    admin:
+      # 仅 guard_user 为空时写入一次，之后不会覆盖数据库用户。
+      username: admin
+      pass_crypto_enable: false # 密码是否加密，默认不加密。
+      pass: "zaq12345" # 空库首次启动前必须设置；已有用户后可留空，避免长期保存 bootstrap 密码。
+      local_login_only: false # 仅从配置文件读取；修改后需重启 guard 生效。

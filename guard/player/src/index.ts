@@ -1,0 +1,33 @@
+export { GmvPlayerCore } from './core/GmvPlayerCore';
+export { default as GmvPlayerView } from './view/GmvPlayerView.vue';
+export { default as GmvMultiGrid } from './view/MultiGrid.vue';
+export { default as GmvPlayerControls } from './view/PlayerControls.vue';
+export type {
+  GmvAiBox,
+  GmvCloudRecordRange,
+  GmvCodec,
+  GmvControlsVisibility,
+  GmvDeviceStatus,
+  GmvEngine,
+  GmvEngineFactory,
+  GmvMediaMode,
+  GmvOsdItem,
+  GmvOutputAudioMode,
+  GmvPlayerCoreOptions,
+  GmvPlayerControl,
+  GmvPlayerControlAction,
+  GmvPlayerControlsConfig,
+  GmvPlayerControlsState,
+  GmvPlayerEvent,
+  GmvPlayerEvents,
+  GmvPlayerOutputOption,
+  GmvPlaybackRateMode,
+  GmvProtocol,
+  GmvPtzCommand,
+  GmvSource,
+  GmvSourceAudioState,
+  GmvStreamProfile,
+  GmvStreamProfileOption,
+  GmvStreamProfileVerification,
+  GmvViewCapabilities,
+} from './core/types';

@@ -1,18 +1,49 @@
 log:
-  level: info
+  level: warn
+  stdout: true
+  file: true
   prefix: stream
   store_path: ./logs
+  specify:
+    - crate_name: gmv_stream
+      level: info
+    - crate_name: gmv_nodec
+      level: debug
+    - crate_name: h2 #h2日志等级
+      level: warn #日志等级
+guard:
+  endpoint: http://127.0.0.1:18080 # guard内部gRPC地址，stream向guard注册、上报事件
 
 server:
-  name: s1 #服务标识身份,流媒体集群唯一标识
-  rtp_port: 18568 #监听rtp媒体流端口;
-  rtcp_port: 18569 #监听rtcp媒体流端口;  暂未实现
-  http_port: 18570 #流媒体API端口
-  hook_uri: http://127.0.0.1:18567/session/hook #信令服务的地址
-  #流代理地址:http://127.0.0.1:[server.http_port]，用于如nginx代理
-  #默认播放地址：http://127.0.0.1:[server.http_port]/[server.name]/play/[stream_id].flv?gmv-token=uxxx
-  proxy_addr: http://127.0.0.1:18570 #eg:https://epimore.cn/s1/play/4FEqqzfqsa0Vzqqq2lqqc1lqq4fa.flv?gmv-token=uxxx;
-stream: #输入输出默认超时回调；执行优先级：回调>监听配置>默认配置
-  in_wait_timeout: 4 #u8 单位秒；输入流等待超时,需大于等于1,建议：2-8;
-  out_idle_timeout: 6 #u8 单位秒；输出流闲置超时,0：立即关闭,建议：2-8；
-
+  name: s1 #服务标识身份,流媒体集群唯一标识，guard注册时节点ID
+  http:
+    listen_addr: 0.0.0.0:28570 #本机HTTP实际监听地址
+    public_url: http://192.168.0.9:28570 #播放、WebSocket和节点HTTP endpoint使用的完整对外URL
+    tls:
+      enabled: false #仅控制本机HTTP监听TLS；若由Nginx终止HTTPS，可保持false并将public_url配置为https
+      certificate_path: ""
+      private_key_path: ""
+  grpc:
+    listen_addr: 0.0.0.0:19082 #本机control gRPC实际监听地址
+    advertised_url: http://192.168.0.9:19082 #注册给guard和其它节点的完整可达地址；scheme独立于本机TLS
+    tls:
+      enabled: false #仅控制本机control gRPC监听TLS；启用时要求配置证书
+      certificate_path: ""
+      private_key_path: ""
+  media:
+    mode: single # 服务启动时绑定固定TCP/UDP端口
+    listen_ip: 0.0.0.0 #本机RTP socket实际bind IP
+    advertised_host: 192.168.0.9 #写入allocation endpoint和SDP的设备可达主机
+    port: 28568
+  # multi模式需用以下结构完整替换上面的media块，不要混用port与port_range：
+  # media:
+  #   mode: multi
+  #   listen_ip: 0.0.0.0
+  #   advertised_host: 192.168.0.9
+  #   port_range:
+  #     start: 28600 # 首尾均包含；生产需同步开放完整TCP/UDP范围
+  #     end: 28663
+  #   reservation_timeout_secs: 30 # 首个有效RTP包到达前的本地保留期限
+stream: #Stream 数据面生命周期；单流内部覆盖优先于本配置，不属于 Guard/Player 启动超时
+  in_wait_timeout: 4 #单位秒；连续无 RTP 包判死时间，范围 1-30，建议 2-8
+  out_idle_timeout: 20 #单位秒；output/viewer session 延迟释放时间，范围 12-120，建议 15-60

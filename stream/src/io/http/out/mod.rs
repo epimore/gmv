@@ -4,13 +4,14 @@ use crate::state::register::Register;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::{ConnectInfo, Path, Query};
+use axum::http::{HeaderMap, header};
 use axum::response::Response;
 use base::bytes::Bytes;
 use base::log::{debug, info, warn};
 use base::tokio::sync::oneshot;
 use futures_core::Stream;
-use shared::info::obj::{BaseStreamInfo, PLAY_PATH, StreamPlayInfo};
-use shared::info::output::OutputEnum;
+use gmv_domain::info::obj::{BaseStreamInfo, PLAY_PATH, StreamPlayInfo};
+use gmv_domain::info::output::OutputEnum;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -27,32 +28,14 @@ pub fn routes() -> Router {
     Router::new().route(PLAY_PATH, axum::routing::get(handler))
 }
 
-#[cfg_attr(
-    debug_assertions,
-    utoipa::path(
-        get,
-        path = "/play/{stream_id}",
-        request_body = (),
-        params(
-            ("stream_id" = String, Path, description = "流 ID"),
-            ("gmv-token" = String, Query, description = "认证 token", example = "tkn_xyz789")
-        ),
-        responses(
-            (status = 200, description = "成功播放流", body = Vec<u8>, content_type = "video/flv"),
-            (status = 401, description = "gmv-token 无效"),
-            (status = 404, description = "流未找到"),
-            (status = 500, description = "内部服务器错误")
-        ),
-        tag = "HTTP播放音视频"
-    )
-)]
 /// 根据HTTP-URL请求播放
 async fn handler(
     Path(stream_id): Path<String>,
     Query(mut map): Query<HashMap<String, String>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response<Body> {
-    debug!("stream play:stream_id: {}, param: {:?}", stream_id, map);
+    debug!("stream play: stream_id={stream_id}");
     let token: Arc<str> = match map.remove("gmv-token") {
         None => {
             return res_401();
@@ -68,8 +51,35 @@ async fn handler(
                     info!("flv stream play:stream_id: {}, param: {:?}", stream_id, map);
                     flv::handler(id, token, addr).await
                 }
-                "m3u8" => hls::m3u8_handler().await,
-                "hmp4" => hls::segment_mp4_handler().await,
+                "m3u8" => {
+                    let (id, profile) = match id.strip_suffix(".ll") {
+                        Some(id) => (Arc::from(id), hls::PlaylistProfile::LowLatency),
+                        None => (id, hls::PlaylistProfile::Standard),
+                    };
+                    hls::m3u8_handler(id, token, addr, &map, profile).await
+                }
+                "hmp4" => hls::init_mp4_handler(id, token, &map).await,
+                "m4s"
+                    if id.rsplit_once("-part-").is_some_and(|(_, suffix)| {
+                        suffix.split_once('-').is_some_and(|(segment, part)| {
+                            segment.parse::<u64>().is_ok() && part.parse::<u64>().is_ok()
+                        })
+                    }) || id
+                        .rsplit_once('-')
+                        .is_some_and(|(_, sequence)| sequence.parse::<u64>().is_ok()) =>
+                {
+                    hls::segment_mp4_handler(id, token).await
+                }
+                "mp4" => {
+                    crate::io::local::mp4::serve_completed(
+                        &id,
+                        &token,
+                        headers
+                            .get(header::RANGE)
+                            .and_then(|value| value.to_str().ok()),
+                    )
+                    .await
+                }
                 "ts" => hls::segment_ts_handler().await,
                 "mpd" => {
                     debug!(
@@ -135,11 +145,24 @@ pub async fn stream_user_token_check(
     token: Arc<str>,
     addr: SocketAddr,
 ) -> OutPlayKind {
-    if Register::check_token(&(token.clone(), stream_id.clone())) {
-        match Register::insert_out_token(stream_id, out, token) {
+    match stream_user_token_authorize(out, bsi, stream_id.clone(), token.clone(), addr).await {
+        OutPlayKind::Play => match Register::insert_out_token(stream_id, out, token) {
             Ok(_) => OutPlayKind::Play,
             Err(_) => OutPlayKind::Notfound,
-        }
+        },
+        other => other,
+    }
+}
+
+pub async fn stream_user_token_authorize(
+    out: OutputEnum,
+    bsi: BaseStreamInfo,
+    stream_id: Arc<str>,
+    token: Arc<str>,
+    addr: SocketAddr,
+) -> OutPlayKind {
+    if Register::check_token(&(token.clone(), stream_id.clone())) {
+        OutPlayKind::Play
     } else {
         let play_info = StreamPlayInfo::new(bsi, Some(addr.to_string()), token.to_string(), out);
         let (tx, rx) = oneshot::channel();
@@ -148,12 +171,7 @@ pub async fn stream_user_token_check(
             .send((Event::Out(OutEvent::OnPlay(play_info)), Some(tx)))
             .await;
         match rx.await {
-            Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => {
-                match Register::insert_out_token(stream_id, out, token) {
-                    Ok(_) => OutPlayKind::Play,
-                    Err(_) => OutPlayKind::Notfound,
-                }
-            }
+            Ok(EventRes::Out(OutEventRes::OnPlay(Some(true)))) => OutPlayKind::Play,
             Ok(_) => OutPlayKind::Forbid,
             Err(_) => OutPlayKind::Notfound,
         }

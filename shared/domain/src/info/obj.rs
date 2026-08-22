@@ -1,0 +1,263 @@
+use crate::info::output::OutputEnum;
+use base::constructor::New;
+use base::serde::{Deserialize, Serialize};
+
+// stream data-plane endpoints
+pub const PLAY_PATH: &str = "/play/{stream_id}";
+pub const BROADCAST_INPUT_PREFIX: &str = "/broadcast/input";
+pub const BROADCAST_INPUT_PATH: &str = "/broadcast/input/{broadcast_id}";
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct SingleParam<T> {
+    pub param: T,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct StreamInfoQo {
+    pub ssrc: u32,
+    pub output_enum: OutputEnum,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct StreamState {
+    pub base_stream_info: BaseStreamInfo,
+    pub user_count: u32,
+    // record_name: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Default)]
+#[serde(crate = "base::serde")]
+pub struct StreamRecordInfo {
+    #[serde(default)]
+    pub stream_id: Option<String>,
+    ///录制完成时返回路径+文件名
+    pub path_file_name: Option<String>,
+    //单位kb,
+    pub file_size: u64,
+    ///媒体流进度时间,方便计算进度，单位秒
+    pub timestamp: u32,
+    ///录制状态，0-进行中，1-完成，2-部分完成，3-失败
+    pub state: u8,
+    //每秒录制字节数
+    // pub bytes_sec: usize,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct StreamPlayInfo {
+    pub base_stream_info: BaseStreamInfo,
+    pub remote_addr: Option<String>,
+    pub token: String,
+    pub play_type: OutputEnum,
+    // //当前观看人数
+    // pub user_count: u32,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub enum InTimeoutEventRes {
+    KeepAlive, //保活ssrc所有资源，进入下次超时扫码;
+    CloseAll,  //关闭释放ssrc所有资源;
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub enum OutputEventRes {
+    KeepMuxer,  //保留ssrc当前输出格式资源;
+    CloseMuxer, //关闭释放ssrc当前输出格式资源;
+    CloseAll,   //关闭释放ssrc所有资源;
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct OutputStreamInfo {
+    pub base_stream_info: BaseStreamInfo,
+    pub play_type: OutputEnum,
+    //当前观看人数
+    pub user_count: u32,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BaseStreamInfo {
+    pub rtp_info: RtpInfo,
+    pub stream_id: String,
+    pub in_time: u64,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct RegisterStreamInfo {
+    pub base_stream_info: BaseStreamInfo,
+    pub code: u16,
+    pub msg: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct NetSource {
+    pub remote_addr: String,
+    pub protocol: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct RtpInfo {
+    pub ssrc: u32,
+    //媒体流源地址,tcp/udp
+    pub origin_trans: Option<NetSource>,
+    pub server_name: String,
+    pub proxy_addr: String,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(New, Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct StreamKey {
+    pub ssrc: u32,
+    pub stream_id: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct UnknownStreamEvent {
+    pub media_node_id: String,
+    pub ssrc: u32,
+    pub remote_addr: String,
+    pub protocol: String,
+    pub first_seen_at_ms: u64,
+    pub last_seen_at_ms: u64,
+    pub packet_count: u64,
+    pub reason: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastStartModel {
+    pub device_id: String,
+    pub channel_id: Option<String>,
+    #[serde(default)]
+    pub broadcast_id: Option<String>,
+    #[serde(default)]
+    pub leg_id: Option<String>,
+    #[serde(default)]
+    pub expected_stream_node_id: Option<String>,
+    pub transport: Option<String>,
+    pub codec: Option<String>,
+    pub sample_rate: Option<u32>,
+    pub channel_count: Option<u8>,
+    pub frame_duration_ms: Option<u16>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastInfo {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    #[serde(default)]
+    pub profile: String,
+    pub input_url: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub frame_duration_ms: u16,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastStopModel {
+    pub broadcast_id: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastClosedEvent {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    pub reason: String,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastOpenReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    #[serde(default)]
+    pub leg_stream_id: String,
+    pub ssrc: u32,
+    pub token: String,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub payload_type: u8,
+    pub frame_duration_ms: u16,
+    pub input_timeout_secs: u16,
+    #[serde(default)]
+    pub lease_id: String,
+    #[serde(default)]
+    pub route_id: String,
+    #[serde(default)]
+    pub session_hook_endpoint: Option<String>,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastOpenResp {
+    pub broadcast_id: String,
+    pub leg_id: String,
+    pub input_url: String,
+    pub rtp_port: u16,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channel_count: u8,
+    pub payload_type: u8,
+    pub frame_duration_ms: u16,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastConfigureLegReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+    pub device_ip: String,
+    pub device_port: u16,
+    pub protocol: String,
+    pub payload_type: u8,
+    #[serde(default)]
+    pub transport: String,
+    #[serde(default)]
+    pub packetization: String,
+    #[serde(default)]
+    pub inner_codec: String,
+    #[serde(default)]
+    pub rtp_clock_rate: u32,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct BroadcastCloseReq {
+    pub broadcast_id: String,
+    #[serde(default)]
+    pub leg_id: String,
+}

@@ -1,0 +1,33 @@
+{
+  "name": "gmv-player",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run --environment jsdom"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "hls.js": "^1.6.5",
+    "mpegts.js": "^1.8.0",
+    "vue": "^3.5.17"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.0",
+    "@vue/eslint-config-prettier": "^10.2.0",
+    "@vue/eslint-config-typescript": "^14.9.0",
+    "@vue/test-utils": "^2.4.11",
+    "eslint": "^10.6.0",
+    "eslint-plugin-vue": "^10.9.2",
+    "jsdom": "^29.1.1",
+    "prettier": "^3.8.5",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^2.2.10"
+  }
+}

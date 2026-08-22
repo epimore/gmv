@@ -1,0 +1,1819 @@
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpListener};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+use gmv_guard_server::api::v2::control::{
+    BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
+};
+use gmv_guard_server::api::v2::model::StreamSummaryState;
+use gmv_guard_server::core::{
+    ConnectionState, GuardError, HealthState, LeaseState, NodeIdentity, NodeKind, RouteState,
+    SchedulingState,
+};
+use gmv_guard_server::mqttc::{CommandAction, MqttCommandExecutor, RoutedCommand};
+use gmv_guard_server::operation::{OperationService, OperationStatus};
+use gmv_guard_server::outbox::OutboxRepository;
+use gmv_guard_server::registry::{RegisterRequest, RegistryService};
+use gmv_guard_server::store::InMemoryGuardStore;
+use gmv_guard_server::store::model::{
+    EndpointModeRecord, EndpointRecord, HostMetricsRecord, LeaseRecord, NodeRecord, RouteRecord,
+};
+use gmv_protocol::avai::v1::avai_control_server::{AvaiControl, AvaiControlServer};
+use gmv_protocol::avai::v1::{
+    AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
+    QueryCapabilitiesRequest, QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
+};
+use gmv_protocol::common::v1::{ErrorDetail, PageResponse};
+use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
+use gmv_protocol::session::v1::{
+    CloudRecordingResponse, ControlPtzRequest, ControlPtzResponse, CreateCloudRecordingRequest,
+    CreateGbDeviceRequest, CreateGbDeviceResponse, DeleteCloudRecordingRequest,
+    DeleteGbDeviceRequest, DeleteGbDeviceResponse, DeviceStreamResponse, DeviceStreamState,
+    GbChannel, GbDevice, GbRecordQueryBatch, GbResource, GbResourceResponse,
+    GetActiveStreamManagementRequest, GetActiveStreamManagementResponse, GetCloudRecordingRequest,
+    GetGbChannelRecordsRequest, GetGbChannelRecordsResponse, GetGbChannelRequest,
+    GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
+    GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
+    IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
+    ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
+    ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
+    ListGbChannelsResponse, ListGbDevicesRequest, ListGbDevicesResponse, ListGbResourcesRequest,
+    ListGbResourcesResponse, ListStreamHistoryRequest, ListStreamHistoryResponse,
+    PlaybackControlResponse, PlaybackPresenceHeartbeat, QueryGbChannelRecordsRequest,
+    RefreshPlaybackPresenceRequest, RefreshPlaybackPresenceResponse,
+    ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
+    SetGbChannelCoverRequest, SetPlaybackSpeedRequest, SetPlaybackSpeedResponse,
+    SetPlaybackStateRequest, SnapshotImageRequest, SnapshotImageResponse, StartDeviceStreamRequest,
+    StopCloudRecordingRequest, StopDeviceStreamRequest, UpdateGbChannelRequest,
+    UpdateGbChannelResponse, UpdateGbDeviceRequest, UpdateGbDeviceResponse,
+};
+use gmv_protocol::stream::v1::stream_control_server::{StreamControl, StreamControlServer};
+use gmv_protocol::stream::v1::{
+    CloseOutputRequest, CloseOutputResponse, ConfigureReceiveTransportRequest,
+    ConfigureReceiveTransportResponse, CreateOutputRequest, CreateOutputResponse,
+    GetPlaybackEndpointsRequest, GetPlaybackEndpointsResponse, MediaTransportState, OutputInfo,
+    OutputState, QueryStreamRequest, QueryStreamResponse, ReleaseSubscriptionOutputsRequest,
+    ReleaseSubscriptionOutputsResponse, StartReceiveRequest, StartReceiveResponse,
+    StopReceiveRequest, StopReceiveResponse, StreamBoolResponse, StreamJsonRequest,
+    StreamJsonResponse, StreamState, StreamUnitResponse,
+};
+
+#[test]
+fn gb28181_create_device_uses_selected_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let device = BusinessControl::new(store)
+                .create_gb_device(gmv_protocol::session::v1::GbDevice {
+                    session_node_id: "session-gb-online".to_string(),
+                    domain_id: "34020000002000000001".to_string(),
+                    domain: "3402000000".to_string(),
+                    alias: "front door".to_string(),
+                    status: 1,
+                    heartbeat_sec: 60,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(device.session_node_id, "session-gb-online");
+            assert_eq!(device.device_id, "34020000001320000001");
+            assert_eq!(device.alias, "front door");
+        });
+}
+
+#[test]
+fn gb28181_session_node_config_uses_rpc_and_skips_offline_nodes() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
+                    ]),
+                })
+                .unwrap();
+            store.upsert_node(NodeRecord {
+                identity: NodeIdentity::new("session-gb-offline", "offline", NodeKind::Session),
+                connection: ConnectionState::Disconnected,
+                health: HealthState::Offline,
+                scheduling: SchedulingState::Disabled,
+                endpoints: vec![],
+                capabilities: vec!["protocol.gb28181".to_string()],
+                pending_leases: 0,
+                host_metrics: HostMetricsRecord::default(),
+                business_metrics: HashMap::new(),
+                config: HashMap::from([
+                    ("service".to_string(), "session-gb28181".to_string()),
+                    ("protocol".to_string(), "gb28181".to_string()),
+                ]),
+                zone: None,
+                last_seen_at_ms: 0,
+                generation: 0,
+                sequence: 0,
+            });
+
+            let config = BusinessControl::new(store.clone())
+                .gb_session_config("session-gb-online")
+                .await
+                .unwrap();
+            assert_eq!(config.domain, "3402000000");
+            assert_eq!(config.domain_id, "34020000002000000001");
+            assert_eq!(config.wan_ip, "101.33.200.169");
+            assert_eq!(config.wan_port, 25600);
+
+            let error = BusinessControl::new(store)
+                .gb_session_config("session-gb-offline")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("offline"));
+        });
+}
+#[test]
+fn gb28181_snapshot_image_uses_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let session_id = BusinessControl::new(store)
+                .snapshot_image(
+                    "snapshot-op",
+                    "34020000001320000001",
+                    "34020000001320000002",
+                    1,
+                    1,
+                )
+                .await
+                .unwrap();
+            assert_eq!(session_id, "snapshot-session");
+        });
+}
+
+#[test]
+fn gb28181_record_query_uses_selected_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-record",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-record".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let control = BusinessControl::new(store);
+            let current = control
+                .get_gb_channel_records(
+                    "session-gb-record",
+                    "34020000001110000001",
+                    "34020000001320000001",
+                    100,
+                    200,
+                    2,
+                    10,
+                )
+                .await
+                .unwrap();
+            assert_eq!(current.server_time_ms, 1_000);
+            assert_eq!((current.page, current.page_size), (2, 10));
+            assert!(current.attempt_batch.is_none());
+
+            let querying = control
+                .query_gb_channel_records(
+                    "session-gb-record",
+                    "record-operation",
+                    "34020000001110000001",
+                    "34020000001320000001",
+                    100,
+                    200,
+                )
+                .await
+                .unwrap();
+            let attempt = querying.attempt_batch.expect("querying batch");
+            assert_eq!(attempt.batch_id, "record-operation");
+            assert_eq!(attempt.status, "QUERYING");
+            assert_eq!((attempt.start_time_sec, attempt.end_time_sec), (100, 200));
+        });
+}
+
+#[test]
+fn gb28181_update_channel_uses_session_rpc() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            RegistryService::new(store.clone())
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
+                    ]),
+                })
+                .unwrap();
+
+            let channel = BusinessControl::new(store)
+                .update_gb_channel(GbChannel {
+                    device_id: "34020000001320000001".to_string(),
+                    channel_id: "34020000001320000002".to_string(),
+                    alias_name: "front".to_string(),
+                    snapshot: 1,
+                    ptz_enable: 1,
+                    broadcast_enable: 2,
+                    audio_enable: 2,
+                    record_enable: 0,
+                    playback_enable: 1,
+                    alarm_enable: 0,
+                    biz_enable: 1,
+                    sort_no: 7,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(channel.channel_id, "34020000001320000002");
+            assert_eq!(channel.alias_name, "front");
+            assert_eq!(channel.sort_no, 7);
+        });
+}
+
+#[test]
+fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() {
+    base::tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async {
+            let session_addr = free_loopback_addr();
+            let stream_addr = free_loopback_addr();
+            let avai_addr = free_loopback_addr();
+            let _session = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(SessionControlServer::new(FakeSession))
+                    .serve(session_addr)
+                    .await
+                    .unwrap();
+            });
+            let _stream = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(StreamControlServer::new(FakeStream::default()))
+                    .serve(stream_addr)
+                    .await
+                    .unwrap();
+            });
+            let _avai = base::tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(AvaiControlServer::new(FakeAvai))
+                    .serve(avai_addr)
+                    .await
+                    .unwrap();
+            });
+            base::tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+            let store = InMemoryGuardStore::default();
+            let registry = RegistryService::new(store.clone());
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("session-rpc", "session-inst", NodeKind::Session),
+                    capabilities: vec![
+                        "device.live".to_string(),
+                        "device.playback".to_string(),
+                        "device.download".to_string(),
+                        "device.broadcast".to_string(),
+                        "device.ptz".to_string(),
+                        "protocol.gb28181".to_string(),
+                    ],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-rpc-b",
+                        "session-inst-b",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec![
+                        "device.live".to_string(),
+                        "device.playback".to_string(),
+                        "device.download".to_string(),
+                        "device.broadcast".to_string(),
+                        "device.ptz".to_string(),
+                        "protocol.gb28181".to_string(),
+                    ],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("stream-rpc", "stream-inst", NodeKind::Stream),
+                    capabilities: vec![
+                        "live".to_string(),
+                        "playback".to_string(),
+                        "download".to_string(),
+                        "broadcast".to_string(),
+                    ],
+                    endpoints: vec![
+                        grpc_endpoint(stream_addr),
+                        EndpointRecord {
+                            name: "rtp".to_string(),
+                            scheme: "rtp".to_string(),
+                            host: "127.0.0.1".to_string(),
+                            port: 30000,
+                            mode: EndpointModeRecord::Single,
+                            labels: HashMap::from([
+                                (
+                                    "media_transports".to_string(),
+                                    "udp,tcp_active,tcp_passive".to_string(),
+                                ),
+                                (
+                                    "broadcast_packetizations".to_string(),
+                                    "raw_g711,rtp_ps_g711".to_string(),
+                                ),
+                                ("max_broadcast_parents".to_string(), "8".to_string()),
+                                ("max_broadcast_legs".to_string(), "50".to_string()),
+                            ]),
+                        },
+                    ],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "stream-legacy",
+                        "stream-legacy-inst",
+                        NodeKind::Stream,
+                    ),
+                    capabilities: vec!["broadcast".to_string()],
+                    endpoints: vec![
+                        grpc_endpoint(stream_addr),
+                        EndpointRecord {
+                            name: "rtp".to_string(),
+                            scheme: "rtp".to_string(),
+                            host: "127.0.0.1".to_string(),
+                            port: 31000,
+                            mode: EndpointModeRecord::Multi,
+                            labels: HashMap::new(),
+                        },
+                    ],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new("avai-rpc", "avai-inst", NodeKind::Avai),
+                    capabilities: vec!["ai.vehicle".to_string()],
+                    endpoints: vec![grpc_endpoint(avai_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: Default::default(),
+                })
+                .unwrap();
+
+            let control = BusinessControl::new(store.clone());
+            let image_access = control
+                .issue_gb_channel_image_access(
+                    "session-rpc",
+                    IssueGbChannelImageAccessRequest {
+                        operation: None,
+                        image_id: "1".to_string(),
+                        device_id: "device-1".to_string(),
+                        channel_id: "channel-1".to_string(),
+                        mode: "inline".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(image_access.content_type, "image/jpeg");
+            assert_eq!(image_access.file_name, "snapshot.jpeg");
+            let image_page = control
+                .list_gb_channel_images("session-rpc", "device-1", "channel-1", 1_000, 2_000, 2, 24)
+                .await
+                .unwrap();
+            assert_eq!(image_page.total, 7);
+            assert_eq!(image_page.page, 2);
+            assert_eq!(image_page.page_size, 24);
+            let cover = control
+                .set_gb_channel_cover(
+                    "session-rpc",
+                    SetGbChannelCoverRequest {
+                        operation: None,
+                        device_id: "device-1".to_string(),
+                        channel_id: "channel-1".to_string(),
+                        image_id: "16873".to_string(),
+                    },
+                )
+                .await
+                .unwrap()
+                .channel
+                .unwrap();
+            assert_eq!(cover.cover_image_id, "16873");
+            let active = control
+                .list_active_streams("session-rpc", ListActiveStreamsRequest::default())
+                .await
+                .unwrap();
+            assert_eq!(active.server_time_ms, 1_001);
+            let dialogs = control
+                .list_active_stream_dialogs(
+                    "session-rpc",
+                    ListActiveStreamDialogsRequest::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(dialogs.server_time_ms, 1_003);
+            control
+                .get_active_stream_management("session-rpc", "stream-1")
+                .await
+                .unwrap();
+            let history = control
+                .list_stream_history("session-rpc", ListStreamHistoryRequest::default())
+                .await
+                .unwrap();
+            assert_eq!(history.server_time_ms, 1_002);
+            let stream = control
+                .start_live("op-live-rpc", "device-1", "channel-1")
+                .await
+                .unwrap();
+            assert_eq!(stream.stream_id, "live-op-live-rpc");
+            assert_eq!(stream.node_id, "session-rpc");
+            assert_eq!(stream.endpoint, "rtp://127.0.0.1:30000/live-op-live-rpc");
+            store
+                .insert_lease(LeaseRecord {
+                    lease_id: "lease-output-test".to_string(),
+                    route_id: "route-output-test".to_string(),
+                    resource_id: stream.stream_id.clone(),
+                    stream_type: "live".to_string(),
+                    node_id: "stream-rpc".to_string(),
+                    instance_id: "stream-inst".to_string(),
+                    idempotency_key: "lease-output-test".to_string(),
+                    constraints: HashMap::new(),
+                    endpoints: vec![],
+                    state: LeaseState::Confirmed,
+                    expires_at_ms: 10_000,
+                })
+                .unwrap();
+            store.upsert_route(RouteRecord {
+                route_id: "route-output-test".to_string(),
+                resource_id: stream.stream_id.clone(),
+                node_id: "stream-rpc".to_string(),
+                instance_id: "stream-inst".to_string(),
+                state: RouteState::Running,
+                desired_generation: 1,
+                observed_generation: 1,
+                observed_sequence: 1,
+            });
+            let output = control
+                .create_stream_output(
+                    "op-output-ready",
+                    &stream.stream_id,
+                    "fmp4",
+                    "aac",
+                    "viewer-output-ready",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                output.state,
+                gmv_guard_server::api::v2::model::StreamOutputState::Ready
+            );
+            let own_outputs = control
+                .list_stream_outputs_for_subscription(&stream.stream_id, Some("viewer-output"))
+                .await
+                .unwrap();
+            assert_eq!(own_outputs.len(), 1);
+            assert_eq!(own_outputs[0].output_id, "out");
+            let all_outputs = control
+                .list_stream_outputs(&stream.stream_id)
+                .await
+                .unwrap();
+            assert_eq!(all_outputs.len(), 2);
+
+            let error = control
+                .create_stream_output(
+                    "op-output-failed",
+                    &stream.stream_id,
+                    "fmp4",
+                    "fail",
+                    "viewer-output-failed",
+                )
+                .await
+                .unwrap_err();
+            match error {
+                GuardError::UserVisible {
+                    code, user_message, ..
+                } => {
+                    assert_eq!(code, "output_format_unsupported");
+                    assert_eq!(user_message, "当前编码不支持所选播放格式，已保持原播放");
+                }
+                other => panic!("unexpected output failure: {other:?}"),
+            }
+            let second_viewer = control
+                .start_live("op-live-rpc-viewer-2", "device-1", "channel-1")
+                .await
+                .unwrap();
+            assert_eq!(second_viewer.session_node_id, stream.session_node_id);
+            assert_ne!(second_viewer.subscription_id, stream.subscription_id);
+
+            let targeted_live = control
+                .start_live_with_options(
+                    "op-live-rpc-session-b",
+                    "device-1",
+                    "channel-1",
+                    DeviceStreamOptions {
+                        session_node_id: "session-rpc-b".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(targeted_live.session_node_id, "session-rpc-b");
+            assert_ne!(targeted_live.stream_id, stream.stream_id);
+
+            let targeted_playback = control
+                .start_playback_with_options(
+                    "op-playback-rpc-session-b",
+                    "device-1",
+                    "channel-1",
+                    DeviceStreamOptions {
+                        session_node_id: "session-rpc-b".to_string(),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(targeted_playback.session_node_id, "session-rpc-b");
+            let (server_time_ms, presence) = control
+                .refresh_playback_presences(vec![PlaybackPresenceHeartbeat {
+                    playback_id: targeted_playback.playback_id.clone(),
+                    stream_id: targeted_playback.stream_id.clone(),
+                    subscription_id: targeted_playback.subscription_id.clone(),
+                    generation: targeted_playback.playback_generation,
+                }])
+                .await
+                .unwrap();
+            assert_eq!(server_time_ms, 1_000);
+            assert_eq!(presence.len(), 1);
+            assert!(presence[0].accepted);
+
+            assert_eq!(
+                control
+                    .start_playback("op-playback-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "playback-op-playback-rpc"
+            );
+            assert_eq!(
+                control
+                    .start_download("op-download-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "download-op-download-rpc"
+            );
+            assert_eq!(
+                control
+                    .start_broadcast("op-broadcast-rpc", "device-1", "channel-1")
+                    .await
+                    .unwrap()
+                    .stream_id,
+                "broadcast-op-broadcast-rpc"
+            );
+            let broadcast = control
+                .start_broadcast_operation(
+                    "op-multi-broadcast-rpc",
+                    BroadcastOperationOptions {
+                        token: "shared-broadcast-token".to_string(),
+                        default_trans_mode: "udp".to_string(),
+                        codec: "PCMA".to_string(),
+                        sample_rate: 8_000,
+                        channel_count: 1,
+                        frame_duration_ms: 20,
+                        targets: vec![
+                            BroadcastTargetOptions {
+                                device_id: "device-1".to_string(),
+                                channel_id: "channel-1".to_string(),
+                                session_node_id: "session-rpc".to_string(),
+                                trans_mode: "udp".to_string(),
+                            },
+                            BroadcastTargetOptions {
+                                device_id: "device-2".to_string(),
+                                channel_id: "channel-2".to_string(),
+                                session_node_id: "session-rpc-b".to_string(),
+                                trans_mode: "udp".to_string(),
+                            },
+                        ],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(broadcast.state, "running");
+            assert_eq!(broadcast.stream_node_id, "stream-rpc");
+            assert_eq!(broadcast.target_summaries.len(), 2);
+            assert!(
+                broadcast
+                    .target_summaries
+                    .iter()
+                    .all(|target| target.state == "running" && target.profile == "raw_g711")
+            );
+            let repeated = control
+                .start_broadcast_operation(
+                    "op-multi-broadcast-rpc",
+                    BroadcastOperationOptions {
+                        token: String::new(),
+                        default_trans_mode: "udp".to_string(),
+                        codec: "PCMA".to_string(),
+                        sample_rate: 8_000,
+                        channel_count: 1,
+                        frame_duration_ms: 20,
+                        targets: vec![],
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(repeated, broadcast);
+            let stopped_one = control
+                .stop_broadcast_target(
+                    "op-stop-one-broadcast-rpc",
+                    &broadcast.broadcast_id,
+                    &broadcast.target_summaries[0].leg_id,
+                )
+                .await
+                .unwrap();
+            assert_eq!(stopped_one.state, "partial");
+            let stopped_all = control
+                .stop_broadcast_operation("op-stop-all-broadcast-rpc", &broadcast.broadcast_id)
+                .await
+                .unwrap();
+            assert_eq!(stopped_all.state, "stopping");
+            assert!(
+                stopped_all
+                    .target_summaries
+                    .iter()
+                    .all(|target| target.state == "stopped" || target.state == "stopping")
+            );
+            assert_eq!(
+                control
+                    .stop_broadcast_operation(
+                        "op-stop-all-broadcast-rpc-repeated",
+                        &broadcast.broadcast_id,
+                    )
+                    .await
+                    .unwrap(),
+                stopped_all
+            );
+            assert_eq!(
+                control
+                    .ptz("op-ptz-rpc", "device-1", "channel-1", "left_up", 64)
+                    .await
+                    .unwrap(),
+                1
+            );
+            let ai_task = control
+                .start_ai("op-ai-rpc", &stream.stream_id, "vehicle")
+                .await
+                .unwrap();
+            assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
+            assert_eq!(
+                control
+                    .cancel_ai("op-ai-cancel-rpc", &ai_task.task_id)
+                    .await
+                    .unwrap()
+                    .state,
+                gmv_guard_server::api::v2::model::AiTaskSummaryState::Cancelled
+            );
+            let stopping = control
+                .stop_stream("op-stop-rpc", &stream.stream_id)
+                .await
+                .unwrap();
+            assert_eq!(stopping.stream_id, stream.stream_id);
+            assert_eq!(stopping.state, StreamSummaryState::Stopping);
+            assert!(store.get_stream_session_owner(&stream.stream_id).is_some());
+
+            let operations = OperationService::default();
+            let executor = MqttCommandExecutor::new(operations.clone(), store.clone())
+                .with_result_outbox(
+                    OutboxRepository::from(store.clone()),
+                    HashMap::from([("app-1".to_string(), "gmv/command-results/app-1".to_string())]),
+                );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: "app-1".to_string(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-live-1".to_string(),
+                    action: CommandAction::StreamStart,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-live-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            let result_record = store
+                .outbox_records(10)
+                .into_iter()
+                .find(|record| record.event_id == "mqtt-live-1")
+                .unwrap();
+            let result: base::serde_json::Value =
+                base::serde_json::from_slice(&result_record.payload).unwrap();
+            assert_eq!(result["action"], "stream.start");
+            assert_eq!(result["state"], "succeeded");
+            assert!(result["result"]["stream_id"].as_str().is_some());
+            assert!(result["result"]["endpoint"].as_str().is_some());
+            assert!(result["result"]["subscription_id"].as_str().is_some());
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-playback-1".to_string(),
+                    action: CommandAction::StreamPlayback,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-playback-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-download-1".to_string(),
+                    action: CommandAction::StreamDownload,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-download-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-broadcast-1".to_string(),
+                    action: CommandAction::DeviceBroadcast,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({ "channel_id": "channel-2" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-broadcast-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-ptz-1".to_string(),
+                    action: CommandAction::Ptz,
+                    target: "device-2".to_string(),
+                    payload: base::serde_json::json!({
+                        "channel_id": "channel-2",
+                        "leftRight": 1,
+                        "upDown": 1,
+                        "inOut": 0,
+                        "horizonSpeed": 64,
+                        "verticalSpeed": 64,
+                        "zoomSpeed": 0
+                    }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ptz-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-ai-1".to_string(),
+                    action: CommandAction::AiStart,
+                    target: "live-mqtt-live-1".to_string(),
+                    payload: base::serde_json::json!({ "model": "vehicle" }),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ai-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-ai-cancel-1".to_string(),
+                    action: CommandAction::AiCancel,
+                    target: "ai-mqtt-ai-1".to_string(),
+                    payload: base::serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-ai-cancel-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+            executor
+                .execute(RoutedCommand {
+                    integration_id: String::new(),
+                    expires_at_ms: i64::MAX,
+                    command_id: "mqtt-stop-1".to_string(),
+                    action: CommandAction::StreamStop,
+                    target: "live-mqtt-live-1".to_string(),
+                    payload: base::serde_json::Value::Null,
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                operations.get("mqtt-stop-1").unwrap().status,
+                OperationStatus::Succeeded
+            );
+        });
+}
+
+fn free_loopback_addr() -> SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.local_addr().unwrap()
+}
+
+fn grpc_endpoint(addr: SocketAddr) -> EndpointRecord {
+    EndpointRecord {
+        name: "grpc".to_string(),
+        scheme: "grpc".to_string(),
+        host: addr.ip().to_string(),
+        port: u32::from(addr.port()),
+        mode: EndpointModeRecord::Single,
+        labels: HashMap::new(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeSession;
+
+#[tonic::async_trait]
+impl SessionControl for FakeSession {
+    async fn list_active_streams(
+        &self,
+        request: tonic::Request<ListActiveStreamsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamsResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListActiveStreamsResponse {
+            server_time_ms: 1_001,
+            ..Default::default()
+        }))
+    }
+
+    async fn list_stream_history(
+        &self,
+        request: tonic::Request<ListStreamHistoryRequest>,
+    ) -> Result<tonic::Response<ListStreamHistoryResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListStreamHistoryResponse {
+            server_time_ms: 1_002,
+            ..Default::default()
+        }))
+    }
+
+    async fn list_active_stream_dialogs(
+        &self,
+        request: tonic::Request<ListActiveStreamDialogsRequest>,
+    ) -> Result<tonic::Response<ListActiveStreamDialogsResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(ListActiveStreamDialogsResponse {
+            server_time_ms: 1_003,
+            ..Default::default()
+        }))
+    }
+
+    async fn get_active_stream_management(
+        &self,
+        request: tonic::Request<GetActiveStreamManagementRequest>,
+    ) -> Result<tonic::Response<GetActiveStreamManagementResponse>, tonic::Status> {
+        let expected = request
+            .into_inner()
+            .expected_session
+            .expect("Guard must fence the selected Session instance");
+        assert_eq!(expected.node_id, "session-rpc");
+        assert_eq!(expected.instance_id, "session-inst");
+        Ok(tonic::Response::new(
+            GetActiveStreamManagementResponse::default(),
+        ))
+    }
+
+    async fn create_cloud_recording(
+        &self,
+        _request: tonic::Request<CreateCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn list_cloud_recordings(
+        &self,
+        _request: tonic::Request<ListCloudRecordingsRequest>,
+    ) -> Result<tonic::Response<ListCloudRecordingsResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn get_cloud_recording(
+        &self,
+        _request: tonic::Request<GetCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn stop_cloud_recording(
+        &self,
+        _request: tonic::Request<StopCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn delete_cloud_recording(
+        &self,
+        _request: tonic::Request<DeleteCloudRecordingRequest>,
+    ) -> Result<tonic::Response<CloudRecordingResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn issue_cloud_recording_access(
+        &self,
+        _request: tonic::Request<IssueCloudRecordingAccessRequest>,
+    ) -> Result<tonic::Response<IssueCloudRecordingAccessResponse>, tonic::Status> {
+        Err(tonic::Status::unimplemented("cloud recording fake"))
+    }
+
+    async fn start_live(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "live",
+        )))
+    }
+
+    async fn start_playback(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "playback",
+        )))
+    }
+
+    async fn start_download(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "download",
+        )))
+    }
+
+    async fn start_broadcast(
+        &self,
+        request: tonic::Request<StartDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(fake_device_response(
+            request.into_inner(),
+            "broadcast",
+        )))
+    }
+
+    async fn stop_device_stream(
+        &self,
+        request: tonic::Request<StopDeviceStreamRequest>,
+    ) -> Result<tonic::Response<DeviceStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(DeviceStreamResponse {
+            stream_id: request.into_inner().stream_id,
+            state: DeviceStreamState::Stopping as i32,
+            error: None,
+            endpoint: String::new(),
+            video_codec: String::new(),
+            audio_codec: String::new(),
+            mime_codec: String::new(),
+            subscription_id: String::new(),
+            session_node_id: String::new(),
+            session_instance_id: String::new(),
+            playback_id: String::new(),
+            playback_generation: 0,
+            broadcast_profile: String::new(),
+            requested_stream_profile: 0,
+            effective_stream_profile: 0,
+            stream_profile_verification: 0,
+        }))
+    }
+
+    async fn set_playback_speed(
+        &self,
+        _request: tonic::Request<SetPlaybackSpeedRequest>,
+    ) -> Result<tonic::Response<SetPlaybackSpeedResponse>, tonic::Status> {
+        Ok(tonic::Response::new(SetPlaybackSpeedResponse {
+            accepted: true,
+            error: None,
+            generation: 1,
+        }))
+    }
+
+    async fn seek_playback(
+        &self,
+        request: tonic::Request<SeekPlaybackRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(PlaybackControlResponse {
+            accepted: true,
+            error: None,
+            generation: request.expected_generation + 1,
+            acknowledged_position_sec: request.position_sec,
+            acknowledged_speed_rate: 1.0,
+            state: 1,
+        }))
+    }
+
+    async fn set_playback_state(
+        &self,
+        request: tonic::Request<SetPlaybackStateRequest>,
+    ) -> Result<tonic::Response<PlaybackControlResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(PlaybackControlResponse {
+            accepted: true,
+            error: None,
+            generation: request.expected_generation + 1,
+            acknowledged_position_sec: 0,
+            acknowledged_speed_rate: 1.0,
+            state: request.state,
+        }))
+    }
+
+    async fn refresh_playback_presence(
+        &self,
+        request: tonic::Request<RefreshPlaybackPresenceRequest>,
+    ) -> Result<tonic::Response<RefreshPlaybackPresenceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(RefreshPlaybackPresenceResponse {
+            server_time_ms: 1_000,
+            items: request
+                .items
+                .into_iter()
+                .map(
+                    |item| gmv_protocol::session::v1::PlaybackPresenceHeartbeatResult {
+                        playback_id: item.playback_id,
+                        stream_id: item.stream_id,
+                        accepted: true,
+                        terminal: false,
+                        generation: item.generation,
+                        presence_deadline_ms: Some(182_000),
+                    },
+                )
+                .collect(),
+        }))
+    }
+
+    async fn control_ptz(
+        &self,
+        _request: tonic::Request<ControlPtzRequest>,
+    ) -> Result<tonic::Response<ControlPtzResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ControlPtzResponse {
+            accepted: true,
+            error: None,
+        }))
+    }
+
+    async fn get_session_config(
+        &self,
+        _request: tonic::Request<GetSessionConfigRequest>,
+    ) -> Result<tonic::Response<GetSessionConfigResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetSessionConfigResponse {
+            domain: "3402000000".to_string(),
+            domain_id: "34020000002000000001".to_string(),
+            wan_ip: "101.33.200.169".to_string(),
+            wan_port: 25600,
+        }))
+    }
+    async fn list_gb_devices(
+        &self,
+        _request: tonic::Request<ListGbDevicesRequest>,
+    ) -> Result<tonic::Response<ListGbDevicesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbDevicesResponse {
+            devices: vec![],
+            total: 0,
+            page: 1,
+            page_size: 0,
+        }))
+    }
+
+    async fn get_gb_device(
+        &self,
+        request: tonic::Request<GetGbDeviceRequest>,
+    ) -> Result<tonic::Response<GetGbDeviceResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetGbDeviceResponse {
+            device: Some(GbDevice {
+                device_id: request.into_inner().device_id,
+                session_node_id: "session-gb-online".to_string(),
+                status: 1,
+                ..Default::default()
+            }),
+        }))
+    }
+
+    async fn create_gb_device(
+        &self,
+        request: tonic::Request<CreateGbDeviceRequest>,
+    ) -> Result<tonic::Response<CreateGbDeviceResponse>, tonic::Status> {
+        let mut device = request.into_inner().device.unwrap_or_default();
+        if device.device_id.is_empty() {
+            device.device_id = "34020000001320000001".to_string();
+        }
+        device.session_node_id = "session-gb-online".to_string();
+        Ok(tonic::Response::new(CreateGbDeviceResponse {
+            device: Some(device),
+        }))
+    }
+
+    async fn update_gb_device(
+        &self,
+        request: tonic::Request<UpdateGbDeviceRequest>,
+    ) -> Result<tonic::Response<UpdateGbDeviceResponse>, tonic::Status> {
+        let mut device = request.into_inner().device.unwrap_or_default();
+        device.session_node_id = "session-gb-online".to_string();
+        Ok(tonic::Response::new(UpdateGbDeviceResponse {
+            device: Some(device),
+        }))
+    }
+
+    async fn delete_gb_device(
+        &self,
+        _request: tonic::Request<DeleteGbDeviceRequest>,
+    ) -> Result<tonic::Response<DeleteGbDeviceResponse>, tonic::Status> {
+        Ok(tonic::Response::new(DeleteGbDeviceResponse {
+            deleted: true,
+        }))
+    }
+
+    async fn list_gb_channels(
+        &self,
+        _request: tonic::Request<ListGbChannelsRequest>,
+    ) -> Result<tonic::Response<ListGbChannelsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbChannelsResponse {
+            channels: vec![],
+        }))
+    }
+
+    async fn get_gb_channel(
+        &self,
+        _request: tonic::Request<GetGbChannelRequest>,
+    ) -> Result<tonic::Response<GetGbChannelResponse>, tonic::Status> {
+        Ok(tonic::Response::new(GetGbChannelResponse { channel: None }))
+    }
+
+    async fn update_gb_channel(
+        &self,
+        request: tonic::Request<UpdateGbChannelRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: request.into_inner().channel,
+        }))
+    }
+
+    async fn list_gb_channel_images(
+        &self,
+        request: tonic::Request<ListGbChannelImagesRequest>,
+    ) -> Result<tonic::Response<ListGbChannelImagesResponse>, tonic::Status> {
+        let request = request.into_inner();
+        assert_eq!(request.start_time_ms, 1_000);
+        assert_eq!(request.end_time_ms, 2_000);
+        Ok(tonic::Response::new(ListGbChannelImagesResponse {
+            images: vec![],
+            total: 7,
+            page: request.page,
+            page_size: request.page_size,
+        }))
+    }
+
+    async fn issue_gb_channel_image_access(
+        &self,
+        _request: tonic::Request<IssueGbChannelImageAccessRequest>,
+    ) -> Result<tonic::Response<IssueGbChannelImageAccessResponse>, tonic::Status> {
+        Ok(tonic::Response::new(IssueGbChannelImageAccessResponse {
+            url: "https://example.test/images/1/file?token=test".to_string(),
+            expires_at_ms: 2_000,
+            content_type: "image/jpeg".to_string(),
+            file_name: "snapshot.jpeg".to_string(),
+            file_size: 4,
+        }))
+    }
+
+    async fn set_gb_channel_cover(
+        &self,
+        request: tonic::Request<SetGbChannelCoverRequest>,
+    ) -> Result<tonic::Response<UpdateGbChannelResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(UpdateGbChannelResponse {
+            channel: Some(GbChannel {
+                device_id: request.device_id,
+                channel_id: request.channel_id,
+                over_pic_id: request.image_id.clone(),
+                cover_image_id: request.image_id,
+                ..Default::default()
+            }),
+        }))
+    }
+
+    async fn get_gb_channel_records(
+        &self,
+        request: tonic::Request<GetGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GetGbChannelRecordsResponse {
+            current_batch: None,
+            attempt_batch: None,
+            segments: vec![],
+            next_query_at_ms: 0,
+            server_time_ms: 1_000,
+            total: 0,
+            page: request.page,
+            page_size: request.page_size,
+        }))
+    }
+
+    async fn query_gb_channel_records(
+        &self,
+        request: tonic::Request<QueryGbChannelRecordsRequest>,
+    ) -> Result<tonic::Response<GetGbChannelRecordsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GetGbChannelRecordsResponse {
+            current_batch: None,
+            attempt_batch: Some(GbRecordQueryBatch {
+                batch_id: request
+                    .operation
+                    .map(|operation| operation.operation_id)
+                    .unwrap_or_default(),
+                status: "QUERYING".to_string(),
+                start_time_sec: request.start_time_sec,
+                end_time_sec: request.end_time_sec,
+                created_at_ms: 1_000,
+            }),
+            segments: vec![],
+            next_query_at_ms: 301_000,
+            server_time_ms: 1_000,
+            total: 0,
+            page: 1,
+            page_size: 50,
+        }))
+    }
+
+    async fn list_gb_resources(
+        &self,
+        _request: tonic::Request<ListGbResourcesRequest>,
+    ) -> Result<tonic::Response<ListGbResourcesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ListGbResourcesResponse {
+            resources: vec![],
+        }))
+    }
+
+    async fn save_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<SaveGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(GbResource {
+                device_id: request.device_id,
+                resource_id: request.resource_id,
+                classification_mode: "manual".to_string(),
+                effective_kind: request.resource_kind,
+                effective_owner_scope: request.owner_scope,
+                effective_owner_id: request.owner_id,
+                ..GbResource::default()
+            }),
+        }))
+    }
+
+    async fn reset_gb_resource_confirmation(
+        &self,
+        request: tonic::Request<ResetGbResourceConfirmationRequest>,
+    ) -> Result<tonic::Response<GbResourceResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(GbResourceResponse {
+            resource: Some(GbResource {
+                device_id: request.device_id,
+                resource_id: request.resource_id,
+                classification_mode: "default".to_string(),
+                ..GbResource::default()
+            }),
+        }))
+    }
+
+    async fn snapshot_image(
+        &self,
+        _request: tonic::Request<SnapshotImageRequest>,
+    ) -> Result<tonic::Response<SnapshotImageResponse>, tonic::Status> {
+        Ok(tonic::Response::new(SnapshotImageResponse {
+            session_id: "snapshot-session".to_string(),
+            error: None,
+        }))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FakeStream {
+    output_queries: Arc<AtomicUsize>,
+    fail_output: Arc<AtomicBool>,
+}
+
+#[tonic::async_trait]
+impl StreamControl for FakeStream {
+    async fn start_receive(
+        &self,
+        request: tonic::Request<StartReceiveRequest>,
+    ) -> Result<tonic::Response<StartReceiveResponse>, tonic::Status> {
+        let request = request.into_inner();
+        Ok(tonic::Response::new(StartReceiveResponse {
+            stream_id: request.stream_id,
+            state: StreamState::Receiving as i32,
+            receive_endpoints: request.preferred_endpoints,
+            error: None,
+        }))
+    }
+
+    async fn configure_receive_transport(
+        &self,
+        _request: tonic::Request<ConfigureReceiveTransportRequest>,
+    ) -> Result<tonic::Response<ConfigureReceiveTransportResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ConfigureReceiveTransportResponse {
+            state: MediaTransportState::Ready as i32,
+            local_endpoint: None,
+            remote_endpoint: None,
+            error: None,
+        }))
+    }
+
+    async fn stop_receive(
+        &self,
+        _request: tonic::Request<StopReceiveRequest>,
+    ) -> Result<tonic::Response<StopReceiveResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StopReceiveResponse {
+            state: StreamState::Stopped as i32,
+            error: None,
+            ..Default::default()
+        }))
+    }
+
+    async fn query_stream(
+        &self,
+        request: tonic::Request<QueryStreamRequest>,
+    ) -> Result<tonic::Response<QueryStreamResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryStreamResponse {
+            stream_id: request.into_inner().stream_id,
+            state: StreamState::Receiving as i32,
+            outputs: vec![],
+            playback_id: String::new(),
+            playback_generation: 0,
+            source_position_ms: 0,
+            media_ready: true,
+            terminal_reason: String::new(),
+            viewer_count: 0,
+            viewer_formats: vec![],
+            ..Default::default()
+        }))
+    }
+
+    async fn create_output(
+        &self,
+        request: tonic::Request<CreateOutputRequest>,
+    ) -> Result<tonic::Response<CreateOutputResponse>, tonic::Status> {
+        let request = request.into_inner();
+        self.output_queries.store(0, Ordering::Release);
+        self.fail_output
+            .store(request.audio_codec == "fail", Ordering::Release);
+        Ok(tonic::Response::new(CreateOutputResponse {
+            output_id: "out".to_string(),
+            endpoints: vec![],
+            error: None,
+            output: Some(OutputInfo {
+                output_id: "out".to_string(),
+                stream_id: request.stream_id,
+                output_type: request.output_type,
+                endpoint: "http://127.0.0.1/out.fmp4".to_string(),
+                state: OutputState::Preparing as i32,
+                subscription_id: request.subscription_id,
+                ..Default::default()
+            }),
+        }))
+    }
+
+    async fn get_playback_endpoints(
+        &self,
+        request: tonic::Request<GetPlaybackEndpointsRequest>,
+    ) -> Result<tonic::Response<GetPlaybackEndpointsResponse>, tonic::Status> {
+        let request = request.into_inner();
+        self.output_queries.fetch_add(1, Ordering::AcqRel);
+        let failed = self.fail_output.load(Ordering::Acquire);
+        Ok(tonic::Response::new(GetPlaybackEndpointsResponse {
+            endpoints: vec![],
+            outputs: vec![
+                OutputInfo {
+                    output_id: "out".to_string(),
+                    stream_id: request.stream_id.clone(),
+                    output_type: "fmp4".to_string(),
+                    endpoint: "http://127.0.0.1/out.fmp4".to_string(),
+                    state: if failed {
+                        OutputState::Failed as i32
+                    } else {
+                        OutputState::Ready as i32
+                    },
+                    subscription_id: "viewer-output".to_string(),
+                    failure: failed.then(|| ErrorDetail {
+                        code: "output_format_unsupported".to_string(),
+                        message: "pcm_alaw is not supported in MP4".to_string(),
+                        metadata: HashMap::new(),
+                    }),
+                    ..Default::default()
+                },
+                OutputInfo {
+                    output_id: "other-viewer-output".to_string(),
+                    stream_id: request.stream_id,
+                    output_type: "flv".to_string(),
+                    endpoint: "http://127.0.0.1/out.flv".to_string(),
+                    state: OutputState::Ready as i32,
+                    subscription_id: "other-viewer".to_string(),
+                    ..Default::default()
+                },
+            ],
+        }))
+    }
+
+    async fn close_output(
+        &self,
+        _request: tonic::Request<CloseOutputRequest>,
+    ) -> Result<tonic::Response<CloseOutputResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CloseOutputResponse {
+            closed: true,
+            error: None,
+            output: None,
+        }))
+    }
+
+    async fn release_subscription_outputs(
+        &self,
+        _request: tonic::Request<ReleaseSubscriptionOutputsRequest>,
+    ) -> Result<tonic::Response<ReleaseSubscriptionOutputsResponse>, tonic::Status> {
+        Ok(tonic::Response::new(ReleaseSubscriptionOutputsResponse {
+            closed_output_ids: vec![],
+            error: None,
+        }))
+    }
+
+    async fn init_media(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn init_media_ext(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn stream_online(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamBoolResponse {
+            value: true,
+            error: None,
+        }))
+    }
+
+    async fn record_info(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamJsonResponse {
+            payload_json: vec![],
+            error: None,
+        }))
+    }
+
+    async fn close_output_by_ssrc(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn broadcast_open(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamJsonResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamJsonResponse {
+            payload_json: vec![],
+            error: None,
+        }))
+    }
+
+    async fn broadcast_configure_leg(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn broadcast_close(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamUnitResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamUnitResponse { error: None }))
+    }
+
+    async fn broadcast_online(
+        &self,
+        _request: tonic::Request<StreamJsonRequest>,
+    ) -> Result<tonic::Response<StreamBoolResponse>, tonic::Status> {
+        Ok(tonic::Response::new(StreamBoolResponse {
+            value: true,
+            error: None,
+        }))
+    }
+}
+
+fn fake_device_response(request: StartDeviceStreamRequest, prefix: &str) -> DeviceStreamResponse {
+    let operation_stream_id = request
+        .operation
+        .clone()
+        .and_then(|operation| {
+            (!operation.idempotency_key.is_empty()).then_some(operation.idempotency_key)
+        })
+        .map(|id| format!("{prefix}-{id}"))
+        .unwrap_or_default();
+    let stream_id = if prefix == "broadcast" && !request.broadcast_leg_id.is_empty() {
+        request.broadcast_leg_id.clone()
+    } else {
+        operation_stream_id
+    };
+    let endpoint = if prefix == "broadcast" && !request.broadcast_id.is_empty() {
+        format!(
+            "ws://127.0.0.1:8080/broadcast/input/{}",
+            request.broadcast_id
+        )
+    } else {
+        format!("rtp://127.0.0.1:30000/{stream_id}")
+    };
+    let video_stream_profile = request.video_stream_profile;
+    DeviceStreamResponse {
+        stream_id,
+        state: DeviceStreamState::Running as i32,
+        error: None,
+        endpoint,
+        video_codec: "h264".to_string(),
+        audio_codec: String::new(),
+        mime_codec: "video/mp4; codecs=\"avc1.640028\"".to_string(),
+        subscription_id: request.token,
+        session_node_id: String::new(),
+        session_instance_id: String::new(),
+        playback_id: request.playback_id,
+        playback_generation: 0,
+        broadcast_profile: if prefix == "broadcast" {
+            "raw_g711".to_string()
+        } else {
+            String::new()
+        },
+        requested_stream_profile: video_stream_profile,
+        effective_stream_profile: video_stream_profile,
+        stream_profile_verification: 1,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeAvai;
+
+#[tonic::async_trait]
+impl AvaiControl for FakeAvai {
+    async fn create_task(
+        &self,
+        request: tonic::Request<CreateTaskRequest>,
+    ) -> Result<tonic::Response<CreateTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CreateTaskResponse {
+            task_id: request.into_inner().task_id,
+            state: AiTaskState::Running as i32,
+            error: None,
+        }))
+    }
+
+    async fn cancel_task(
+        &self,
+        _request: tonic::Request<CancelTaskRequest>,
+    ) -> Result<tonic::Response<CancelTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(CancelTaskResponse {
+            state: AiTaskState::Cancelled as i32,
+            error: None,
+        }))
+    }
+
+    async fn query_task(
+        &self,
+        request: tonic::Request<QueryTaskRequest>,
+    ) -> Result<tonic::Response<QueryTaskResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryTaskResponse {
+            task_id: request.into_inner().task_id,
+            state: AiTaskState::Running as i32,
+            result: vec![],
+            error: None,
+        }))
+    }
+
+    async fn query_capabilities(
+        &self,
+        _request: tonic::Request<QueryCapabilitiesRequest>,
+    ) -> Result<tonic::Response<QueryCapabilitiesResponse>, tonic::Status> {
+        Ok(tonic::Response::new(QueryCapabilitiesResponse {
+            capabilities: vec!["ai.vehicle".to_string()],
+            page: Some(PageResponse {
+                next_page_token: String::new(),
+            }),
+        }))
+    }
+}

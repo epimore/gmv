@@ -1,0 +1,6 @@
+packages:
+  - .
+allowBuilds:
+  esbuild: true
+overrides:
+  "mpegts.js@1.8.0>webworkify-webpack": "npm:webworkify-webpack@2.1.5"

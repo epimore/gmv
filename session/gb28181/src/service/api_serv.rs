@@ -1,0 +1,1406 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::Path;
+use std::time::Duration;
+
+use base::chrono::{Local, TimeZone};
+use base::err::BaseErrorCode;
+use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
+use base::log::{debug, error, info, warn};
+use base::tokio::sync::mpsc;
+use base::tokio::time::{Instant, sleep};
+use gmv_domain::info::format::{CMaf, Mp4};
+use gmv_domain::info::media_info::{MediaConfig, OutputAudioCodec};
+use gmv_domain::info::media_info_ext::MediaMap;
+use gmv_domain::info::obj::{BaseStreamInfo, StreamInfoQo, StreamKey, StreamRecordInfo};
+use gmv_domain::info::obj::{
+    BroadcastConfigureLegReq, BroadcastInfo, BroadcastOpenReq, BroadcastStartModel,
+    BroadcastStopModel,
+};
+use gmv_domain::info::output::{
+    DashFmp4Output, HlsPlaylistProfile, LocalMp4Output, OutputEnum, OutputKind,
+};
+
+use crate::gb::SessionConf;
+use crate::gb::sip::command as sip_command;
+use crate::gb::sip::invite::AcceptBroadcastInviteRequest;
+use crate::register::core::Register;
+use crate::service::broadcast::{
+    BroadcastAudioOptions, DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS, append_gmv_token,
+    parse_broadcast_invite,
+};
+use crate::service::{EXPIRES, KEY_STREAM_IN, broadcast_close, stream_close, stream_rpc};
+use crate::state;
+use crate::state::model::{
+    CustomMediaConfig, LiveStreamProfile, PlayBackModel, PlayLiveModel, PlaySeekModel,
+    PlaySpeedModel, PtzControlModel, StreamInfo, StreamQo, TransMode,
+};
+use crate::state::session::AccessMode;
+use crate::state::session::BroadcastSessionState;
+use crate::state::{DownloadConf, StreamNode, session};
+use crate::storage::dialog_session::{DialogSessionType, DialogState, SipDialogSessionRepository};
+use crate::utils::id_builder;
+
+const LIVE_RESTART_CLOSE_WAIT: Duration = Duration::from_secs(12);
+
+pub async fn play_live(play_live_model: PlayLiveModel, token: String) -> GlobalResult<StreamInfo> {
+    let device_id = &play_live_model.device_id;
+    if !Register::has_session(device_id) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Network.code(),
+            "设备已离线",
+            |msg| error!("{msg}"),
+        ));
+    }
+    let channel_id = play_live_model.channel_id.as_ref().unwrap_or(device_id);
+    let am = AccessMode::Live;
+    let stream_profile = play_live_model.stream_profile;
+    let output = play_live_model
+        .custom_media_config
+        .as_ref()
+        .map(|p| p.output.clone());
+    let setup_lock = state::session::Cache::stream_setup_lock_with_discriminator(
+        device_id,
+        channel_id,
+        am,
+        stream_profile.as_str(),
+    );
+    let _setup_guard = setup_lock.lock().await;
+
+    if let Some(stream_id) =
+        state::session::Cache::live_profile_stream(device_id, channel_id, stream_profile)
+        && state::session::Cache::stream_is_closing(&stream_id)
+        && !state::session::Cache::wait_stream_terminal(&stream_id, LIVE_RESTART_CLOSE_WAIT).await
+    {
+        return Err(GlobalError::new_biz_error(
+            gmv_nodec::error_code::GmvErrorCode::StreamClosing.code(),
+            "stream is closing",
+            |msg| {
+                debug!(
+                    "{msg}: action=live_start, outcome=retryable, device_id={device_id}, channel_id={channel_id}, profile={}",
+                    stream_profile.as_str()
+                )
+            },
+        ));
+    }
+
+    if let Some((stream_id, proxy_addr, profile_verified)) = enable_invite_stream(
+        device_id,
+        channel_id,
+        &am,
+        stream_profile,
+        &token,
+        play_live_model.custom_media_config.as_ref(),
+    )
+    .await?
+    {
+        let mut info = StreamInfo::build(stream_id.clone(), proxy_addr, output)?;
+        info.requested_stream_profile = Some(stream_profile);
+        info.effective_stream_profile = Some(stream_profile);
+        info.stream_profile_verified = profile_verified;
+        state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+        return Ok(with_play_token(info, &token));
+    }
+
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec, profile_verified) =
+        start_invite_stream(
+            device_id,
+            channel_id,
+            &token,
+            am,
+            0,
+            0,
+            play_live_model.trans_mode,
+            play_live_model.custom_media_config,
+            stream_profile,
+        )
+        .await?;
+    let mut info = StreamInfo::build_with_codecs(
+        stream_id.clone(),
+        proxy_addr,
+        output,
+        video_codec,
+        audio_codec,
+    )?;
+    info.requested_stream_profile = Some(stream_profile);
+    info.effective_stream_profile = Some(stream_profile);
+    info.stream_profile_verified = profile_verified;
+    state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+    Ok(with_play_token(info, &token))
+}
+
+pub async fn download_info_by_stream_id(
+    info: StreamQo,
+    stream_node: Option<&str>,
+    _token: String,
+) -> GlobalResult<StreamRecordInfo> {
+    let (stream_server, ssrc) = download_stream_route(&info.stream_id, stream_node)?;
+    let node = crate::guard_integration::ensure_stream_node(&stream_server).await?;
+    let output_enum = info.media_type.unwrap_or(OutputEnum::LocalMp4);
+    stream_rpc::record_info(&node, &StreamInfoQo { ssrc, output_enum }).await
+}
+
+pub async fn download_stop(
+    stream_id: String,
+    _stream_node: Option<&str>,
+    _token: String,
+) -> GlobalResult<bool> {
+    if id_builder::de_stream_id(&stream_id).is_ok() {
+        if session::Cache::stream_map_query_input(&stream_id).is_none()
+            && let Some(dialog) = SipDialogSessionRepository::find_by_stream_id(&stream_id).await?
+        {
+            crate::service::dialog_recovery::recover_dialog(&dialog).await?;
+        }
+        stream_close::begin_manual(stream_id).await?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn download_stream_route(
+    stream_id: &String,
+    stream_node: Option<&str>,
+) -> GlobalResult<(String, u32)> {
+    if let Some(route) = session::Cache::stream_map_query_node_ssrc(stream_id) {
+        return Ok(route);
+    }
+    let (_, _, ssrc) = id_builder::de_stream_id(stream_id)?;
+    let ssrc = ssrc.parse::<u32>().map_err(|_| invalid_stream_route())?;
+    let stream_node = stream_node
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(invalid_stream_route)?;
+    Ok((stream_node.to_string(), ssrc))
+}
+
+fn invalid_stream_route() -> GlobalError {
+    GlobalError::new_biz_error(
+        BaseErrorCode::InvalidRequest.code(),
+        "无效的媒体流ID",
+        |msg| error!("{msg}"),
+    )
+}
+
+pub async fn download(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, None, false).await
+}
+
+pub async fn download_for_task(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: Option<&str>,
+) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, task_id, false).await
+}
+
+pub async fn download_for_task_with_setup_lock(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: &str,
+) -> GlobalResult<StreamInfo> {
+    download_inner(play_back_model, token, Some(task_id), true).await
+}
+
+async fn download_inner(
+    play_back_model: PlayBackModel,
+    token: String,
+    task_id: Option<&str>,
+    setup_lock_held: bool,
+) -> GlobalResult<StreamInfo> {
+    let device_id = &play_back_model.device_id;
+    if !Register::has_session(device_id) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Network.code(),
+            "设备已离线",
+            |msg| error!("{msg}"),
+        ));
+    }
+    let channel_id = play_back_model.channel_id.as_ref().unwrap_or(device_id);
+    let am = AccessMode::Down;
+    let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
+    let _setup_guard = if setup_lock_held {
+        None
+    } else {
+        Some(setup_lock.lock().await)
+    };
+
+    if task_id.is_none()
+        && crate::guard_integration::guard_record_running(device_id, channel_id).await?
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::AlreadyExists.code(),
+            "任务已存在",
+            |msg| error!("{msg}"),
+        ));
+    }
+    let st = play_back_model.st;
+    let et = play_back_model.et;
+    validate_playback_range(st, et)?;
+
+    let storage_path = DownloadConf::get_download_conf().storage_path;
+    let date_str = Local::now().format("%Y%m%d").to_string();
+    let path = Path::new(&storage_path).join(date_str);
+    fs::create_dir_all(&path).hand_log(|msg| error!("{msg}"))?;
+    let abs_path = path
+        .canonicalize()
+        .hand_log(|msg| error!("{msg}"))?
+        .to_str()
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "文件名错误",
+                |msg| error!("{msg}"),
+            )
+        })?
+        .to_string();
+
+    let mut down_conf = play_back_model
+        .custom_media_config
+        .clone()
+        .unwrap_or_else(|| CustomMediaConfig {
+            output: OutputKind::LocalMp4(LocalMp4Output {
+                fmt: Mp4::default(),
+                path: abs_path.clone(),
+                token: Some(token.clone()),
+                file_name: task_id.map(ToString::to_string),
+                min_free_bytes: task_id
+                    .map(|_| DownloadConf::get_download_conf().min_free_bytes)
+                    .unwrap_or_default(),
+            }),
+            codec: None,
+            transcode: None,
+            filter: Default::default(),
+        });
+    match &mut down_conf.output {
+        OutputKind::LocalMp4(output) => {
+            output.path = abs_path;
+            output.token = Some(token.clone());
+            if let Some(task_id) = task_id {
+                output.file_name = Some(task_id.to_string());
+                output.min_free_bytes = DownloadConf::get_download_conf().min_free_bytes;
+            }
+        }
+        _ => {
+            return Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidRequest.code(),
+                "download output must be mp4",
+                |msg| error!("{msg}"),
+            ));
+        }
+    }
+    let output = Some(down_conf.output.clone());
+    let (stream_id, node_name, proxy_addr, video_codec, audio_codec, _) = start_invite_stream(
+        device_id,
+        channel_id,
+        &token,
+        am,
+        st.saturating_sub(2),
+        et.saturating_add(1),
+        play_back_model.trans_mode,
+        Some(down_conf),
+        LiveStreamProfile::Main,
+    )
+    .await?;
+    state::session::Cache::stream_map_insert_token(stream_id.clone(), token.clone());
+    if task_id.is_none() {
+        if let Err(err) = crate::guard_integration::guard_record_started(
+            &stream_id, device_id, channel_id, st as i64, et as i64, 1, &node_name,
+        )
+        .await
+        {
+            stream_close::begin(stream_id.clone());
+            return Err(err);
+        }
+    }
+    let info =
+        StreamInfo::build_with_codecs(stream_id, proxy_addr, output, video_codec, audio_codec)?;
+    Ok(with_play_token(info, &token))
+}
+
+pub async fn play_back(play_back_model: PlayBackModel, token: String) -> GlobalResult<StreamInfo> {
+    let device_id = &play_back_model.device_id;
+    if !Register::has_session(device_id) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Network.code(),
+            "设备已离线",
+            |msg| error!("{msg}"),
+        ));
+    }
+    let channel_id = play_back_model.channel_id.as_ref().unwrap_or(device_id);
+    let st = play_back_model.st;
+    let et = play_back_model.et;
+    validate_playback_range(st, et)?;
+    let am = AccessMode::Back;
+    let output = play_back_model
+        .custom_media_config
+        .as_ref()
+        .map(|p| p.output.clone());
+    let setup_lock = state::session::Cache::stream_setup_lock(device_id, channel_id, am);
+    let _setup_guard = setup_lock.lock().await;
+
+    let (stream_id, _node_name, proxy_addr, video_codec, audio_codec, _) = start_invite_stream(
+        device_id,
+        channel_id,
+        &token,
+        am,
+        st,
+        et,
+        play_back_model.trans_mode,
+        play_back_model.custom_media_config,
+        LiveStreamProfile::Main,
+    )
+    .await?;
+    let info = StreamInfo::build_with_codecs(
+        stream_id.clone(),
+        proxy_addr,
+        output,
+        video_codec,
+        audio_codec,
+    )?;
+    state::session::Cache::stream_map_insert_token(stream_id, token.clone());
+    Ok(with_play_token(info, &token))
+}
+
+fn with_play_token(mut info: StreamInfo, token: &str) -> StreamInfo {
+    info.url = append_gmv_token(info.url, token);
+    info
+}
+
+pub async fn seek(seek_mode: PlaySeekModel, _token: String) -> GlobalResult<bool> {
+    let device_id = playback_stream_device(&seek_mode.streamId)?;
+    sip_command::play_seek(&device_id, &seek_mode.streamId, seek_mode.seekSecond).await?;
+    Ok(true)
+}
+
+pub async fn playback_state(stream_id: &String, paused: bool) -> GlobalResult<bool> {
+    let device_id = playback_stream_device(stream_id)?;
+    sip_command::play_state(&device_id, stream_id, paused).await?;
+    Ok(true)
+}
+
+pub async fn speed(speed_mode: PlaySpeedModel, _token: String) -> GlobalResult<bool> {
+    if !matches!(speed_mode.speedRate, 0.5 | 1.0 | 2.0 | 4.0) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "unsupported playback speed",
+            |msg| error!("{msg}: speed={}", speed_mode.speedRate),
+        ));
+    }
+    let device_id = playback_stream_device(&speed_mode.streamId)?;
+    sip_command::play_speed(&device_id, &speed_mode.streamId, speed_mode.speedRate).await?;
+    Ok(true)
+}
+
+pub async fn ptz(ptz_control_model: PtzControlModel, _token: String) -> GlobalResult<bool> {
+    sip_command::control_ptz(&ptz_control_model).await?;
+    let mut model = PtzControlModel::default();
+    model.deviceId = ptz_control_model.deviceId.clone();
+    sleep(Duration::from_millis(1000)).await;
+    model.channelId = ptz_control_model.channelId.clone();
+    sip_command::control_ptz(&model).await?;
+    Ok(true)
+}
+
+pub async fn broadcast_start(
+    model: BroadcastStartModel,
+    token: String,
+) -> GlobalResult<BroadcastInfo> {
+    let device_id = &model.device_id;
+    if !Register::has_session(device_id) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Network.code(),
+            "设备已离线",
+            |msg| error!("{msg}"),
+        ));
+    }
+
+    let channel_id = model
+        .channel_id
+        .clone()
+        .unwrap_or_else(|| device_id.clone());
+    let audio = BroadcastAudioOptions::try_from_model(&model)?;
+    let setup_lock =
+        state::session::Cache::stream_setup_lock(device_id, &channel_id, AccessMode::Broadcast);
+    let _setup_guard = setup_lock.lock().await;
+
+    if state::session::Cache::broadcast_map_get_by_device_channel(device_id, &channel_id).is_some()
+    {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::AlreadyExists.code(),
+            "broadcast session already exists",
+            |msg| error!("{msg}: device_id={device_id}, channel_id={channel_id}"),
+        ));
+    }
+    let target_id =
+        crate::storage::mapper::resolve_broadcast_target_id(device_id, &channel_id).await?;
+
+    let (ssrc, generated_leg_id) =
+        id_builder::build_ssrc_stream_id(device_id, &channel_id, true).await?;
+    let broadcast_id = model
+        .broadcast_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&generated_leg_id)
+        .to_string();
+    let leg_id = model
+        .leg_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&generated_leg_id)
+        .to_string();
+    let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+    let mut broadcast_constraints = HashMap::from([
+        ("expected_ssrc".to_string(), ssrc.clone()),
+        (
+            "media_transport".to_string(),
+            trans_mode_name(audio.trans_mode).to_string(),
+        ),
+    ]);
+    if matches!(audio.trans_mode, TransMode::TcpPassive) {
+        broadcast_constraints.extend([
+            ("transport".to_string(), "tcp_passive".to_string()),
+            (
+                "requires_dedicated_media_endpoint".to_string(),
+                "true".to_string(),
+            ),
+        ]);
+    }
+    if let Some(expected_stream_node_id) = model
+        .expected_stream_node_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        broadcast_constraints.insert(
+            "expected_stream_node_id".to_string(),
+            expected_stream_node_id.to_string(),
+        );
+    }
+    let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
+        &format!("broadcast-{leg_id}"),
+        &leg_id,
+        "broadcast",
+        device_id,
+        &channel_id,
+        broadcast_constraints,
+    )
+    .await?;
+    let stream_node = allocation.node.clone();
+    let node_name = stream_node.name.clone();
+    let open_req = BroadcastOpenReq {
+        broadcast_id: broadcast_id.clone(),
+        leg_id: leg_id.clone(),
+        leg_stream_id: leg_id.clone(),
+        ssrc: u32ssrc,
+        token: token.clone(),
+        codec: audio.codec.clone(),
+        sample_rate: audio.sample_rate,
+        channel_count: audio.channel_count,
+        payload_type: audio.payload_type,
+        frame_duration_ms: audio.frame_duration_ms,
+        input_timeout_secs: DEFAULT_BROADCAST_INPUT_TIMEOUT_SECS,
+        lease_id: allocation.lease_id.clone(),
+        route_id: allocation.route_id.clone(),
+        session_hook_endpoint: Some(crate::state::SessionGrpcConf::get().endpoint()),
+    };
+    let open_resp = match stream_rpc::broadcast_open(&stream_node, &open_req).await {
+        Ok(data) => data,
+        Err(err) => {
+            crate::guard_integration::fail_stream_lease(&allocation, "broadcast_open failed").await;
+            return Err(err);
+        }
+    };
+    if open_resp.rtp_port != stream_node.pub_port {
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast endpoint mismatch")
+            .await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "broadcast endpoint does not match stream allocation",
+            |msg| {
+                error!(
+                    "{msg}: broadcast_id={broadcast_id}, allocated_port={}, returned_port={}",
+                    stream_node.pub_port, open_resp.rtp_port
+                )
+            },
+        ));
+    }
+
+    let sn = crate::gb::sip::sequence::next_sn();
+    let broadcast_invite =
+        match sip_command::broadcast_notify_and_wait(device_id, &target_id, sn).await {
+            Ok(invite) => invite,
+            Err(err) => {
+                cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+                crate::guard_integration::fail_stream_lease(&allocation, "broadcast notify failed")
+                    .await;
+                return Err(err);
+            }
+        };
+    let invite = &broadcast_invite.invite;
+    let answer = match parse_broadcast_invite(invite) {
+        Ok(answer) => answer,
+        Err(err) => {
+            sip_command::reject_broadcast_invite(&invite.call_id, 488, "Unsupported broadcast SDP");
+            cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+            crate::guard_integration::fail_stream_lease(&allocation, "broadcast sdp unsupported")
+                .await;
+            return Err(err);
+        }
+    };
+    if !audio.compatible_answer(&answer.codec, answer.sample_rate) {
+        sip_command::reject_broadcast_invite(&invite.call_id, 488, "Unsupported broadcast codec");
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast codec unsupported")
+            .await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::Unsupported.code(),
+            "device broadcast audio codec is unsupported",
+            |msg| {
+                error!(
+                    "{msg}: codec={}, sample_rate={}",
+                    answer.codec, answer.sample_rate
+                )
+            },
+        ));
+    }
+    let answer_req = BroadcastConfigureLegReq {
+        broadcast_id: broadcast_id.clone(),
+        leg_id: leg_id.clone(),
+        device_ip: answer.device_ip,
+        device_port: answer.device_port,
+        protocol: answer.protocol.get_value().to_string(),
+        payload_type: answer.payload_type,
+        transport: trans_mode_name(audio.trans_mode).to_string(),
+        packetization: answer.packetization.to_string(),
+        inner_codec: answer.inner_codec.to_string(),
+        rtp_clock_rate: answer.rtp_clock_rate,
+    };
+    if let Err(err) = stream_rpc::broadcast_configure_leg(&stream_node, &answer_req).await {
+        sip_command::reject_broadcast_invite(
+            &invite.call_id,
+            500,
+            "Prepare broadcast media failed",
+        );
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast_answer failed").await;
+        return Err(err);
+    }
+    if let Err(err) = sip_command::accept_broadcast_invite(AcceptBroadcastInviteRequest {
+        device_id: device_id.clone(),
+        registration_epoch_id: broadcast_invite.registration_epoch_id,
+        channel_id: channel_id.clone(),
+        broadcast_id: leg_id.clone(),
+        parent_broadcast_id: broadcast_id.clone(),
+        media_node_id: node_name.clone(),
+        media_ip: stream_node.pub_host.clone(),
+        media_port: open_resp.rtp_port,
+        ssrc: u32ssrc,
+        payload_type: open_resp.payload_type,
+        invite: invite.clone(),
+    })
+    .await
+    {
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "accept broadcast failed").await;
+        return Err(err);
+    }
+
+    let transport_ready = stream_rpc::broadcast_online(&stream_node, &broadcast_id, &leg_id).await;
+    if !matches!(transport_ready, Ok(true)) {
+        let _ = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(invite.call_id.clone()),
+                stream_id: Some(leg_id.clone()),
+                terminal_reason: "broadcast_transport_not_ready".to_string(),
+            },
+        )
+        .await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast transport not ready")
+            .await;
+        return match transport_ready {
+            Err(error) => Err(error),
+            Ok(false) => Err(GlobalError::new_biz_error(
+                BaseErrorCode::InvalidState.code(),
+                "broadcast_transport_not_ready",
+                |msg| error!("{msg}: broadcast_id={broadcast_id}"),
+            )),
+            Ok(true) => unreachable!(),
+        };
+    }
+
+    let broadcast_state = BroadcastSessionState {
+        parent_broadcast_id: broadcast_id.clone(),
+        broadcast_id: leg_id.clone(),
+        device_id: device_id.clone(),
+        channel_id: channel_id.clone(),
+        ssrc: u32ssrc,
+        stream_node_name: node_name,
+        call_id: invite.call_id.clone(),
+        seq: invite.dialog_snapshot.local_cseq,
+        restored: false,
+        closing_generation: None,
+        bye_inflight_seq: None,
+        close_last_error: None,
+        close_terminal_reason: None,
+        guard_lease: Some(allocation.guard_lease()),
+    };
+    if !state::session::Cache::broadcast_map_insert(broadcast_state.clone()) {
+        let _ = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(broadcast_state.call_id.clone()),
+                stream_id: Some(leg_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
+            },
+        )
+        .await;
+        cleanup_broadcast_open(&stream_node, &broadcast_id, &leg_id).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "broadcast state conflict").await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::AlreadyExists.code(),
+            "broadcast session already exists",
+            |msg| error!("{msg}: broadcast_id={broadcast_id}, leg_id={leg_id}"),
+        ));
+    }
+    crate::guard_integration::confirm_stream_lease(&allocation).await?;
+
+    Ok(BroadcastInfo {
+        broadcast_id,
+        leg_id,
+        profile: answer.packetization.to_string(),
+        input_url: append_gmv_token(open_resp.input_url, &token),
+        codec: open_resp.codec,
+        sample_rate: open_resp.sample_rate,
+        channel_count: open_resp.channel_count,
+        frame_duration_ms: open_resp.frame_duration_ms,
+    })
+}
+
+pub async fn broadcast_stop(model: BroadcastStopModel, _token: String) -> GlobalResult<bool> {
+    broadcast_stop_with_reason(model, "session_close").await
+}
+
+pub async fn broadcast_stop_with_reason(
+    model: BroadcastStopModel,
+    terminal_reason: &str,
+) -> GlobalResult<bool> {
+    let Some(broadcast) = state::session::Cache::broadcast_map_get(&model.broadcast_id) else {
+        return Ok(false);
+    };
+    let started = broadcast_close::begin_with_reason(model.broadcast_id, terminal_reason);
+
+    if let Ok(stream_node) =
+        crate::guard_integration::ensure_stream_node(&broadcast.stream_node_name).await
+    {
+        cleanup_broadcast_open(
+            &stream_node,
+            &broadcast.parent_broadcast_id,
+            &broadcast.broadcast_id,
+        )
+        .await;
+    }
+
+    Ok(started)
+}
+
+pub async fn peer_dialog_terminated(call_id: String) -> bool {
+    let persisted = persist_peer_dialog_terminated(&call_id).await;
+    if let Some(stream) = state::session::Cache::stream_terminated_by_call_id(&call_id) {
+        let media_result = stream_close::stop_media_runtime(
+            &stream.stream_id,
+            &stream.stream_node_name,
+            "peer_bye",
+        )
+        .await;
+        if media_result.is_ok() {
+            info!(
+                "stream dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
+                stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
+            );
+        } else {
+            warn!(
+                "stream dialog terminated by peer with pending media cleanup: outcome=media_cleanup_failed, device_id={}, channel_id={}, stream_id={}, ssrc={}, call_id={}",
+                stream.device_id, stream.channel_id, stream.stream_id, stream.ssrc, stream.call_id
+            );
+        }
+        release_guard_lease(stream.guard_lease);
+        return true;
+    }
+    if let Some(broadcast) = state::session::Cache::broadcast_map_remove_by_call_id(&call_id) {
+        if let Ok(stream_node) =
+            crate::guard_integration::ensure_stream_node(&broadcast.stream_node_name).await
+        {
+            cleanup_broadcast_open(
+                &stream_node,
+                &broadcast.parent_broadcast_id,
+                &broadcast.broadcast_id,
+            )
+            .await;
+        }
+        info!(
+            "broadcast dialog terminated by peer: outcome=peer_terminated, device_id={}, channel_id={}, broadcast_id={}, ssrc={}, call_id={}",
+            broadcast.device_id,
+            broadcast.channel_id,
+            broadcast.broadcast_id,
+            broadcast.ssrc,
+            broadcast.call_id
+        );
+        release_guard_lease(broadcast.guard_lease);
+        return true;
+    }
+    if persisted.transitioned {
+        let mut media_cleanup_failed = false;
+        for (stream_id, media_node_id) in &persisted.streams_to_cleanup {
+            if stream_close::stop_media_runtime(stream_id, media_node_id, "peer_bye")
+                .await
+                .is_err()
+            {
+                media_cleanup_failed = true;
+            }
+        }
+        if media_cleanup_failed {
+            warn!(
+                "durable dialog terminated by peer with pending media cleanup: outcome=media_cleanup_failed, call_id={call_id}"
+            );
+        } else {
+            info!("durable dialog terminated by peer: outcome=peer_terminated, call_id={call_id}");
+        }
+        true
+    } else if persisted.matched {
+        debug!("ignore duplicate or late peer BYE: outcome=duplicate_or_late, call_id={call_id}");
+        true
+    } else if persisted.lookup_failed {
+        false
+    } else {
+        warn!("peer BYE did not match an owned dialog: outcome=unmatched, call_id={call_id}");
+        false
+    }
+}
+
+fn release_guard_lease(lease: Option<crate::state::session::GuardLease>) {
+    if let Some(lease) = lease {
+        base::tokio::spawn(crate::guard_integration::release_stream_lease(lease));
+    }
+}
+
+#[derive(Default)]
+struct PeerDialogPersistence {
+    matched: bool,
+    transitioned: bool,
+    lookup_failed: bool,
+    streams_to_cleanup: Vec<(String, String)>,
+}
+
+async fn persist_peer_dialog_terminated(call_id: &str) -> PeerDialogPersistence {
+    let sessions = match SipDialogSessionRepository::find_by_call_id(call_id).await {
+        Ok(sessions) => sessions,
+        Err(err) => {
+            error!("lookup peer-terminated dialog failed: call_id={call_id}; err={err}");
+            return PeerDialogPersistence {
+                lookup_failed: true,
+                ..PeerDialogPersistence::default()
+            };
+        }
+    };
+    let current_node_id = SessionConf::get_session_by_conf().domain_id;
+    let mut result = PeerDialogPersistence::default();
+    for session in sessions {
+        if session.signal_node_id != current_node_id {
+            continue;
+        }
+        result.matched = true;
+        if !matches!(
+            session.state,
+            DialogState::Established | DialogState::Terminating
+        ) {
+            continue;
+        }
+        match SipDialogSessionRepository::cas_mark_terminal(
+            &session.stream_id,
+            &session.signal_node_id,
+            session.version,
+            session.state,
+            DialogState::Terminated,
+            "peer_bye",
+            None,
+            Local::now().naive_local(),
+        )
+        .await
+        {
+            Ok(true) => {
+                result.transitioned = true;
+                if session.session_type != DialogSessionType::Broadcast {
+                    result
+                        .streams_to_cleanup
+                        .push((session.stream_id.clone(), session.media_node_id.clone()));
+                }
+            }
+            Ok(false) => {
+                match SipDialogSessionRepository::find_by_stream_id(&session.stream_id).await {
+                    Ok(Some(current)) if current.state == DialogState::Terminated => {
+                        debug!(
+                            "peer BYE durable transition already completed: stream_id={}; call_id={call_id}",
+                            session.stream_id
+                        );
+                    }
+                    Ok(Some(current)) => error!(
+                        "peer BYE durable transition conflict: stream_id={}; call_id={call_id}; expected_state={}; current_state={}",
+                        session.stream_id, session.state, current.state
+                    ),
+                    Ok(None) => error!(
+                        "peer BYE durable dialog disappeared after CAS conflict: stream_id={}; call_id={call_id}",
+                        session.stream_id
+                    ),
+                    Err(err) => error!(
+                        "recheck peer BYE durable transition failed: stream_id={}; call_id={call_id}; err={err}",
+                        session.stream_id
+                    ),
+                }
+            }
+            Err(err) => error!(
+                "persist peer BYE TERMINATED failed: stream_id={}; call_id={call_id}; err={err}",
+                session.stream_id
+            ),
+        }
+    }
+    result
+}
+
+fn validate_playback_range(st: u32, et: u32) -> GlobalResult<()> {
+    if st < et {
+        Ok(())
+    } else {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "playback start time must be before end time",
+            |msg| error!("{msg}: st={st}, et={et}"),
+        ))
+    }
+}
+
+fn playback_stream_device(stream_id: &String) -> GlobalResult<String> {
+    let access_mode = state::session::Cache::stream_map_query_play_type_by_stream_id(stream_id)
+        .ok_or_else(|| {
+            GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "stream not found", |msg| {
+                error!("{msg}: stream_id={stream_id}")
+            })
+        })?;
+    if !matches!(access_mode, AccessMode::Back | AccessMode::Down) {
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            "stream is not a playback stream",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ));
+    }
+    state::session::Cache::stream_device_id(stream_id).ok_or_else(|| {
+        GlobalError::new_biz_error(BaseErrorCode::NotFound.code(), "stream not found", |msg| {
+            error!("{msg}: stream_id={stream_id}")
+        })
+    })
+}
+
+async fn start_invite_stream(
+    device_id: &String,
+    channel_id: &String,
+    token: &String,
+    am: AccessMode,
+    st: u32,
+    et: u32,
+    trans_mode: Option<TransMode>,
+    custom_media_config: Option<CustomMediaConfig>,
+    live_stream_profile: LiveStreamProfile,
+) -> GlobalResult<(String, String, String, Option<String>, Option<String>, bool)> {
+    let trans_mode = trans_mode.unwrap_or(TransMode::Udp);
+    let live = matches!(am, AccessMode::Live);
+    let (ssrc, stream_id) = id_builder::build_ssrc_stream_id(device_id, channel_id, live).await?;
+    let u32ssrc = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+    let session_hook_endpoint = crate::state::SessionGrpcConf::get().endpoint();
+    let msc = match custom_media_config {
+        None => MediaConfig {
+            ssrc: u32ssrc,
+            stream_id: stream_id.clone(),
+            in_wait_timeout: None,
+            codec: None,
+            transcode: None,
+            filter: Default::default(),
+            output: OutputKind::DashFmp4(DashFmp4Output {
+                fmt: CMaf::default(),
+            }),
+            out_idle_timeout: None,
+            session_hook_endpoint: Some(session_hook_endpoint.clone()),
+        },
+        Some(cmc) => MediaConfig {
+            ssrc: u32ssrc,
+            stream_id: stream_id.clone(),
+            in_wait_timeout: None,
+            codec: cmc.codec,
+            transcode: cmc.transcode,
+            output: cmc.output,
+            filter: cmc.filter,
+            out_idle_timeout: None,
+            session_hook_endpoint: Some(session_hook_endpoint.clone()),
+        },
+    };
+
+    let stream_type = stream_type_for_access(am);
+    let allocation = crate::guard_integration::allocate_stream_node_with_constraints(
+        &format!("{stream_type}-{stream_id}"),
+        &stream_id,
+        stream_type,
+        device_id,
+        channel_id,
+        HashMap::from([
+            ("expected_ssrc".to_string(), ssrc.clone()),
+            (
+                "media_transport".to_string(),
+                trans_mode_name(trans_mode).to_string(),
+            ),
+        ]),
+    )
+    .await?;
+    let stream_node = allocation.node.clone();
+    let node_name = stream_node.name.clone();
+    let prepare_media = stream_rpc::init_media(&stream_node, &msc, token);
+    let invite_res = match am {
+        AccessMode::Live => {
+            sip_command::play_live_invite_wait(
+                device_id,
+                channel_id,
+                &node_name,
+                &stream_node.pub_host,
+                stream_node.pub_port,
+                trans_mode,
+                &ssrc,
+                &stream_id,
+                live_stream_profile,
+                prepare_media,
+            )
+            .await
+        }
+        AccessMode::Back => {
+            sip_command::play_back_invite_wait(
+                device_id,
+                channel_id,
+                &node_name,
+                &stream_node.pub_host,
+                stream_node.pub_port,
+                trans_mode,
+                &ssrc,
+                &stream_id,
+                st,
+                et,
+                prepare_media,
+            )
+            .await
+        }
+        AccessMode::Down => {
+            sip_command::download_invite_wait(
+                device_id,
+                channel_id,
+                &node_name,
+                &stream_node.pub_host,
+                stream_node.pub_port,
+                trans_mode,
+                &ssrc,
+                &stream_id,
+                st,
+                et,
+                1,
+                prepare_media,
+            )
+            .await
+        }
+        AccessMode::Broadcast => unreachable!("broadcast does not use start_invite_stream"),
+    };
+    let (invite_accepted, media_ext) = match invite_res {
+        Ok(value) => value,
+        Err(err) => {
+            cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+            crate::guard_integration::fail_stream_lease(&allocation, "invite failed").await;
+            return Err(err);
+        }
+    };
+    let profile_verified = matches!(am, AccessMode::Live) && media_ext.stream_number.is_some();
+    let remote_endpoint = match crate::gb::sip::sdp::remote_media_endpoint(
+        &invite_accepted.remote_sdp,
+    ) {
+        Ok(endpoint) => endpoint,
+        Err(err) => {
+            if let Err(close_error) = sip_command::invite_stop_by_device(
+                device_id,
+                crate::gb::sip::InviteStopRequest {
+                    call_id: Some(invite_accepted.call_id.clone()),
+                    stream_id: Some(stream_id.clone()),
+                    terminal_reason: "media_peer_policy_failed".to_string(),
+                },
+            )
+            .await
+            {
+                error!(
+                    "close invite after media peer policy failure failed: stream_id={stream_id}, error={close_error}"
+                );
+            }
+            cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+            crate::guard_integration::fail_stream_lease(&allocation, "media peer policy failed")
+                .await;
+            return Err(err);
+        }
+    };
+    if let Err(err) = stream_rpc::configure_receive_transport(
+        &stream_node,
+        &format!("transport-{stream_id}"),
+        &stream_id,
+        &allocation.lease_id,
+        &allocation.route_id,
+        &allocation.media_endpoint,
+        protocol_media_transport(trans_mode),
+        Some(remote_endpoint),
+    )
+    .await
+    {
+        if let Err(close_error) = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(invite_accepted.call_id.clone()),
+                stream_id: Some(stream_id.clone()),
+                terminal_reason: "stream_transport_not_ready".to_string(),
+            },
+        )
+        .await
+        {
+            error!(
+                "close invite after transport failure failed: stream_id={stream_id}, error={close_error}"
+            );
+        }
+        cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "stream transport not ready")
+            .await;
+        return Err(err);
+    }
+    let map = MediaMap {
+        ssrc: u32ssrc,
+        ext: media_ext,
+    };
+    let video_codec = normalized_codec(map.ext.video_params.codec_id.as_deref());
+    let source_audio_codec = normalized_codec(map.ext.audio_params.codec_id.as_deref());
+    let audio_codec = if source_audio_codec.is_some()
+        && msc.transcode.as_ref().and_then(|config| config.audio_codec)
+            == Some(OutputAudioCodec::Aac)
+    {
+        Some("aac".to_string())
+    } else {
+        source_audio_codec
+    };
+    if let Err(err) = stream_rpc::init_media_ext(&stream_node, &map).await {
+        let _ = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(invite_accepted.call_id.clone()),
+                stream_id: Some(stream_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
+            },
+        )
+        .await;
+        cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "init_media_ext failed").await;
+        return Err(err);
+    }
+
+    let call_id = invite_accepted.call_id.clone();
+    let seq = 1;
+    if !state::session::Cache::stream_map_insert_info_with_lease(
+        stream_id.clone(),
+        device_id.clone(),
+        channel_id.clone(),
+        u32ssrc,
+        String::new(),
+        node_name.clone(),
+        call_id.clone(),
+        seq,
+        am,
+        Some(allocation.guard_lease()),
+    ) {
+        let _ = sip_command::invite_stop_by_device(
+            device_id,
+            crate::gb::sip::InviteStopRequest {
+                call_id: Some(call_id),
+                stream_id: Some(stream_id.clone()),
+                terminal_reason: "start_commit_failed".to_string(),
+            },
+        )
+        .await;
+        cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+        crate::guard_integration::fail_stream_lease(&allocation, "stream state conflict").await;
+        return Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidRequest.code(),
+            "stream dialog already exists",
+            |msg| error!("{msg}: stream_id={stream_id}"),
+        ));
+    }
+
+    if let Some(base_stream_info) = listen_stream_by_stream_id(&stream_id, EXPIRES).await {
+        state::session::Cache::stream_map_update_source(
+            &stream_id,
+            base_stream_info.rtp_info.proxy_addr.clone(),
+            node_name.clone(),
+        );
+        state::session::Cache::device_map_insert_with_profile(
+            device_id.to_string(),
+            channel_id.to_string(),
+            ssrc,
+            stream_id.clone(),
+            am,
+            live_stream_profile,
+            profile_verified,
+            msc,
+        );
+        if let Err(err) = crate::guard_integration::confirm_stream_lease(&allocation).await {
+            stream_close::begin(stream_id.clone());
+            crate::guard_integration::fail_stream_lease(&allocation, "lease confirm failed").await;
+            return Err(err);
+        }
+        return Ok((
+            stream_id,
+            node_name,
+            base_stream_info.rtp_info.proxy_addr,
+            video_codec,
+            audio_codec,
+            profile_verified,
+        ));
+    }
+
+    cleanup_stream_init(&stream_node, u32ssrc, &msc.output).await;
+    stream_close::begin(stream_id.clone());
+    let _ = state::session::Cache::stream_clear_guard_lease(&stream_id);
+    crate::guard_integration::fail_stream_lease(&allocation, "wait stream input timeout").await;
+    return Err(GlobalError::new_biz_error(
+        BaseErrorCode::Timeout.code(),
+        "未接收到监控推流",
+        |msg| error!("{msg}"),
+    ));
+}
+
+fn trans_mode_name(mode: TransMode) -> &'static str {
+    match mode {
+        TransMode::Udp => "udp",
+        TransMode::TcpActive => "tcp_active",
+        TransMode::TcpPassive => "tcp_passive",
+    }
+}
+
+fn protocol_media_transport(mode: TransMode) -> gmv_protocol::stream::v1::MediaTransport {
+    match mode {
+        TransMode::Udp => gmv_protocol::stream::v1::MediaTransport::Udp,
+        TransMode::TcpActive => gmv_protocol::stream::v1::MediaTransport::TcpActive,
+        TransMode::TcpPassive => gmv_protocol::stream::v1::MediaTransport::TcpPassive,
+    }
+}
+
+fn normalized_codec(value: Option<&str>) -> Option<String> {
+    let codec = value?.trim().to_ascii_lowercase();
+    match codec.as_str() {
+        "" => None,
+        "h.264" | "avc" | "avc1" => Some("h264".to_string()),
+        "h.265" | "hevc" | "hev1" | "hvc1" => Some("h265".to_string()),
+        _ => Some(codec),
+    }
+}
+
+fn stream_type_for_access(am: AccessMode) -> &'static str {
+    match am {
+        AccessMode::Live => "live",
+        AccessMode::Back => "playback",
+        AccessMode::Down => "download",
+        AccessMode::Broadcast => "broadcast",
+    }
+}
+
+async fn enable_invite_stream(
+    device_id: &String,
+    channel_id: &String,
+    am: &AccessMode,
+    live_stream_profile: LiveStreamProfile,
+    subscription_id: &str,
+    custom_media_config: Option<&CustomMediaConfig>,
+) -> GlobalResult<Option<(String, String, bool)>> {
+    match state::session::Cache::device_map_get_invite_info_with_profile(
+        device_id,
+        channel_id,
+        am,
+        live_stream_profile,
+    ) {
+        None => Ok(None),
+        Some((stream_id, ssrc, profile_verified)) => {
+            if state::session::Cache::stream_is_closing(&stream_id) {
+                return Err(GlobalError::new_biz_error(
+                    gmv_nodec::error_code::GmvErrorCode::StreamClosing.code(),
+                    "stream is closing",
+                    |msg| debug!("{msg}: stream_id={stream_id}"),
+                ));
+            }
+            if let Some(config) = custom_media_config
+                && state::session::Cache::live_pipeline_matches(&stream_id, config) == Some(false)
+            {
+                return Err(GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    "existing live stream uses a different shared media pipeline",
+                    |msg| error!("{msg}: stream_id={stream_id}"),
+                ));
+            }
+            let mut res = None;
+            if let Some((node_name, proxy_addr)) =
+                state::session::Cache::stream_map_query_node(&stream_id)
+            {
+                if let Ok(stream_node) =
+                    crate::guard_integration::ensure_stream_node(&node_name).await
+                {
+                    let ssrc_num = ssrc.parse::<u32>().hand_log(|msg| error!("{msg}"))?;
+                    let stream_key = StreamKey {
+                        ssrc: ssrc_num,
+                        stream_id: Some(stream_id.clone()),
+                    };
+                    if stream_rpc::stream_online(&stream_node, &stream_key).await? {
+                        if let Some(config) = custom_media_config {
+                            let output_type = live_output_type(&config.output).unwrap_or("");
+                            let audio_codec = config
+                                .transcode
+                                .as_ref()
+                                .and_then(|transcode| transcode.audio_codec)
+                                .map(|_| "aac")
+                                .unwrap_or("");
+                            if !output_type.is_empty() {
+                                stream_rpc::create_output(
+                                    &stream_node,
+                                    &format!("reuse-{stream_id}-{output_type}"),
+                                    &stream_id,
+                                    output_type,
+                                    audio_codec,
+                                    subscription_id,
+                                )
+                                .await?;
+                            } else {
+                                stream_rpc::init_media(
+                                    &stream_node,
+                                    &MediaConfig {
+                                        ssrc: ssrc_num,
+                                        stream_id: stream_id.clone(),
+                                        in_wait_timeout: None,
+                                        out_idle_timeout: None,
+                                        codec: config.codec.clone(),
+                                        transcode: config.transcode.clone(),
+                                        filter: config.filter.clone(),
+                                        output: config.output.clone(),
+                                        session_hook_endpoint: None,
+                                    },
+                                    subscription_id,
+                                )
+                                .await?;
+                            }
+                        }
+                        res = Some((stream_id.clone(), proxy_addr, profile_verified));
+                    }
+                }
+            }
+
+            if res.is_none() {
+                stream_close::begin(stream_id);
+            }
+            Ok(res)
+        }
+    }
+}
+
+fn live_output_type(output: &OutputKind) -> Option<&'static str> {
+    match output {
+        OutputKind::HttpFlv(_) => Some("flv"),
+        OutputKind::DashFmp4(_) => Some("fmp4"),
+        OutputKind::HlsFmp4(output) => Some(match output.playlist_profile {
+            HlsPlaylistProfile::Standard => "hls",
+            HlsPlaylistProfile::LowLatency => "ll_hls",
+        }),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod live_output_type_tests {
+    use super::*;
+    use gmv_domain::info::output::HlsFmp4Output;
+
+    #[test]
+    fn reused_live_stream_keeps_low_latency_hls_profile() {
+        let output = OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: Default::default(),
+            playlist_profile: HlsPlaylistProfile::LowLatency,
+        });
+
+        assert_eq!(live_output_type(&output), Some("ll_hls"));
+    }
+}
+
+#[cfg(test)]
+mod download_stream_route_tests {
+    use super::download_stream_route;
+    use crate::utils::id_builder;
+
+    #[test]
+    fn falls_back_to_persisted_stream_node_and_decoded_ssrc() {
+        let stream_id =
+            id_builder::en_stream_id("34020000001110000009", "34020000001320000102", "0123456789")
+                .expect("build stream id");
+
+        assert_eq!(
+            download_stream_route(&stream_id, Some("stream-node-1")).expect("resolve route"),
+            ("stream-node-1".to_string(), 123_456_789),
+        );
+    }
+}
+
+async fn listen_stream_by_stream_id(stream_id: &String, secs: u64) -> Option<BaseStreamInfo> {
+    let (tx, mut rx) = mpsc::channel(8);
+    let when = Instant::now() + Duration::from_secs(secs);
+    let key = format!("{}{stream_id}", KEY_STREAM_IN);
+    state::session::Cache::insert_stream_wait(key.clone(), when, tx);
+    let res = match rx.recv().await {
+        Some(Some(info)) => Some(info),
+        _ => None,
+    };
+    state::session::Cache::remove_state(&key);
+    res
+}
+
+async fn cleanup_broadcast_open(node: &StreamNode, broadcast_id: &str, leg_id: &str) {
+    let _ = stream_rpc::broadcast_close(node, broadcast_id, leg_id)
+        .await
+        .hand_log(|msg| error!("{msg}"));
+}
+
+fn output_kind_to_enum(output: &OutputKind) -> OutputEnum {
+    match output {
+        OutputKind::Rtmp(_) => OutputEnum::Rtmp,
+        OutputKind::DashFmp4(_) => OutputEnum::DashFmp4,
+        OutputKind::DashMp4(_) => OutputEnum::DashMp4,
+        OutputKind::HlsFmp4(_) => OutputEnum::HlsFmp4,
+        OutputKind::HlsTs(_) => OutputEnum::HlsTs,
+        OutputKind::Rtsp(_) => OutputEnum::Rtsp,
+        OutputKind::Gb28181Frame(_) => OutputEnum::Gb28181Frame,
+        OutputKind::Gb28181Ps(_) => OutputEnum::Gb28181Ps,
+        OutputKind::WebRtc(_) => OutputEnum::WebRtc,
+        OutputKind::LocalMp4(_) => OutputEnum::LocalMp4,
+        OutputKind::LocalTs(_) => OutputEnum::LocalTs,
+        OutputKind::HttpFlv(_) => OutputEnum::HttpFlv,
+    }
+}
+
+async fn cleanup_stream_init(node: &StreamNode, ssrc: u32, output: &OutputKind) {
+    let _ = stream_rpc::close_output(
+        node,
+        &StreamInfoQo {
+            ssrc,
+            output_enum: output_kind_to_enum(output),
+        },
+    )
+    .await;
+}

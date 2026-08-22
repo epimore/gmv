@@ -1,33 +1,43 @@
-use crate::io::talk::TalkManager;
 use crate::media;
-use crate::state::register::Register;
+use crate::state::register::{RefreshRtp, Register};
 use base::bytes::{Bytes, BytesMut};
 use base::err::BaseErrorCode;
 use base::exception::{GlobalError, GlobalResult, GlobalResultExt};
-use base::log::{debug, error, warn};
+use base::log::{debug, error, info, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::net;
-use base::net::rw::{PacketDispatcher, PacketSplitter, PacketWriter, U16BeLengthPrefixEncoder};
-use base::net::state::{CHANNEL_BUFFER_SIZE, IoEventType, Protocol, Zip};
-use base::tokio::sync::mpsc::Receiver;
+use base::net::rw::{
+    ManagedPacketIo, ManagedTcpConnectOptions, ManagedTcpConnection, PacketDispatcher,
+    PacketSplitter, U16BeLengthPrefixEncoder,
+};
+use base::net::state::Protocol;
 use base::tokio_util::sync::CancellationToken;
+use base::utils::rt::GlobalRuntime;
 use crossbeam_channel::TrySendError;
+use parking_lot::Mutex;
 use rtp_types::RtpPacket;
 use socket2::Socket;
-use std::net::{SocketAddr, TcpListener, UdpSocket};
-use std::str::FromStr;
+use std::net::{IpAddr, SocketAddr, TcpListener, UdpSocket};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 const RECV_BUF_SIZE: usize = 8 * 1024 * 1024;
-pub fn listen_media_server(port: u16) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
-    let socket_addr =
-        SocketAddr::from_str(&format!("0.0.0.0:{}", port)).hand_log(|msg| error!("{msg}"))?;
+const PARSE_RECOVERY_PACKET_COUNT: usize = 64;
+pub fn listen_media_server(
+    bind_ip: IpAddr,
+    port: u16,
+) -> GlobalResult<(Option<TcpListener>, Option<UdpSocket>)> {
+    let socket_addr = SocketAddr::new(bind_ip, port);
     net::listen(Protocol::ALL, socket_addr)
 }
 
-pub fn run(
+pub fn start_managed(
+    runtime: &GlobalRuntime,
+    task_name: impl Into<String>,
     mut tu: (Option<TcpListener>, Option<UdpSocket>),
     cancel: CancellationToken,
-) -> GlobalResult<()> {
-    let rtp_port = listener_port(&tu)?;
+    dispatch: Arc<EndpointDispatchContext>,
+) -> GlobalResult<ManagedPacketIo<U16BeLengthPrefixEncoder>> {
     if let Some(socket) = tu.1.take() {
         let socket2 = Socket::from(socket);
 
@@ -46,80 +56,120 @@ pub fn run(
 
         tu.1 = Some(UdpSocket::from(socket2));
     }
-    let (output_tx, output_rx) = base::tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
-    let writer: PacketWriter<U16BeLengthPrefixEncoder> =
-        net::rw::direct_rw::<RtpReader, RtpReader, U16BeLengthPrefixEncoder>(
-            tu,
-            cancel.clone(),
-            Arc::new(RtpReader),
-            Arc::new(U16BeLengthPrefixEncoder),
-        )?;
-    base::tokio::spawn(write_net(output_rx, writer.clone(), cancel));
-    TalkManager::init_rtp_writer(writer, output_tx, rtp_port)
+    net::rw::managed_direct_rw::<RtpReader, RtpPacketSplitter, U16BeLengthPrefixEncoder>(
+        runtime,
+        task_name,
+        tu,
+        cancel,
+        Arc::new(RtpReader::new(dispatch)),
+        Arc::new(U16BeLengthPrefixEncoder),
+    )
 }
 
-async fn write_net(
-    mut output_rx: Receiver<Zip>,
-    writer: PacketWriter<U16BeLengthPrefixEncoder>,
-    cancel: CancellationToken,
-) {
-    loop {
-        base::tokio::select! {
-            item = output_rx.recv() => {
-                let Some(zip) = item else {
-                    break;
-                };
-                match zip {
-                    Zip::Data(package) => {
-                        let association = package.association;
-                        if let Err(err) = writer
-                            .write_to(package.data, association.remote_addr, association.protocol)
-                            .await
-                        {
-                            error!("rtp socket write failed: association={association:?}, err={err}");
-                        }
-                    }
-                    Zip::Event(event) => {
-                        if matches!(event.type_code, IoEventType::Close) {
-                            if matches!(event.association.protocol, Protocol::ALL) {
-                                break;
-                            }
-                            if matches!(event.association.protocol, Protocol::TCP) {
-                                writer.remove_tcp_writer(&event.association.remote_addr);
-                            }
-                        }
-                    }
-                }
+pub async fn connect_managed(
+    runtime: &GlobalRuntime,
+    io: &ManagedPacketIo<U16BeLengthPrefixEncoder>,
+    task_name: impl Into<String>,
+    options: ManagedTcpConnectOptions,
+    dispatch: Arc<EndpointDispatchContext>,
+) -> GlobalResult<ManagedTcpConnection<U16BeLengthPrefixEncoder>> {
+    io.connect_tcp::<RtpReader, RtpPacketSplitter>(
+        runtime,
+        task_name,
+        options,
+        Arc::new(RtpReader::new(dispatch)),
+    )
+    .await
+}
+
+pub struct EndpointDispatchContext {
+    pub endpoint_id: String,
+    pub generation: u64,
+    pub stream_id: Option<String>,
+    pub expected_ssrc: Option<u32>,
+    exclusive_peer: bool,
+    active: AtomicBool,
+    observed: AtomicBool,
+    tcp_peer: Mutex<Option<SocketAddr>>,
+    udp_peer: Mutex<Option<SocketAddr>>,
+}
+
+impl EndpointDispatchContext {
+    pub fn new(
+        endpoint_id: String,
+        generation: u64,
+        stream_id: Option<String>,
+        expected_ssrc: Option<u32>,
+        exclusive_peer: bool,
+    ) -> Self {
+        Self {
+            endpoint_id,
+            generation,
+            stream_id,
+            expected_ssrc,
+            exclusive_peer,
+            active: AtomicBool::new(true),
+            observed: AtomicBool::new(false),
+            tcp_peer: Mutex::new(None),
+            udp_peer: Mutex::new(None),
+        }
+    }
+
+    pub fn deactivate(&self) {
+        self.active.store(false, Ordering::Release);
+    }
+
+    pub fn is_observed(&self) -> bool {
+        self.observed.load(Ordering::Acquire)
+    }
+
+    fn accepts_peer(&self, remote_addr: SocketAddr, protocol: Protocol) -> bool {
+        if !self.exclusive_peer {
+            return true;
+        }
+        let peer = match protocol {
+            Protocol::TCP => &self.tcp_peer,
+            Protocol::UDP => &self.udp_peer,
+            Protocol::ALL => return false,
+        };
+        let mut peer = peer.lock();
+        match *peer {
+            Some(current) => current == remote_addr,
+            None => {
+                *peer = Some(remote_addr);
+                true
             }
-            _ = cancel.cancelled() => break,
+        }
+    }
+
+    fn close_peer(&self, remote_addr: SocketAddr, protocol: Protocol) {
+        if protocol != Protocol::TCP || !self.exclusive_peer {
+            return;
+        }
+        let mut peer = self.tcp_peer.lock();
+        if peer.is_some_and(|current| current == remote_addr) {
+            *peer = None;
         }
     }
 }
 
-fn listener_port(tu: &(Option<TcpListener>, Option<UdpSocket>)) -> GlobalResult<u16> {
-    if let Some(udp) = &tu.1 {
-        return udp
-            .local_addr()
-            .map(|addr| addr.port())
-            .hand_log(|msg| error!("{msg}"));
-    }
-    if let Some(tcp) = &tu.0 {
-        return tcp
-            .local_addr()
-            .map(|addr| addr.port())
-            .hand_log(|msg| error!("{msg}"));
-    }
-    Err(GlobalError::new_biz_error(
-        BaseErrorCode::InvalidState.code(),
-        "rtp listener is empty",
-        |msg| error!("{msg}"),
-    ))
+struct RtpReader {
+    dispatch: Arc<EndpointDispatchContext>,
+    parse_failure_active: AtomicBool,
+    parse_success_streak: AtomicUsize,
+    parse_failure_episode: Mutex<FailureEpisode>,
 }
 
-#[derive(Default)]
-struct RtpReader;
-
 impl RtpReader {
+    fn new(dispatch: Arc<EndpointDispatchContext>) -> Self {
+        Self {
+            dispatch,
+            parse_failure_active: AtomicBool::new(false),
+            parse_success_streak: AtomicUsize::new(0),
+            parse_failure_episode: Mutex::new(FailureEpisode::default()),
+        }
+    }
+
     fn forward_packet(
         &self,
         pkt: RtpPacket<'_>,
@@ -128,11 +178,65 @@ impl RtpReader {
         protocol: Protocol,
     ) -> GlobalResult<()> {
         let ssrc = pkt.ssrc();
-        let Some(rtp_tx) = Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol))
-        else {
-            Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
-            debug!("drop rtp packet for closed channel; ssrc: {ssrc}");
+        if !self.dispatch.active.load(Ordering::Acquire) {
             return Ok(());
+        }
+        if self
+            .dispatch
+            .expected_ssrc
+            .is_some_and(|expected| expected != ssrc)
+        {
+            base::log::trace!(
+                "drop rtp packet for endpoint SSRC mismatch: endpoint_id={}, generation={}, expected_ssrc={:?}, actual_ssrc={ssrc}",
+                self.dispatch.endpoint_id,
+                self.dispatch.generation,
+                self.dispatch.expected_ssrc
+            );
+            return Ok(());
+        }
+        if let Some(stream_id) = self.dispatch.stream_id.as_deref()
+            && Register::stream_id_by_ssrc(ssrc).is_some_and(|actual| actual.as_ref() != stream_id)
+        {
+            base::log::trace!(
+                "drop rtp packet for endpoint stream mismatch: endpoint_id={}, generation={}, stream_id={stream_id}, ssrc={ssrc}",
+                self.dispatch.endpoint_id,
+                self.dispatch.generation
+            );
+            return Ok(());
+        }
+        if let Some(stream_id) = self.dispatch.stream_id.as_deref()
+            && !Register::media_endpoint_matches(
+                stream_id,
+                &self.dispatch.endpoint_id,
+                self.dispatch.generation,
+                ssrc,
+            )
+        {
+            base::log::trace!(
+                "drop rtp packet for stale endpoint generation: endpoint_id={}, generation={}, stream_id={stream_id}, ssrc={ssrc}",
+                self.dispatch.endpoint_id,
+                self.dispatch.generation
+            );
+            return Ok(());
+        }
+        if !self.dispatch.accepts_peer(remote_addr, protocol) {
+            base::log::trace!(
+                "drop rtp packet from unexpected association: endpoint_id={}, generation={}, protocol={protocol}, remote_addr={remote_addr}",
+                self.dispatch.endpoint_id,
+                self.dispatch.generation
+            );
+            return Ok(());
+        }
+        self.dispatch.observed.store(true, Ordering::Release);
+        let rtp_tx = match Register::refresh_rtp(ssrc, pkt.payload_type(), (remote_addr, protocol))
+        {
+            RefreshRtp::Ready(sender) => sender,
+            RefreshRtp::UnknownSsrc => {
+                Register::observe_unknown_rtp(ssrc, remote_addr, protocol);
+                base::log::trace!("drop rtp packet for unknown ssrc; ssrc: {ssrc}");
+                return Ok(());
+            }
+            RefreshRtp::Failed(error) => return Err(error),
         };
 
         let packet = media::rtp::RtpPacket {
@@ -146,10 +250,10 @@ impl RtpReader {
         match rtp_tx.try_send(packet) {
             Ok(_) => {}
             Err(TrySendError::Full(_)) => {
-                warn!("rtp input channel full; drop ssrc={ssrc}");
+                base::log::trace!("rtp input channel full; drop ssrc={ssrc}");
             }
             Err(TrySendError::Disconnected(_)) => {
-                debug!("drop rtp packet for disconnected channel; ssrc: {ssrc}");
+                base::log::trace!("drop rtp packet for disconnected channel; ssrc: {ssrc}");
             }
         }
 
@@ -166,16 +270,78 @@ impl PacketDispatcher for RtpReader {
     ) -> GlobalResult<()> {
         match RtpPacket::parse(data.as_ref()) {
             Ok(pkt) => {
+                self.record_parse_success();
                 let payload_start = pkt.payload_offset();
                 let payload_end = payload_start + pkt.payload_len();
                 let payload = data.slice(payload_start..payload_end);
                 self.forward_packet(pkt, payload, remote_addr, protocol)?;
             }
             Err(error) => {
-                warn!("parse rtp pkt error: {error}");
+                base::log::trace!("parse rtp packet failed: error={error}");
+                self.record_parse_failure();
             }
         }
         Ok(())
+    }
+
+    fn close(&self, remote_addr: SocketAddr, protocol: Protocol) -> GlobalResult<()> {
+        self.dispatch.close_peer(remote_addr, protocol);
+        Ok(())
+    }
+}
+
+impl RtpReader {
+    fn record_parse_failure(&self) {
+        let mut episode = self.parse_failure_episode.lock();
+        self.parse_success_streak.store(0, Ordering::Release);
+        self.parse_failure_active.store(true, Ordering::Release);
+        match episode.record_failure(Instant::now()) {
+            EpisodeDecision::Started => warn!(
+                "rtp input parse state changed: state=failed, previous_state=ready, reason=invalid_packet"
+            ),
+            EpisodeDecision::Summary {
+                total,
+                since_last_summary,
+                suppressed,
+                duration,
+            } => warn!(
+                "rtp input parse remains failed: state=failed, outcome=ongoing, reason=invalid_packet, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                duration.as_millis()
+            ),
+            EpisodeDecision::Suppressed => {}
+            EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+        }
+    }
+
+    fn record_parse_success(&self) {
+        if !self.parse_failure_active.load(Ordering::Acquire) {
+            return;
+        }
+        let success_streak = self
+            .parse_success_streak
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        if success_streak < PARSE_RECOVERY_PACKET_COUNT {
+            return;
+        }
+        let mut episode = self.parse_failure_episode.lock();
+        if self.parse_success_streak.load(Ordering::Acquire) < PARSE_RECOVERY_PACKET_COUNT {
+            return;
+        }
+        if let EpisodeDecision::Recovered {
+            total,
+            suppressed,
+            duration,
+        } = episode.record_success(Instant::now())
+        {
+            info!(
+                "rtp input parse state changed: state=ready, previous_state=failed, outcome=recovered, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                duration.as_millis()
+            );
+        }
+        self.parse_failure_active
+            .store(episode.is_active(), Ordering::Release);
+        self.parse_success_streak.store(0, Ordering::Release);
     }
 }
 
@@ -216,11 +382,54 @@ where
     Ok(())
 }
 
-impl PacketSplitter for RtpReader {
+#[derive(Default)]
+struct RtpPacketSplitter;
+
+impl PacketSplitter for RtpPacketSplitter {
     fn feed_owned<F>(&mut self, buffer: &mut BytesMut, f: F) -> GlobalResult<()>
     where
         F: FnMut(Bytes) -> GlobalResult<()>,
     {
         feed_tcp_packets(buffer, f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EndpointDispatchContext;
+    use base::net::state::Protocol;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn dedicated_endpoint_pins_one_peer_per_transport() {
+        let dispatch = EndpointDispatchContext::new(
+            "endpoint-1".to_string(),
+            1,
+            Some("stream-1".to_string()),
+            Some(1001),
+            true,
+        );
+        let first: SocketAddr = "127.0.0.1:30001".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:30002".parse().unwrap();
+
+        assert!(dispatch.accepts_peer(first, Protocol::TCP));
+        assert!(dispatch.accepts_peer(first, Protocol::TCP));
+        assert!(!dispatch.accepts_peer(second, Protocol::TCP));
+        assert!(dispatch.accepts_peer(first, Protocol::UDP));
+        assert!(!dispatch.accepts_peer(second, Protocol::UDP));
+        dispatch.close_peer(first, Protocol::TCP);
+        assert!(dispatch.accepts_peer(second, Protocol::TCP));
+    }
+
+    #[test]
+    fn shared_endpoint_accepts_multiple_tcp_associations() {
+        let dispatch = EndpointDispatchContext::new("single".to_string(), 1, None, None, false);
+        let first: SocketAddr = "127.0.0.1:30001".parse().unwrap();
+        let second: SocketAddr = "127.0.0.1:30002".parse().unwrap();
+
+        assert!(dispatch.accepts_peer(first, Protocol::TCP));
+        assert!(dispatch.accepts_peer(second, Protocol::TCP));
+        assert!(dispatch.accepts_peer(first, Protocol::UDP));
+        assert!(dispatch.accepts_peer(second, Protocol::UDP));
     }
 }

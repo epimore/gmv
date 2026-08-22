@@ -4,17 +4,18 @@ use crate::io::http::out::{DisconnectAwareStream, OutPlayKind, stream_user_token
 use crate::io::http::{res_401, res_404};
 use crate::media::context::event::ContextEvent;
 use crate::media::context::event::inner::InnerEvent;
-use crate::media::context::format::MuxPacket;
+use crate::media::context::format::MuxPacketReceiver;
 use crate::media::context::format::muxer::MuxerEnum;
 use crate::state::register::{DEFAULT_OFFSET_SECOND, Register};
 use axum::body::Body;
 use axum::response::Response;
 use base::bytes::{Bytes, BytesMut};
 use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::log::{debug, warn};
+use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::tokio::sync::{broadcast, oneshot};
 use futures_util::stream;
-use shared::info::output::OutputEnum;
+use gmv_domain::info::output::OutputEnum;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,22 +34,24 @@ pub async fn chunk(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> Re
             )
             .await
             {
-                OutPlayKind::Play => match Register::get_muxer_rx(&ssrc, MuxerEnum::FMp4) {
-                    Ok(rx) => {
-                        let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
-                            Some(Box::new(move || {
-                                Register::listen_output_timeout(
-                                    stream_id,
-                                    OutputEnum::DashFmp4,
-                                    token,
-                                    addr,
-                                    0,
-                                );
-                            }));
-                        send_fmp4(ssrc, rx, on_disconnect).await
+                OutPlayKind::Play => {
+                    match Register::get_playable_muxer_rx(&stream_id, MuxerEnum::FMp4) {
+                        Ok(Some(rx)) => {
+                            let on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>> =
+                                Some(Box::new(move || {
+                                    Register::listen_output_timeout(
+                                        stream_id,
+                                        OutputEnum::DashFmp4,
+                                        token,
+                                        addr,
+                                        0,
+                                    );
+                                }));
+                            send_fmp4(ssrc, rx, on_disconnect).await
+                        }
+                        Ok(None) | Err(_) => res_404(),
                     }
-                    Err(_) => res_404(),
-                },
+                }
                 OutPlayKind::Forbid => res_401(),
                 OutPlayKind::Notfound => res_404(),
             }
@@ -105,7 +108,7 @@ pub async fn init_segment(
                 ) {
                     Ok(_) => {
                         Register::listen_output_timeout(
-                            stream_id,
+                            stream_id.clone(),
                             OutputEnum::DashMp4,
                             token,
                             addr,
@@ -142,21 +145,21 @@ pub async fn segment(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
                 ) {
                     Ok(_) => {
                         Register::listen_output_timeout(
-                            stream_id,
+                            stream_id.clone(),
                             OutputEnum::DashMp4,
                             token,
                             addr,
                             DEFAULT_OFFSET_SECOND,
                         );
-                        match Register::get_muxer_rx(&ssrc, MuxerEnum::DashMp4) {
-                            Ok(mut rx) => match rx.recv().await {
+                        match Register::get_playable_muxer_rx(&stream_id, MuxerEnum::DashMp4) {
+                            Ok(Some(mut rx)) => match rx.recv().await {
                                 Ok(pkt) => Response::builder()
                                     .header("Content-Type", "video/mp4")
                                     .body(Body::from(pkt.data.clone()))
                                     .unwrap(),
                                 Err(_) => res_404(),
                             },
-                            Err(_) => res_404(),
+                            Ok(None) | Err(_) => res_404(),
                         }
                     }
                     Err(_) => res_404(),
@@ -171,7 +174,9 @@ pub async fn segment(stream_id: Arc<str>, token: Arc<str>, addr: SocketAddr) -> 
 async fn get_video_param(ssrc: u32) -> GlobalResult<MediaParam> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::MediaParam(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("media params unavailable: ssrc={ssrc}, reason={msg}"))?)
 }
 
 fn generate_mpd(stream_id: Arc<str>, mp: MediaParam) -> String {
@@ -234,7 +239,7 @@ fn generate_mpd(stream_id: Arc<str>, mp: MediaParam) -> String {
 
 async fn send_fmp4(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     on_disconnect: Option<Box<dyn FnOnce() + Send + Sync>>,
 ) -> Response<Body> {
     let wrapped = DisconnectAwareStream {
@@ -257,7 +262,7 @@ enum Fmp4StreamState {
 
 struct Fmp4StreamContext {
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
     state: Fmp4StreamState,
     started: bool,
     current_epoch: Instant,
@@ -265,7 +270,7 @@ struct Fmp4StreamContext {
 
 fn fmp4_stream(
     ssrc: u32,
-    rx: broadcast::Receiver<Arc<MuxPacket>>,
+    rx: MuxPacketReceiver,
 ) -> impl futures_core::Stream<Item = Result<Bytes, std::convert::Infallible>> {
     stream::unfold(
         Fmp4StreamContext {
@@ -291,12 +296,58 @@ fn fmp4_stream(
 async fn fmp4_next_chunk(
     mut ctx: Fmp4StreamContext,
 ) -> Option<(Result<Bytes, std::convert::Infallible>, Fmp4StreamContext)> {
+    let mut waiting_keyframe = false;
+    let mut lag_episode = FailureEpisode::default();
+    let mut lost_packets = 0u64;
     loop {
         let pkt = match ctx.rx.recv().await {
             Ok(pkt) => pkt,
-            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                lost_packets = lost_packets.saturating_add(skipped);
+                base::log::trace!(
+                    "http fmp4 output lagged: stage=output, outcome=wait_keyframe, ssrc={}, lost_packets={skipped}",
+                    ctx.ssrc
+                );
+                match lag_episode.record_failure(Instant::now()) {
+                    EpisodeDecision::Started => warn!(
+                        "http fmp4 output state changed: state=lagged, previous_state=ready, outcome=wait_keyframe, ssrc={}, lost_packets={lost_packets}",
+                        ctx.ssrc
+                    ),
+                    EpisodeDecision::Summary {
+                        total,
+                        since_last_summary,
+                        suppressed,
+                        duration,
+                    } => warn!(
+                        "http fmp4 output remains lagged: state=lagged, outcome=ongoing, ssrc={}, lost_packets={lost_packets}, total={total}, since_last_summary={since_last_summary}, suppressed={suppressed}, duration_ms={}",
+                        ctx.ssrc,
+                        duration.as_millis()
+                    ),
+                    EpisodeDecision::Suppressed => {}
+                    EpisodeDecision::Recovered { .. } | EpisodeDecision::Healthy => unreachable!(),
+                }
+                waiting_keyframe = true;
+                continue;
+            }
             Err(broadcast::error::RecvError::Closed) => return None,
         };
+
+        if waiting_keyframe && !pkt.is_key {
+            continue;
+        }
+        if waiting_keyframe
+            && let EpisodeDecision::Recovered {
+                total,
+                suppressed,
+                duration,
+            } = lag_episode.record_success(Instant::now())
+        {
+            base::log::info!(
+                "http fmp4 output state changed: state=ready, previous_state=lagged, outcome=recovered, ssrc={}, lost_packets={lost_packets}, total_failures={total}, suppressed={suppressed}, duration_ms={}",
+                ctx.ssrc,
+                duration.as_millis()
+            );
+        }
 
         if pkt.epoch != ctx.current_epoch {
             ctx.current_epoch = pkt.epoch;
@@ -329,11 +380,15 @@ async fn fmp4_next_chunk(
 async fn get_fmp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::Fmp4Header(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("fmp4 init unavailable: ssrc={ssrc}, reason={msg}"))?)
 }
 
 async fn get_dash_mp4_init(ssrc: u32) -> GlobalResult<Bytes> {
     let (tx, rx) = oneshot::channel();
     Register::try_publish_mpsc(ssrc, ContextEvent::Inner(InnerEvent::DashMp4Header(tx)))?;
-    Ok(rx.await.hand_log(|msg| error!("{msg}"))?)
+    Ok(rx
+        .await
+        .hand_log(|msg| debug!("dash mp4 init unavailable: ssrc={ssrc}, reason={msg}"))?)
 }

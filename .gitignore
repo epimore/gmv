@@ -1,2 +1,17 @@
 **/target
 *.log
+**/node_modules
+**/dist
+**/test-results
+**/playwright-report
+**/*.db
+**/*.db-*
+
+/docs/
+/tmp/
+/third_party/
+/logs/
+/.*
+!/.gitignore
+
+/AGENTS.md

@@ -1,14 +1,15 @@
-use crate::media::context::MediaContext;
 use crate::media::context::format::MuxPacket;
 use crate::media::context::format::demuxer::DemuxerContext;
+use crate::media::context::{MediaCompletion, MediaContext, MediaRunError};
 use crate::state::msg::StreamConfig;
-use crate::state::register::Register;
+use crate::state::register::{OutputRuntimeState, Register};
 use base::bytes::Bytes;
-use base::exception::{GlobalResult, GlobalResultExt};
-use base::log::error;
+use base::exception::GlobalResult;
+use base::log::{debug, error};
 use base::tokio;
 use base::tokio::sync::broadcast;
 use base::tokio::sync::mpsc::Receiver;
+use base::utils::rt::GlobalRuntime;
 use log::LevelFilter;
 use rsmpeg::ffi::{
     AV_LOG_DEBUG, AV_LOG_ERROR, AV_LOG_FATAL, AV_LOG_INFO, AV_LOG_QUIET, AV_LOG_WARNING, AVPacket,
@@ -22,8 +23,8 @@ pub mod rtp;
 mod rw;
 
 pub const DEFAULT_IO_BUF_SIZE: usize = 1024 * 1024;
-//todo! 转发媒体流，不进入MediaContext
-pub async fn handle_process(mut rx: Receiver<u32>) {
+// 转发媒体流，不进入MediaContext
+pub async fn handle_process(mut rx: Receiver<u32>, runtime: GlobalRuntime) {
     unsafe {
         let ff_level = match log::max_level() {
             LevelFilter::Off | LevelFilter::Error | LevelFilter::Warn | LevelFilter::Info => {
@@ -35,15 +36,137 @@ pub async fn handle_process(mut rx: Receiver<u32>) {
         av_log_set_level(ff_level as c_int);
     }
 
-    while let Some(ssrc) = rx.recv().await {
+    loop {
+        let ssrc = base::tokio::select! {
+            _ = runtime.cancel.cancelled() => break,
+            ssrc = rx.recv() => {
+                let Some(ssrc) = ssrc else {
+                    if !runtime.cancel.is_cancelled() && !runtime.is_shutting_down() {
+                        error!("media dispatcher input closed unexpectedly");
+                        GlobalRuntime::request_shutdown_with_error();
+                    } else {
+                        debug!("media dispatcher input closed during shutdown");
+                    }
+                    break;
+                };
+                ssrc
+            }
+        };
         if let Ok(mut sc_rx) = Register::sub_bus_mpsc_channel::<StreamConfig>(&ssrc) {
             //此处可以不使用超时等待，统一流输入超时处理即可；输入超时-清理该ssrc所有信息，包含此处的发送句柄，完成资源释放
-            if let Ok(stream_config) = sc_rx.recv().await.hand_log(|msg| error!("{}", msg)) {
-                let _ = tokio::task::spawn_blocking(move || {
-                    let _ = MediaContext::init(ssrc, stream_config)
-                        .map(|(mut ctx, muxer_layer)| ctx.invoke(muxer_layer));
-                });
+            let stream_config = base::tokio::select! {
+                _ = runtime.cancel.cancelled() => break,
+                stream_config = sc_rx.recv() => stream_config,
+            };
+            if let Ok(stream_config) = stream_config {
+                let stream_id =
+                    Register::stream_id_by_ssrc(ssrc).unwrap_or_else(|| Arc::from("unknown"));
+                let worker_stream_id = stream_id.clone();
+                let worker_runtime = runtime.clone();
+                let task_name = format!("stream-media-worker-{ssrc}");
+                if let Err(err) = runtime.spawn_blocking(task_name, move || {
+                    let (mut ctx, muxer_layer) = match MediaContext::init(
+                        ssrc,
+                        stream_config,
+                        worker_runtime.cancel.clone(),
+                    ) {
+                        Ok(initialized) => initialized,
+                        Err(err) => {
+                            if worker_runtime.cancel.is_cancelled()
+                                || worker_runtime.is_shutting_down()
+                            {
+                                debug!(
+                                    "media worker setup ended: stage=initialize, outcome=cancelled, stream_id={}, ssrc={}",
+                                    worker_stream_id, ssrc
+                                );
+                            } else {
+                                mark_outputs_failed(&worker_stream_id);
+                                error!(
+                                    "media worker failed: stage=initialize, outcome=failed, stream_id={}, ssrc={}, reason={err}",
+                                    worker_stream_id, ssrc
+                                );
+                            }
+                            return;
+                        }
+                    };
+                    let result = ctx.invoke(muxer_layer);
+                    let cancelled = matches!(
+                        result,
+                        Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::Cancelled
+                        ))
+                    );
+                    let failed = result.is_err() && !cancelled;
+                    if failed {
+                        mark_outputs_failed(&worker_stream_id);
+                    }
+                    match result {
+                        Ok(MediaCompletion::Eof) => debug!(
+                            "media worker completed: stage=demux, outcome=eof, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Ok(MediaCompletion::InputClosed) => debug!(
+                            "media worker completed: stage=context, outcome=input_closed, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Ok(MediaCompletion::Cancelled)
+                        | Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::Cancelled,
+                        )) => debug!(
+                            "media worker completed: stage=demux, outcome=cancelled, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Err(MediaRunError::Interrupted(
+                            crate::media::rtp::RtpInterruptReason::StartupDeadline,
+                        )) => error!(
+                            "media worker failed: stage=startup_io, outcome=deadline_exceeded, stream_id={}, ssrc={}",
+                            worker_stream_id, ssrc
+                        ),
+                        Err(MediaRunError::Ffmpeg {
+                            stage,
+                            code,
+                            message,
+                        }) => error!(
+                            "media worker failed: stage={}, outcome=ffmpeg_error, stream_id={}, ssrc={}, ffmpeg_code={}, reason={}",
+                            stage, worker_stream_id, ssrc, code, message
+                        ),
+                        Err(MediaRunError::Pipeline(error)) => error!(
+                            "media worker failed: stage=pipeline, outcome=failed, stream_id={}, ssrc={}, reason={error}",
+                            worker_stream_id, ssrc
+                        ),
+                    }
+                    if failed && worker_runtime.is_shutting_down() {
+                        GlobalRuntime::request_shutdown_with_error();
+                    }
+                }) {
+                    error!(
+                        "media worker spawn failed: stage=spawn, outcome=runtime_rejected, stream_id={}, ssrc={}, reason={err}",
+                        stream_id, ssrc
+                    );
+                }
+            } else {
+                debug!(
+                    "media worker setup ended: stage=stream_config, outcome=input_closed, ssrc={}",
+                    ssrc
+                );
             }
+        }
+    }
+}
+
+fn mark_outputs_failed(stream_id: &str) {
+    for output_type in ["flv", "fmp4", "hls", "ll_hls"] {
+        let Some(mut metadata) = Register::output_media_metadata(stream_id, output_type) else {
+            continue;
+        };
+        metadata.state = OutputRuntimeState::Failed;
+        if let Err(error) =
+            Register::try_set_output_media_metadata(stream_id, output_type, metadata)
+        {
+            error!(
+                "output failure state update failed: stream_id={}, output_type={}, reason={error}",
+                stream_id, output_type
+            );
         }
     }
 }

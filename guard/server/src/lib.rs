@@ -1,0 +1,25 @@
+#[cfg(not(any(feature = "db-mysql", feature = "db-sqlite")))]
+compile_error!("enable at least one database feature: db-mysql or db-sqlite");
+
+pub mod api;
+pub mod app;
+pub mod app_config;
+pub mod auth;
+pub mod bus;
+pub mod core;
+pub mod gateway;
+pub mod integration;
+pub mod lease;
+pub mod mqttc;
+pub mod operation;
+pub mod outbox;
+pub mod registry;
+pub mod route;
+pub mod runtime;
+pub mod store;
+pub mod ui;
+pub mod webhook;
+
+pub fn run() {
+    base::daemon::run::<app::AppInfo, _>();
+}

@@ -1,11 +1,11 @@
 pub mod output_layer {
-    use shared::impl_close;
-    use shared::info::output::{
+    use gmv_domain::impl_close;
+    use gmv_domain::info::output::{
         DashFmp4Output, DashMp4Output, Gb28181FrameOutput, Gb28181PsOutput, HlsFmp4Output,
-        HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputKind, RtmpOutput,
-        RtspOutput, WebRtcOutput,
+        HlsTsOutput, HttpFlvOutput, LocalMp4Output, LocalTsOutput, OutputEnum, OutputKind,
+        RtmpOutput, RtspOutput, WebRtcOutput,
     };
-    use shared::paste::paste;
+    use gmv_domain::paste::paste;
 
     pub struct OutputLayer {
         pub http_flv: Option<HttpFlvLayer>,
@@ -174,6 +174,40 @@ pub mod output_layer {
             }
             false
         }
+
+        pub fn remove(&mut self, output: OutputEnum) -> bool {
+            match output {
+                OutputEnum::HttpFlv => self.http_flv.take().is_some(),
+                OutputEnum::Rtmp => self.rtmp.take().is_some(),
+                OutputEnum::DashFmp4 => self.dash_fmp4.take().is_some(),
+                OutputEnum::DashMp4 => self.dash_mp4.take().is_some(),
+                OutputEnum::HlsFmp4 => self.hls_fmp4.take().is_some(),
+                OutputEnum::HlsTs => self.hls_ts.take().is_some(),
+                OutputEnum::Rtsp => self.rtsp.take().is_some(),
+                OutputEnum::Gb28181Frame => self.gb28181_frame.take().is_some(),
+                OutputEnum::Gb28181Ps => self.gb28181_ps.take().is_some(),
+                OutputEnum::WebRtc => self.web_rtc.take().is_some(),
+                OutputEnum::LocalMp4 => self.local_mp4.take().is_some(),
+                OutputEnum::LocalTs => self.local_ts.take().is_some(),
+            }
+        }
+
+        pub fn contains(&self, output: OutputEnum) -> bool {
+            match output {
+                OutputEnum::HttpFlv => self.http_flv.is_some(),
+                OutputEnum::Rtmp => self.rtmp.is_some(),
+                OutputEnum::DashFmp4 => self.dash_fmp4.is_some(),
+                OutputEnum::DashMp4 => self.dash_mp4.is_some(),
+                OutputEnum::HlsFmp4 => self.hls_fmp4.is_some(),
+                OutputEnum::HlsTs => self.hls_ts.is_some(),
+                OutputEnum::Rtsp => self.rtsp.is_some(),
+                OutputEnum::Gb28181Frame => self.gb28181_frame.is_some(),
+                OutputEnum::Gb28181Ps => self.gb28181_ps.is_some(),
+                OutputEnum::WebRtc => self.web_rtc.is_some(),
+                OutputEnum::LocalMp4 => self.local_mp4.is_some(),
+                OutputEnum::LocalTs => self.local_ts.is_some(),
+            }
+        }
     }
 
     pub struct LocalTsLayer {
@@ -279,38 +313,54 @@ pub mod converter_layer {
     use crate::state::layer::codec_layer::CodecLayer;
     use crate::state::layer::filter_layer::FilterLayer;
     use crate::state::layer::muxer_layer::MuxerLayer;
-    use shared::info::codec::Codec;
-    use shared::info::filter::Filter;
-    use shared::info::output::OutputKind;
+    use gmv_domain::info::codec::Codec;
+    use gmv_domain::info::filter::Filter;
+    use gmv_domain::info::media_info::TranscodeConfig;
+    use gmv_domain::info::output::OutputKind;
 
     #[derive(Clone)]
     pub struct ConverterLayer {
+        pub codec_config: Option<Codec>,
         pub codec: Option<CodecLayer>,
+        pub transcode: Option<TranscodeConfig>,
         pub muxer: MuxerLayer,
+        pub filter_config: Filter,
         pub filter: FilterLayer,
     }
 
     impl ConverterLayer {
-        pub fn new(codec: Option<Codec>, filter: Filter, output: &OutputKind) -> Self {
+        pub fn new(
+            codec: Option<Codec>,
+            transcode: Option<TranscodeConfig>,
+            filter: Filter,
+            output: &OutputKind,
+        ) -> Self {
             let muxer = MuxerLayer::new(output);
+            let filter_config = filter.clone();
             let filter = FilterLayer::new(filter);
+            let codec_config = codec.clone();
             let codec = codec.map(CodecLayer::new);
             Self {
+                codec_config,
                 codec,
+                transcode,
                 muxer,
+                filter_config,
                 filter,
             }
         }
     }
 }
 pub mod filter_layer {
-    use shared::info::filter::{Capture, Filter};
+    use base::log::warn;
+    use gmv_domain::info::filter::{Capture, Filter};
 
     #[derive(Clone)]
     pub struct CaptureLayer {}
     impl CaptureLayer {
-        pub fn layer(capture: Capture) -> Self {
-            unimplemented!()
+        pub fn layer(_capture: Capture) -> Self {
+            warn!("stream capture filter is not wired yet; ignoring capture layer");
+            Self {}
         }
     }
     #[derive(Clone)]
@@ -343,16 +393,14 @@ pub mod filter_layer {
     }
 }
 pub mod muxer_layer {
-    use crate::media::context::format::MuxPacket;
     use crate::media::context::format::muxer::MuxerEnum;
+    use crate::media::context::format::{MuxPacketReceiver, MuxPacketSender};
     use crate::state::FORMAT_BROADCAST_BUFFER;
     use base::err::BaseErrorCode;
     use base::exception::{GlobalError, GlobalResult};
-    use base::log::error;
-    use base::tokio::sync::broadcast;
-    use shared::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
-    use shared::info::output::OutputKind;
-    use std::sync::Arc;
+    use base::log::{error, warn};
+    use gmv_domain::info::format::{CMaf, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
+    use gmv_domain::info::output::OutputKind;
 
     #[derive(Clone, Default)]
     pub struct MuxerLayer {
@@ -368,77 +416,39 @@ pub mod muxer_layer {
         pub ts: Option<TsLayer>,
     }
     impl MuxerLayer {
-        pub fn get_rx(
-            &self,
-            muxer_enum: MuxerEnum,
-        ) -> GlobalResult<broadcast::Receiver<Arc<MuxPacket>>> {
+        pub fn get_rx_if_enabled(&self, muxer_enum: MuxerEnum) -> Option<MuxPacketReceiver> {
             match muxer_enum {
-                MuxerEnum::Flv => {
-                    if self.flv.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.flv.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::Mp4 => {
-                    if self.mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.mp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::Ts => {
-                    unimplemented!()
-                }
-                MuxerEnum::FMp4 => {
-                    if self.fmp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.fmp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::HlsTs => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpFrame => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpPs => {
-                    unimplemented!()
-                }
-                MuxerEnum::RtpEnc => {
-                    unimplemented!()
-                }
-                MuxerEnum::DashMp4 => {
-                    if self.dash_mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.dash_mp4.as_ref().unwrap().tx.subscribe())
-                }
-                MuxerEnum::HlsMp4 => {
-                    if self.hls_mp4.is_none() {
-                        Err(GlobalError::new_biz_error(
-                            BaseErrorCode::InvalidState.code(),
-                            &format!("muxer: {:?}未开启", muxer_enum),
-                            |msg| error!("{msg}"),
-                        ))?;
-                    }
-                    Ok(self.hls_mp4.as_ref().unwrap().tx.subscribe())
-                }
+                MuxerEnum::Flv => self.flv.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::Mp4 => self.mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::FMp4 => self.fmp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::DashMp4 => self.dash_mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::HlsMp4 => self.hls_mp4.as_ref().map(|layer| layer.tx.subscribe()),
+                MuxerEnum::Ts
+                | MuxerEnum::HlsTs
+                | MuxerEnum::RtpFrame
+                | MuxerEnum::RtpPs
+                | MuxerEnum::RtpEnc => None,
             }
+        }
+
+        pub fn get_rx(&self, muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
+            if matches!(
+                muxer_enum,
+                MuxerEnum::Ts
+                    | MuxerEnum::HlsTs
+                    | MuxerEnum::RtpFrame
+                    | MuxerEnum::RtpPs
+                    | MuxerEnum::RtpEnc
+            ) {
+                return unsupported_muxer_rx(muxer_enum);
+            }
+            self.get_rx_if_enabled(muxer_enum).ok_or_else(|| {
+                GlobalError::new_biz_error(
+                    BaseErrorCode::InvalidState.code(),
+                    &format!("muxer: {:?}未开启", muxer_enum),
+                    |msg| error!("{msg}"),
+                )
+            })
         }
         pub fn new(output: &OutputKind) -> Self {
             let mut layer = MuxerLayer::default();
@@ -458,39 +468,29 @@ pub mod muxer_layer {
                     }
                 }
                 OutputKind::HlsFmp4(_) => {
-                    if self.fmp4.is_none() {
-                        self.fmp4 = Some(CMafLayer::layer(CMaf::default()));
+                    if self.hls_mp4.is_none() {
+                        self.hls_mp4 = Some(CMafLayer::layer(CMaf::default()));
                     }
                 }
-                OutputKind::HlsTs(inner) => {
-                    if self.hls_ts.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::HlsTs(_) => {
+                    warn!("stream output hls-ts is not wired yet; muxer layer not created");
                 }
                 OutputKind::Rtsp(_) | OutputKind::Gb28181Frame(_) => {
-                    if self.rtp_frame.is_none() {
-                        unimplemented!()
-                    }
+                    warn!("stream output rtp-frame is not wired yet; muxer layer not created");
                 }
-                OutputKind::Gb28181Ps(inner) => {
-                    if self.rtp_ps.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::Gb28181Ps(_) => {
+                    warn!("stream output rtp-ps is not wired yet; muxer layer not created");
                 }
-                OutputKind::WebRtc(inner) => {
-                    if self.rtp_enc.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::WebRtc(_) => {
+                    warn!("stream output rtp-enc is not wired yet; muxer layer not created");
                 }
                 OutputKind::LocalMp4(inner) => {
                     if self.mp4.is_none() {
                         self.mp4 = Some(Mp4Layer::layer(inner.fmt.clone()));
                     }
                 }
-                OutputKind::LocalTs(inner) => {
-                    if self.ts.is_none() {
-                        unimplemented!()
-                    }
+                OutputKind::LocalTs(_) => {
+                    warn!("stream output local-ts is not wired yet; muxer layer not created");
                 }
                 OutputKind::DashMp4(_) => {
                     if self.dash_mp4.is_none() {
@@ -502,91 +502,129 @@ pub mod muxer_layer {
 
         pub fn close_by_muxer_type(&mut self, mt: MuxerEnum) {
             match mt {
-                MuxerEnum::Flv => self.flv = None,
-                MuxerEnum::Mp4 => self.mp4 = None,
+                MuxerEnum::Flv => {
+                    if let Some(layer) = self.flv.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::Mp4 => {
+                    if let Some(layer) = self.mp4.take() {
+                        layer.tx.close();
+                    }
+                }
                 MuxerEnum::Ts => self.ts = None,
                 MuxerEnum::RtpFrame => self.rtp_frame = None,
                 MuxerEnum::RtpPs => self.rtp_ps = None,
                 MuxerEnum::RtpEnc => self.rtp_enc = None,
                 MuxerEnum::HlsTs => self.hls_ts = None,
-                MuxerEnum::DashMp4 => self.dash_mp4 = None,
-                MuxerEnum::FMp4 => self.fmp4 = None,
-                MuxerEnum::HlsMp4 => self.hls_mp4 = None,
+                MuxerEnum::DashMp4 => {
+                    if let Some(layer) = self.dash_mp4.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::FMp4 => {
+                    if let Some(layer) = self.fmp4.take() {
+                        layer.tx.close();
+                    }
+                }
+                MuxerEnum::HlsMp4 => {
+                    if let Some(layer) = self.hls_mp4.take() {
+                        layer.tx.close();
+                    }
+                }
+            }
+        }
+    }
+
+    fn unsupported_muxer_rx(muxer_enum: MuxerEnum) -> GlobalResult<MuxPacketReceiver> {
+        Err(GlobalError::new_biz_error(
+            BaseErrorCode::InvalidState.code(),
+            &format!("muxer: {:?}暂不支持", muxer_enum),
+            |msg| error!("{msg}"),
+        ))
+    }
+
+    #[derive(Clone)]
+    pub struct FlvLayer {
+        pub tx: MuxPacketSender,
+    }
+    impl FlvLayer {
+        pub fn layer() -> Self {
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
             }
         }
     }
     #[derive(Clone)]
-    pub struct FlvLayer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
-    }
-    impl FlvLayer {
-        pub fn layer() -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx }
-        }
-    }
-    #[derive(Clone)]
     pub struct Mp4Layer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+        pub tx: MuxPacketSender,
         pub mp4: Mp4,
     }
     impl Mp4Layer {
         pub fn layer(mp4: Mp4) -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx, mp4 }
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
+                mp4,
+            }
         }
     }
 
     #[derive(Clone)]
     pub struct TsLayer {}
     impl TsLayer {
-        pub fn layer(ts: Ts) -> Self {
-            unimplemented!()
+        pub fn layer(_ts: Ts) -> Self {
+            warn!("stream ts layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 
     #[derive(Clone)]
     pub struct CMafLayer {
-        pub tx: broadcast::Sender<Arc<MuxPacket>>,
+        pub tx: MuxPacketSender,
     }
     impl CMafLayer {
-        pub fn layer(cmaf: CMaf) -> Self {
-            let (tx, _) = broadcast::channel(FORMAT_BROADCAST_BUFFER);
-            Self { tx }
+        pub fn layer(_cmaf: CMaf) -> Self {
+            Self {
+                tx: MuxPacketSender::new(FORMAT_BROADCAST_BUFFER),
+            }
         }
     }
     #[derive(Clone)]
     pub struct RtpFrameLayer {}
     impl RtpFrameLayer {
-        pub fn layer(rtp: RtpFrame) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpFrame) -> Self {
+            warn!("stream rtp-frame layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
     #[derive(Clone)]
     pub struct RtpPsLayer {}
     impl RtpPsLayer {
-        pub fn layer(rtp: RtpPs) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpPs) -> Self {
+            warn!("stream rtp-ps layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
     #[derive(Clone)]
     pub struct RtpEncLayer {}
     impl RtpEncLayer {
-        pub fn layer(rtp: RtpEnc) -> Self {
-            unimplemented!()
+        pub fn layer(_rtp: RtpEnc) -> Self {
+            warn!("stream rtp-enc layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 
     #[derive(Clone)]
     pub struct HlsTsLayer {}
     impl HlsTsLayer {
-        pub fn layer(hls_ts: HlsTs) -> Self {
-            unimplemented!()
+        pub fn layer(_hls_ts: HlsTs) -> Self {
+            warn!("stream hls-ts layer is not wired yet; returning inert layer");
+            Self {}
         }
     }
 }
 pub mod codec_layer {
-    use shared::info::codec::Codec;
+    use gmv_domain::info::codec::Codec;
 
     #[derive(Clone)]
     pub enum CodecLayer {
@@ -635,5 +673,39 @@ pub mod codec_layer {
                 CodecLayer::Aac => "aac".to_string(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::muxer_layer::MuxerLayer;
+    use crate::media::context::format::muxer::MuxerEnum;
+    use gmv_domain::info::format::CMaf;
+    use gmv_domain::info::output::{HlsFmp4Output, OutputKind};
+
+    #[test]
+    fn hls_fmp4_uses_its_dedicated_muxer_layer() {
+        let layer = MuxerLayer::new(&OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: Default::default(),
+        }));
+
+        assert!(layer.hls_mp4.is_some());
+        assert!(layer.fmp4.is_none());
+    }
+
+    #[test]
+    fn playable_muxer_lookup_distinguishes_absent_from_enabled() {
+        assert!(
+            MuxerLayer::default()
+                .get_rx_if_enabled(MuxerEnum::HlsMp4)
+                .is_none()
+        );
+
+        let layer = MuxerLayer::new(&OutputKind::HlsFmp4(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: Default::default(),
+        }));
+        assert!(layer.get_rx_if_enabled(MuxerEnum::HlsMp4).is_some());
     }
 }

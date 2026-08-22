@@ -1,0 +1,150 @@
+use crate::info::format::{CMaf, Flv, HlsTs, Mp4, RtpEnc, RtpFrame, RtpPs, Ts};
+use base::serde::{Deserialize, Serialize};
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
+#[serde(crate = "base::serde")]
+pub enum OutputEnum {
+    HttpFlv,
+    Rtmp,
+    DashMp4,
+    DashFmp4,
+    HlsFmp4,
+    HlsTs,
+    Rtsp,
+    Gb28181Frame,
+    Gb28181Ps,
+    WebRtc,
+    LocalMp4,
+    LocalTs,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub enum OutputKind {
+    HttpFlv(HttpFlvOutput),
+    Rtmp(RtmpOutput),
+    DashFmp4(DashFmp4Output),
+    DashMp4(DashMp4Output),
+    HlsFmp4(HlsFmp4Output),
+    HlsTs(HlsTsOutput),
+    Rtsp(RtspOutput),
+    Gb28181Frame(Gb28181FrameOutput),
+    Gb28181Ps(Gb28181PsOutput),
+    WebRtc(WebRtcOutput),
+    LocalMp4(LocalMp4Output),
+    LocalTs(LocalTsOutput),
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct LocalMp4Output {
+    pub fmt: Mp4,
+    pub path: String,
+    #[serde(default)]
+    pub token: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub min_free_bytes: u64,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct LocalTsOutput {
+    pub fmt: Ts,
+    pub path: String,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct HttpFlvOutput {
+    pub fmt: Flv,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct RtmpOutput {
+    pub fmt: Flv,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct HlsTsOutput {
+    pub fmt: HlsTs,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, Eq, PartialEq)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+pub enum HlsPlaylistProfile {
+    #[default]
+    Standard,
+    LowLatency,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct HlsFmp4Output {
+    pub fmt: CMaf,
+    #[serde(default)]
+    pub playlist_profile: HlsPlaylistProfile,
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct DashFmp4Output {
+    pub fmt: CMaf,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct DashMp4Output {
+    pub fmt: CMaf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_hls_output_defaults_to_standard_playlist() {
+        let mut value = base::serde_json::to_value(HlsFmp4Output {
+            fmt: CMaf::default(),
+            playlist_profile: HlsPlaylistProfile::LowLatency,
+        })
+        .unwrap();
+        value.as_object_mut().unwrap().remove("playlist_profile");
+
+        let output: HlsFmp4Output = base::serde_json::from_value(value).unwrap();
+        assert_eq!(output.playlist_profile, HlsPlaylistProfile::Standard);
+    }
+}
+
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct RtspOutput {
+    pub fmt: RtpFrame,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct Gb28181FrameOutput {
+    pub fmt: RtpFrame,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct Gb28181PsOutput {
+    pub fmt: RtpPs,
+}
+#[cfg_attr(debug_assertions, derive(utoipa::ToSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(crate = "base::serde")]
+pub struct WebRtcOutput {
+    pub fmt: RtpEnc,
+}

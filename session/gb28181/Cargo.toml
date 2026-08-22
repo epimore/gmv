@@ -1,0 +1,40 @@
+[package]
+name = "gmv-session-gb28181"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gmv-session-core = { path = "../core" }
+base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
+gmv-protocol = { path = "../../shared/protocol" }
+gmv-nodec = { path = "../../shared/nodec" }
+tonic = "0.14"
+gmv-domain = { path = "../../shared/domain" }
+#base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", features = ["net"] }
+base_db = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", default-features = false }
+#gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
+gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git", rev = "3d4217b" }
+sqlx = { version = "0.9", default-features = false }
+quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
+encoding_rs = "0.8"
+sdp-types = "0.1"
+axum = { workspace = true, features = ["multipart"] }
+axum-server = { workspace = true, features = ["tls-rustls"] }
+
+# 共享依赖（自动继承版本）
+anyhow.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+url.workspace = true
+uuid.workspace = true
+fs2 = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+[features]
+default = ["db-all"]
+db-all = ["db-mysql", "db-sqlite"]
+db-mysql = ["base_db/mysql"]
+db-sqlite = ["base_db/sqlite-bundled"]

@@ -1,0 +1,93 @@
+log:
+    level: warn
+    stdout: true
+    file: true
+    prefix: session
+    store_path: ./logs
+    specify:
+        - crate_name: gmv_session_gb28181
+          level: info
+        - crate_name: gmv_pjsip::io$ #信令及PJSIP日志
+          level: debug #日志等级
+          file_name_prefix: gb #日志文件前缀
+          stdout: true
+        - crate_name: gmv_nodec
+          level: debug
+        - crate_name: sqlx #sqlx用指全部,可sqlx::xxx
+          level: warn #日志等级
+        - crate_name: h2 #h2日志等级
+          level: warn #日志等级
+
+http:
+    listen_addr: 0.0.0.0:28567 #本机HTTP/HTTPS实际监听地址
+    public_url: http://192.168.0.9:28567 #节点HTTP endpoint及图片/录像默认访问前缀使用的完整对外URL
+    tls:
+        enabled: false #仅控制本机HTTP监听TLS；若由Nginx终止HTTPS，可保持false并将public_url配置为https
+        certificate_path: ""
+        private_key_path: ""
+
+db:
+    backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件
+    pool:
+        max_connections: 16 # 最大连接数；按节点实际并发监控后调整
+        min_connections: 0 # 空闲时不预占数据库连接
+        connection_timeout_sec: 8
+        max_lifetime_sec: 1800
+        idle_timeout_sec: 60
+        check_health: false
+    sqlite:
+        path: ./sqlite/session-gb28181.db
+    mysql:
+        host: 127.0.0.1
+        port: 3306
+        database: gmv
+        username: root
+        pass_crypto_enable: false #密码是否加密，默认不加密
+        pass: zaq12345 #密码的密文
+        ssl_mode: disabled # disabled|preferred|required|verify_ca|verify_identity
+        attrs:
+            log_global_sql_level: debug #记录全局sql,默认debug,此处将被log.level过滤
+            log_slow_sql_timeout_sec: 3 #以警告等级记录超过3秒的SQL
+            timezone: "+8:00"
+            charset: utf8mb4
+            # ssl_ca_crt_file: path/to/ca.crt
+            # ssl_client_cert_file: path/to/client.crt
+            # ssl_client_key_file: path/to/client.key
+guard:
+    endpoint: http://127.0.0.1:18080 # guard 内部gRPC地址，session向guard注册、上报事件、申请路由
+
+server:
+    grpc:
+        listen_addr: 127.0.0.1:19081 #本机control gRPC实际监听地址
+        advertised_url: http://127.0.0.1:19081 #注册给guard和Stream回调使用的完整可达地址；scheme独立于本机TLS
+        tls:
+            enabled: false #仅控制本机control gRPC监听TLS；启用时要求配置证书
+            certificate_path: ""
+            private_key_path: ""
+    session:
+        domain: "3402000000" #服务端sip域 5101000000 3402000000
+        domain_id: "34020000002000000001" #服务端sip域ID,guard注册时节点ID 51010000002000000001 34020000002000000001
+        lan_ip: 172.18.38.186 # 不能写成0.0.0.0或者127.0.0.1,必须是网卡上的地址
+        wan_ip: 192.168.0.9 # 公网IP
+        lan_port: 35600 #lan端口
+        wan_port: 35600 #wan端口
+        dialog_history_retention_days: 0 #终态dialog保留天数，0表示永久保存
+    pics:
+        push_url: http://127.0.0.1:28567/edge/upload/picture # 设备抓拍图片上传地址前缀，由session-gb28181直接接收
+        storage_path: ./pics/raw
+        storage_format: jpeg
+        num: 1
+        interval: 1
+        max_upload_bytes: 10485760
+        public_base_url: "" #公网代理前缀，例如 https://gmv.example.com/session-1；留空则使用Session直连地址
+        access_ticket_ttl_secs: 300
+    alarm:
+        enable: false #是否开启告警事件上报guard，默认false
+        priority: 4 #告警等级 1-4,默认最低4
+    download:
+        storage_path: ./videos/down #云端录像共享存储根目录；Session持有任务、文件读取与删除事实
+        storage_id: cloud-recording-main
+        public_base_url: "" #公网代理前缀，例如 https://gmv.example.com/recordings/session-1；留空则使用Session直连地址
+        min_free_bytes: 2147483648
+        access_ticket_idle_ttl_secs: 300
+        access_ticket_max_ttl_secs: 21600

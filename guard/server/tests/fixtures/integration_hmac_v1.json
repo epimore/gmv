@@ -1,0 +1,15 @@
+{
+  "version": "GMV-HMAC-SHA256-V1",
+  "secret": "test-secret-32-bytes-0123456789",
+  "access_key": "ak_test_001",
+  "timestamp_ms": 1700000000000,
+  "nonce": "0123456789abcdef",
+  "method": "POST",
+  "path": "/openapi/v1/devices",
+  "query": "tag=z&name=%E4%B8%AD+%E6%96%87&tag=a%2Fb",
+  "canonical_query": "name=%E4%B8%AD%20%E6%96%87&tag=a%2Fb&tag=z",
+  "request_id": "request-test-1",
+  "body_utf8": "{\"name\":\"摄像机 A\"}",
+  "body_sha256": "5705bbbf8b05150a89705a7ebb891b815ce2da02e49a0a9ddd4a547eb3aff7aa",
+  "signature": "927a91e9130182736dd2f825afdb0cb52f92dfd04d44b034b3d1b8d35cdf8e60"
+}
