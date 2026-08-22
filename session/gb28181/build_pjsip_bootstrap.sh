@@ -7,7 +7,7 @@ FORCE_REBUILD="${FORCE_REBUILD:-0}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-GMV_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+GMV_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 THIRD_PARTY_DIR="$GMV_ROOT/third_party"
 
 SRC_DIR="$THIRD_PARTY_DIR/pjproject-${PJSIP_VERSION}"
