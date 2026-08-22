@@ -18,10 +18,10 @@ gmv-nodec = { path = "../../shared/nodec" }
 parking_lot.workspace = true
 thiserror = "2"
 uuid = { version = "1.23", features = ["v4", "v7"] }
-base = { path = "../../../pigs/base" }
-base_db = { path = "../../../pigs/base_db", default-features = false }
+base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
+base_db = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", default-features = false }
 sqlx = { version = "0.9", default-features = false, features = ["derive"] }
-base_rpc = { path = "../../../pigs/base_rpc" }
+base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
 tonic = "0.14"
 tokio-stream = "0.1"
 reqwest = { workspace = true, features = ["stream"] }

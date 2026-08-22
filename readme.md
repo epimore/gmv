@@ -10,6 +10,7 @@ GMV 是一个使用 **Rust** 构建的智能视音频监控平台，支持设备
 >
 > 连接设备，处理媒体，理解世界。
 
+
 ![0](./sources/11.png "player")
 ![1](./sources/22.png "app")
 ![2](./sources/33.png "media")
@@ -79,6 +80,7 @@ Session、Stream、Vision 任务建立后可直接交互，Guard 不参与高频
 ### 已实现
 
 - Web 管理控制台
+- Player 播放器多平台适配封装
 - 用户、认证与权限
 - Session / Stream / Vision 节点注册与心跳
 - 节点状态、资源与健康监控
@@ -283,19 +285,6 @@ Model Evolution
 
 ---
 
-# 生产运行目标
-
-> **可 · 开箱即用**
->
-> **易 · 三方集成**
->
-> **低 · 硬件资源**
->
-> **简 · 集群扩展**
->
-> **能 · 云边协同**
-
----
 
 # 设计理念
 
@@ -340,5 +329,6 @@ Application
 最终目标是构建一套能够 **连接设备、承载媒体、理解内容，并在边缘与云端持续演进的智能视音频基础设施。**
 
 ## 交流
-微信：epimore;备注GMV
-邮箱：zhya0905@gmail.com
+- 微信：epimore;备注GMV
+- 邮箱：zhya0905@gmail.com
+- 演示地址：https://epimore.cn

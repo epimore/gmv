@@ -4,18 +4,22 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-base_rpc = { path = "../../pigs/base_rpc" }
+base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
 gmv-protocol = { path = "../shared/protocol" }
 gmv-nodec = { path = "../shared/nodec" }
 tonic = "0.14"
-#base = { git = "https://github.com/epimore/pigs.git",rev = "f2fc8914",features = ["net"] }
-base = { package = "base", path = "../../pigs/base", features = ["net"] }
+base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", features = [
+    "net",
+] }
+# base = { package = "base", path = "../../pigs/base", features = ["net"] }
 gmv-domain = { path = "../shared/domain" }
 
 futures-core = "0.3"
 futures-util = "0.3"
 tokio-stream = { version = "0.1", features = ["sync"] }
-rsmpeg = { version = "0.14.2", default-features = false, features = ["link_system_ffmpeg"] }
+rsmpeg = { version = "0.14.2", default-features = false, features = [
+    "link_system_ffmpeg",
+] }
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { workspace = true, features = ["tls-rustls"] }
 rtp-types = "0.1"

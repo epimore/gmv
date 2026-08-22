@@ -5,16 +5,16 @@ edition.workspace = true
 
 [dependencies]
 gmv-session-core = { path = "../core" }
-base_rpc = { path = "../../../pigs/base_rpc" }
+base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
 gmv-protocol = { path = "../../shared/protocol" }
 gmv-nodec = { path = "../../shared/nodec" }
 tonic = "0.14"
 gmv-domain = { path = "../../shared/domain" }
 #base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "f2fc8914", features = ["net"] }
-base = { path = "../../../pigs/base", features = ["net"] }
-base_db = { path = "../../../pigs/base_db", default-features = false }
+base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", features = ["net"] }
+base_db = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", default-features = false }
 #gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git",rev = "b86c032e" }
-gmv_pjsip = { path = "../../../gmv_pjsip" }
+gmv_pjsip = { git = "https://github.com/epimore/gmv_pjsip.git", rev = "3d4217b" }
 sqlx = { version = "0.9", default-features = false }
 quick-xml = { version = "0.31", features = ["encoding_rs", "encoding"] }
 encoding_rs = "0.8"

@@ -310,6 +310,7 @@ dependencies = [
 [[package]]
 name = "base"
 version = "0.2.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "aes 0.7.5",
  "aes-gcm",
@@ -372,6 +373,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "base_db"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "base",
  "sqlx",
@@ -381,6 +383,7 @@ dependencies = [
 [[package]]
 name = "base_rpc"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "base",
  "thiserror 2.0.18",
@@ -567,6 +570,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 [[package]]
 name = "cfg_lib"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "cfg_macro",
  "clap",
@@ -576,6 +580,7 @@ dependencies = [
 [[package]]
 name = "cfg_macro"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -714,6 +719,7 @@ checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 [[package]]
 name = "constructor"
 version = "0.2.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -997,7 +1003,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1024,6 +1030,7 @@ dependencies = [
 [[package]]
 name = "exception"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "anyhow",
  "log",
@@ -1432,6 +1439,7 @@ dependencies = [
 [[package]]
 name = "gmv_pjsip"
 version = "0.1.0"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=3d4217b#3d4217bf8cf0542e9d4d9b7be9b44565f7c22cb9"
 dependencies = [
  "base",
  "encoding_rs",
@@ -1442,6 +1450,7 @@ dependencies = [
 [[package]]
 name = "gmv_pjsip_sys"
 version = "0.1.0"
+source = "git+https://github.com/epimore/gmv_pjsip.git?rev=3d4217b#3d4217bf8cf0542e9d4d9b7be9b44565f7c22cb9"
 dependencies = [
  "bindgen 0.70.1",
  "cc",
@@ -1751,7 +1760,7 @@ dependencies = [
  "hyper 1.10.1",
  "libc",
  "pin-project-lite",
- "socket2 0.6.4",
+ "socket2 0.5.10",
  "tokio",
  "tower-service",
  "tracing",
@@ -1769,7 +1778,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -1928,7 +1937,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2847,7 +2856,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3506,6 +3515,7 @@ dependencies = [
 [[package]]
 name = "sys_metrics"
 version = "0.1.0"
+source = "git+https://github.com/epimore/pigs.git?rev=6ef154f#6ef154fd2e9d59aa2288922ff475c30988e0a1dc"
 dependencies = [
  "sysinfo",
 ]
@@ -3555,7 +3565,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4207,7 +4217,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -4223,7 +4233,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
 dependencies = [
  "windows-collections",
- "windows-core 0.61.2",
+ "windows-core",
  "windows-future",
  "windows-link 0.1.3",
  "windows-numerics",
@@ -4235,7 +4245,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
 ]
 
 [[package]]
@@ -4247,21 +4257,8 @@ dependencies = [
  "windows-implement",
  "windows-interface",
  "windows-link 0.1.3",
- "windows-result 0.3.4",
- "windows-strings 0.4.2",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement",
- "windows-interface",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
+ "windows-result",
+ "windows-strings",
 ]
 
 [[package]]
@@ -4270,7 +4267,7 @@ version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
  "windows-threading",
 ]
@@ -4315,7 +4312,7 @@ version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
- "windows-core 0.61.2",
+ "windows-core",
  "windows-link 0.1.3",
 ]
 
@@ -4329,30 +4326,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "windows-result"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
-dependencies = [
- "windows-link 0.2.1",
-]
-
-[[package]]
 name = "windows-strings"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
  "windows-link 0.1.3",
-]
-
-[[package]]
-name = "windows-strings"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
-dependencies = [
- "windows-link 0.2.1",
 ]
 
 [[package]]
