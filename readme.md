@@ -52,7 +52,8 @@ GMV 采用 **Control Plane / Work Plane** 分离架构。
                │                  │                  │
                ▼                  ▼                  ▼
         ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-        │   Session   │    │    Stream   │    │    Vision   │
+        │   Session   │    │   Stream    │    │   Vision    │
+        │   Cluster   │    │   Cluster   │    │   Cluster   │
         │             │    │             │    │             │
         │ GB28181     │    │ RTP / PS    │    │ Detector    │
         │ SIP         │    │ Demux       │    │ Tracker     │
