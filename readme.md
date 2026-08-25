@@ -9,6 +9,7 @@ GMV 是一个使用 **Rust** 构建的智能视音频基础设施，从设备接
 > **Connect · Stream · Understand**
 >
 > 连接设备，处理媒体，理解世界。
+> - 演示地址：https://epimore.cn
 
 
 ![0](./sources/11.png "player")
@@ -332,4 +333,4 @@ Application
 ## 交流
 - 微信：epimore 备注GMV
 - 邮箱：kz986542@gmail.com
-- 演示地址：https://epimore.cn
+
