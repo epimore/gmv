@@ -13,5 +13,7 @@
 /logs/
 /.*
 !/.gitignore
+!/.editorconfig
+!/.gitattributes
 
 /AGENTS.md
