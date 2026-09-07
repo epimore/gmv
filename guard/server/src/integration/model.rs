@@ -268,6 +268,7 @@ pub fn mqtt_action_for_http(method: &str, path: &str) -> Option<&'static str> {
         ("post", "/streams/{stream_id}/outputs/{output_id}/close") => Some("stream.output.close"),
         ("get", "/ai/tasks") => Some("ai.list"),
         ("post", "/ai/tasks") => Some("ai.start"),
+        ("get", "/ai/tasks/{task_id}") => Some("ai.list"),
         ("post", "/ai/tasks/{task_id}/cancel") => Some("ai.cancel"),
         ("get", "/runtime/status") => Some("runtime.status.get"),
         _ => None,
@@ -279,6 +280,9 @@ pub fn mqtt_special_for_http(method: &str, path: &str) -> Option<&'static str> {
         ("get", "/events") => {
             Some("MQTT 使用 gmv/events/{integration_id}/{event_type} 推送替代 HTTP 历史轮询")
         }
+        ("post", "/ai/uploads") => Some(
+            "图片上传授权包含一次性数据面凭证，仅通过鉴权 HTTP 接口返回；MQTT 可在上传完成后创建 AI 任务",
+        ),
         _ => None,
     }
 }

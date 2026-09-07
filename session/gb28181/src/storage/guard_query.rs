@@ -789,6 +789,14 @@ impl GbChannelImageView {
         db::fetch_optional_as!(Self, sql, image_id, device_id, channel_id)
             .hand_log(|msg| error!("{msg}"))
     }
+
+    pub async fn list_by_business_id(business_id: &str) -> GlobalResult<Vec<Self>> {
+        let sql = match db::backend() {
+            db::SessionDatabaseBackend::Mysql => GB_CHANNEL_IMAGE_LIST_BY_BIZ_MYSQL,
+            db::SessionDatabaseBackend::Sqlite => GB_CHANNEL_IMAGE_LIST_BY_BIZ_SQLITE,
+        };
+        db::fetch_all_as!(Self, sql, business_id).hand_log(|msg| error!("{msg}"))
+    }
 }
 
 const GB_CHANNEL_IMAGE_LIST_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,CAST(COALESCE(file_size,0) AS SIGNED) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?) ORDER BY create_time DESC,id DESC LIMIT ? OFFSET ?";
@@ -797,6 +805,8 @@ const GB_CHANNEL_IMAGE_COUNT_MYSQL: &str = "SELECT CAST(COUNT(*) AS SIGNED) AS t
 const GB_CHANNEL_IMAGE_COUNT_SQLITE: &str = "SELECT COUNT(*) AS total FROM gb28181_file_info WHERE device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 AND (?=0 OR create_time>=?) AND (?=0 OR create_time<=?)";
 const GB_CHANNEL_IMAGE_GET_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,CAST(COALESCE(file_size,0) AS SIGNED) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
 const GB_CHANNEL_IMAGE_GET_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE id=? AND device_id=? AND channel_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0";
+const GB_CHANNEL_IMAGE_LIST_BY_BIZ_MYSQL: &str = "SELECT CAST(id AS CHAR) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,CAST(COALESCE(file_size,0) AS SIGNED) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE biz_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id";
+const GB_CHANNEL_IMAGE_LIST_BY_BIZ_SQLITE: &str = "SELECT CAST(id AS TEXT) AS image_id,device_id,channel_id,create_time AS created_at,file_name,COALESCE(file_format,'') AS file_format,COALESCE(file_size,0) AS file_size,dir_path,abs_path FROM gb28181_file_info WHERE biz_id=? AND COALESCE(is_del,0)=0 AND COALESCE(file_type,0)=0 ORDER BY id";
 
 #[cfg(test)]
 mod tests {

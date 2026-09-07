@@ -5,13 +5,25 @@ edition.workspace = true
 authors.workspace = true
 
 [dependencies]
-base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
+# base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
+base_rpc = { path = "../../pigs/base_rpc" }
+# base_db = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", default-features = false, features = ["sqlite"] }
+base_db = { path = "../../pigs/base_db", default-features = false, features = ["sqlite"] }
 gmv-protocol = { path = "../shared/protocol" }
 gmv-nodec = { path = "../shared/nodec" }
 tonic = "0.14"
+axum.workspace = true
 gmv-domain = { path = "../shared/domain" }
-#base = { package = "base",git = "https://github.com/epimore/pigs.git",rev = "0ac18e3", features = ["net"] }
-base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", features = ["net"] }
+# base = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f", features = ["net"] }
+base = { path = "../../pigs/base", features = ["net"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+prost = "0.14"
+reqwest = { workspace = true, features = ["stream"] }
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 #burn = "0.19"
 #burn-tensor = "0.19"
 #candle-transformers = "0.9"

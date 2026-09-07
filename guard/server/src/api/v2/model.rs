@@ -302,7 +302,9 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize)]
 #[serde(crate = "base::serde", rename_all = "snake_case")]
 pub enum AiTaskSummaryState {
+    Pending,
     Running,
+    Succeeded,
     Cancelled,
     Failed,
 }
@@ -311,13 +313,42 @@ pub enum AiTaskSummaryState {
 #[serde(crate = "base::serde")]
 pub struct AiTaskSummary {
     pub task_id: String,
+    pub capability: String,
     pub model: String,
+    pub source_type: String,
     pub stream_id: String,
     pub node_id: String,
     pub instance_id: String,
     pub lease_id: String,
     pub route_id: String,
     pub state: AiTaskSummaryState,
+}
+
+#[derive(Debug, Clone, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct AiTaskDetail {
+    #[serde(flatten)]
+    pub summary: AiTaskSummary,
+    pub result_schema: String,
+    pub result_schema_version: u32,
+    pub actual_model_id: String,
+    pub actual_model_version: String,
+    pub result: Option<base::serde_json::Value>,
+    pub error_code: String,
+    pub error_message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+pub struct AiUploadTicketSummary {
+    pub upload_id: String,
+    pub node_id: String,
+    pub instance_id: String,
+    pub upload_url: String,
+    pub proof: String,
+    pub expires_at_epoch_ms: i64,
+    pub max_bytes: u64,
+    pub content_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize)]

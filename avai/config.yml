@@ -15,4 +15,10 @@ server:
   host: 127.0.0.1
   grpc_port: 19080
   capabilities:
-    - ai.vehicle
+    - image.metadata.inspect
+  task_database_path: ./data/avai.db
+  object_root: ./data/objects
+  task_queue_size: 128
+  task_worker_count: 2
+  allow_private_image_urls: false
+  allowed_internal_hosts: []

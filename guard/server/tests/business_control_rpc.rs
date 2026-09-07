@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use gmv_guard_server::api::v2::control::{
-    BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
+    AiTaskSourceInput, BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl,
+    DeviceStreamOptions, GbSnapshotOptions,
 };
 use gmv_guard_server::api::v2::model::StreamSummaryState;
 use gmv_guard_server::core::{
@@ -22,7 +23,9 @@ use gmv_guard_server::store::model::{
 use gmv_protocol::avai::v1::avai_control_server::{AvaiControl, AvaiControlServer};
 use gmv_protocol::avai::v1::{
     AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
-    QueryCapabilitiesRequest, QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
+    FinalizeImageUploadRequest, FinalizeImageUploadResponse, ImageMetadata, ImageUploadTicket,
+    OwnedImageRef, PrepareImageUploadRequest, PrepareImageUploadResponse, QueryCapabilitiesRequest,
+    QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
 };
 use gmv_protocol::common::v1::{ErrorDetail, PageResponse};
 use gmv_protocol::session::v1::session_control_server::{SessionControl, SessionControlServer};
@@ -36,6 +39,7 @@ use gmv_protocol::session::v1::{
     GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
     GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
     IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
+    IssueGbChannelImageSourceAccessRequest, IssueGbChannelImageSourceAccessResponse,
     ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
@@ -226,7 +230,7 @@ fn gb28181_snapshot_image_uses_session_rpc() {
                 })
                 .unwrap();
 
-            let session_id = BusinessControl::new(store)
+            let snapshot = BusinessControl::new(store)
                 .snapshot_image(
                     "snapshot-op",
                     "34020000001320000001",
@@ -236,7 +240,8 @@ fn gb28181_snapshot_image_uses_session_rpc() {
                 )
                 .await
                 .unwrap();
-            assert_eq!(session_id, "snapshot-session");
+            assert_eq!(snapshot.session_id, "snapshot-session");
+            assert_eq!(snapshot.image_ids, vec!["snapshot-image-1"]);
         });
 }
 
@@ -423,6 +428,26 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                     now_ms: 1_000,
                     takeover: false,
                     config: Default::default(),
+                })
+                .unwrap();
+            registry
+                .register(RegisterRequest {
+                    identity: NodeIdentity::new(
+                        "session-gb-online",
+                        "session-gb-online-inst",
+                        NodeKind::Session,
+                    ),
+                    capabilities: vec!["protocol.gb28181".to_string()],
+                    endpoints: vec![grpc_endpoint(session_addr)],
+                    host_metrics: Default::default(),
+                    zone: None,
+                    now_ms: 1_000,
+                    takeover: false,
+                    config: HashMap::from([
+                        ("service".to_string(), "session-gb28181".to_string()),
+                        ("protocol".to_string(), "gb28181".to_string()),
+                        ("domain_id".to_string(), "session-gb-online".to_string()),
+                    ]),
                 })
                 .unwrap();
             registry
@@ -829,6 +854,77 @@ fn guard_business_control_uses_registered_rpc_endpoints_for_live_ptz_and_stop() 
                 .await
                 .unwrap();
             assert_eq!(ai_task.task_id, "ai-op-ai-rpc");
+            let upload = control
+                .prepare_ai_upload("op-ai-upload-prepare-rpc", "ai.vehicle", "image/jpeg", 1024)
+                .await
+                .unwrap();
+            assert_eq!(upload.node_id, "avai-rpc");
+            assert_eq!(upload.upload_id, "upload-1");
+            let uploaded_task = control
+                .start_ai_source(
+                    "op-ai-upload-rpc",
+                    "ai.vehicle",
+                    "vehicle",
+                    AiTaskSourceInput::AvaiUpload {
+                        avai_node_id: upload.node_id,
+                        upload_id: upload.upload_id,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(uploaded_task.source_type, "upload");
+            let url_task = control
+                .start_ai_source(
+                    "op-ai-url-rpc",
+                    "ai.vehicle",
+                    "vehicle",
+                    AiTaskSourceInput::ImageUrl {
+                        url: "https://example.test/vehicle.jpeg".to_string(),
+                        max_bytes: 1_048_576,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(url_task.source_type, "image_url");
+            assert_eq!(
+                control
+                    .query_ai(&url_task.task_id)
+                    .await
+                    .unwrap()
+                    .summary
+                    .state,
+                gmv_guard_server::api::v2::model::AiTaskSummaryState::Running
+            );
+            let session_image_task = control
+                .start_ai_source(
+                    "op-ai-session-image-rpc",
+                    "ai.vehicle",
+                    "vehicle",
+                    AiTaskSourceInput::SessionImage {
+                        session_node_id: "session-rpc".to_string(),
+                        image_id: "image-1".to_string(),
+                        device_id: "device-1".to_string(),
+                        channel_id: "channel-1".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(session_image_task.source_type, "session_image");
+            let snapshot_task = control
+                .start_ai_after_snapshot(
+                    "op-ai-snapshot-rpc",
+                    "ai.vehicle",
+                    "vehicle",
+                    "device-1",
+                    "channel-1",
+                    GbSnapshotOptions {
+                        count: 1,
+                        interval: 1,
+                    },
+                )
+                .await
+                .unwrap();
+            assert_eq!(snapshot_task.source_type, "session_image");
             assert_eq!(
                 control
                     .cancel_ai("op-ai-cancel-rpc", &ai_task.task_id)
@@ -1383,6 +1479,54 @@ impl SessionControl for FakeSession {
         }))
     }
 
+    async fn issue_gb_channel_image_source_access(
+        &self,
+        request: tonic::Request<IssueGbChannelImageSourceAccessRequest>,
+    ) -> Result<tonic::Response<IssueGbChannelImageSourceAccessResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let expected = request.expected_consumer.clone().unwrap();
+        assert_eq!(expected.node_id, "avai-rpc");
+        assert!(matches!(
+            request.task_id.as_str(),
+            "ai-op-ai-session-image-rpc" | "ai-op-ai-snapshot-rpc"
+        ));
+        assert_eq!(request.purpose, "ai.vehicle");
+        Ok(tonic::Response::new(
+            IssueGbChannelImageSourceAccessResponse {
+                access: Some(gmv_protocol::common::v1::AccessGrant {
+                    grant_id: "grant-image-1".to_string(),
+                    expected_consumer: request.expected_consumer,
+                    purpose: request.purpose,
+                    expires_at_epoch_ms: request.deadline_epoch_ms,
+                    endpoints: vec![gmv_protocol::common::v1::DataEndpoint {
+                        name: "session-image-uds".to_string(),
+                        uri: "unix:///run/session-image.sock".to_string(),
+                        capabilities: Some(gmv_protocol::common::v1::TransportCapabilities {
+                            reliable: true,
+                            ordered: true,
+                            preserves_message_boundary: false,
+                            encrypted: false,
+                            congestion_controlled: true,
+                            local_only: true,
+                            max_message_size: 20 * 1024 * 1024,
+                            mode: gmv_protocol::common::v1::TransportMode::Stream as i32,
+                        }),
+                        labels: HashMap::from([(
+                            "framing".to_string(),
+                            "length-delimited-u32be".to_string(),
+                        )]),
+                    }],
+                    proof: vec![1, 2, 3],
+                }),
+                content_type: "image/jpeg".to_string(),
+                file_name: "snapshot.jpeg".to_string(),
+                file_size: 4,
+                sha256: "sha256".to_string(),
+                error: None,
+            },
+        ))
+    }
+
     async fn set_gb_channel_cover(
         &self,
         request: tonic::Request<SetGbChannelCoverRequest>,
@@ -1491,6 +1635,7 @@ impl SessionControl for FakeSession {
         Ok(tonic::Response::new(SnapshotImageResponse {
             session_id: "snapshot-session".to_string(),
             error: None,
+            image_ids: vec!["snapshot-image-1".to_string()],
         }))
     }
 }
@@ -1776,8 +1921,23 @@ impl AvaiControl for FakeAvai {
         &self,
         request: tonic::Request<CreateTaskRequest>,
     ) -> Result<tonic::Response<CreateTaskResponse>, tonic::Status> {
+        let request = request.into_inner();
+        if request.task_id == "ai-op-ai-url-rpc" {
+            assert!(matches!(
+                request.source.and_then(|source| source.source),
+                Some(gmv_protocol::avai::v1::source_spec::Source::ImageUrl(_))
+            ));
+        } else if request.task_id == "ai-op-ai-session-image-rpc" {
+            let owned = match request.source.and_then(|source| source.source) {
+                Some(gmv_protocol::avai::v1::source_spec::Source::OwnedImage(owned)) => owned,
+                source => panic!("expected owned image source, got {source:?}"),
+            };
+            let access = owned.access.unwrap();
+            assert_eq!(access.expected_consumer.unwrap().instance_id, "avai-inst");
+            assert!(access.endpoints[0].uri.starts_with("unix://"));
+        }
         Ok(tonic::Response::new(CreateTaskResponse {
-            task_id: request.into_inner().task_id,
+            task_id: request.task_id,
             state: AiTaskState::Running as i32,
             error: None,
         }))
@@ -1802,6 +1962,7 @@ impl AvaiControl for FakeAvai {
             state: AiTaskState::Running as i32,
             result: vec![],
             error: None,
+            typed_result: None,
         }))
     }
 
@@ -1814,6 +1975,74 @@ impl AvaiControl for FakeAvai {
             page: Some(PageResponse {
                 next_page_token: String::new(),
             }),
+        }))
+    }
+
+    async fn prepare_image_upload(
+        &self,
+        request: tonic::Request<PrepareImageUploadRequest>,
+    ) -> Result<tonic::Response<PrepareImageUploadResponse>, tonic::Status> {
+        let request = request.into_inner();
+        assert_eq!(request.expected_avai.unwrap().instance_id, "avai-inst");
+        assert_eq!(request.capability, "ai.vehicle");
+        Ok(tonic::Response::new(PrepareImageUploadResponse {
+            ticket: Some(ImageUploadTicket {
+                upload_id: "upload-1".to_string(),
+                endpoint: Some(gmv_protocol::common::v1::DataEndpoint {
+                    name: "avai-image-upload".to_string(),
+                    uri: "http://127.0.0.1:19081/internal/uploads/upload-1".to_string(),
+                    capabilities: None,
+                    labels: HashMap::new(),
+                }),
+                proof: vec![1, 2, 3],
+                expires_at_epoch_ms: i64::MAX,
+                max_bytes: request.max_bytes,
+                content_type: request.content_type,
+                owner: Some(gmv_protocol::common::v1::NodeIdentity {
+                    node_id: "avai-rpc".to_string(),
+                    instance_id: "avai-inst".to_string(),
+                    kind: gmv_protocol::common::v1::NodeKind::Avai as i32,
+                }),
+            }),
+            error: None,
+        }))
+    }
+
+    async fn finalize_image_upload(
+        &self,
+        request: tonic::Request<FinalizeImageUploadRequest>,
+    ) -> Result<tonic::Response<FinalizeImageUploadResponse>, tonic::Status> {
+        let request = request.into_inner();
+        assert_eq!(request.upload_id, "upload-1");
+        Ok(tonic::Response::new(FinalizeImageUploadResponse {
+            source: Some(OwnedImageRef {
+                owner: request.expected_avai.clone(),
+                resource: Some(gmv_protocol::common::v1::ResourceRef {
+                    resource_id: request.upload_id.clone(),
+                    resource_type: "avai_upload".to_string(),
+                }),
+                metadata: Some(ImageMetadata {
+                    content_type: "image/jpeg".to_string(),
+                    size_bytes: 4,
+                    sha256: "sha256".to_string(),
+                    width: 1,
+                    height: 1,
+                }),
+                access: Some(gmv_protocol::common::v1::AccessGrant {
+                    grant_id: "local-upload-1".to_string(),
+                    expected_consumer: request.expected_avai,
+                    purpose: request.capability,
+                    expires_at_epoch_ms: i64::MAX,
+                    endpoints: vec![gmv_protocol::common::v1::DataEndpoint {
+                        name: "avai-local-object".to_string(),
+                        uri: "gmv-object://upload-1".to_string(),
+                        capabilities: None,
+                        labels: HashMap::new(),
+                    }],
+                    proof: vec![1],
+                }),
+            }),
+            error: None,
         }))
     }
 }

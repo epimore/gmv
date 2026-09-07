@@ -9,6 +9,8 @@ service AvaiControl {
   rpc CancelTask(CancelTaskRequest) returns (CancelTaskResponse);
   rpc QueryTask(QueryTaskRequest) returns (QueryTaskResponse);
   rpc QueryCapabilities(QueryCapabilitiesRequest) returns (QueryCapabilitiesResponse);
+  rpc PrepareImageUpload(PrepareImageUploadRequest) returns (PrepareImageUploadResponse);
+  rpc FinalizeImageUpload(FinalizeImageUploadRequest) returns (FinalizeImageUploadResponse);
 }
 
 message CreateTaskRequest {
@@ -18,6 +20,11 @@ message CreateTaskRequest {
   string route_id = 4;
   gmv.common.v1.NodeIdentity expected_avai = 5;
   bytes payload = 6;
+  string capability = 7;
+  ModelRef requested_model = 8;
+  SourceSpec source = 9;
+  VersionedPayload domain_config = 10;
+  int64 deadline_epoch_ms = 11;
 }
 
 message CreateTaskResponse {
@@ -46,6 +53,7 @@ message QueryTaskResponse {
   AiTaskState state = 2;
   bytes result = 3;
   gmv.common.v1.ErrorDetail error = 4;
+  AiTaskResult typed_result = 5;
 }
 
 message QueryCapabilitiesRequest {
@@ -55,6 +63,107 @@ message QueryCapabilitiesRequest {
 message QueryCapabilitiesResponse {
   repeated string capabilities = 1;
   gmv.common.v1.PageResponse page = 2;
+}
+
+message PrepareImageUploadRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  gmv.common.v1.NodeIdentity expected_avai = 2;
+  string capability = 3;
+  string content_type = 4;
+  uint64 max_bytes = 5;
+  int64 deadline_epoch_ms = 6;
+}
+
+message ImageUploadTicket {
+  string upload_id = 1;
+  gmv.common.v1.DataEndpoint endpoint = 2;
+  bytes proof = 3;
+  int64 expires_at_epoch_ms = 4;
+  uint64 max_bytes = 5;
+  string content_type = 6;
+  gmv.common.v1.NodeIdentity owner = 7;
+}
+
+message PrepareImageUploadResponse {
+  ImageUploadTicket ticket = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message FinalizeImageUploadRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  gmv.common.v1.NodeIdentity expected_avai = 2;
+  string upload_id = 3;
+  string capability = 4;
+}
+
+message FinalizeImageUploadResponse {
+  OwnedImageRef source = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+}
+
+message ModelRef {
+  string model_id = 1;
+  string version = 2;
+  string runtime = 3;
+}
+
+message VersionedPayload {
+  string schema = 1;
+  uint32 version = 2;
+  bytes json = 3;
+}
+
+message ImageMetadata {
+  string content_type = 1;
+  uint64 size_bytes = 2;
+  string sha256 = 3;
+  uint32 width = 4;
+  uint32 height = 5;
+}
+
+message ImageUrlSource {
+  string url = 1;
+  ImageMetadata expected = 2;
+  uint64 max_bytes = 3;
+}
+
+message OwnedImageRef {
+  gmv.common.v1.NodeIdentity owner = 1;
+  gmv.common.v1.ResourceRef resource = 2;
+  ImageMetadata metadata = 3;
+  gmv.common.v1.AccessGrant access = 4;
+}
+
+message StreamFrameRef {
+  gmv.common.v1.NodeIdentity owner = 1;
+  string source_id = 2;
+  string subscription_id = 3;
+  uint64 generation = 4;
+  uint64 sequence = 5;
+  int64 capture_at_epoch_ms = 6;
+  ImageMetadata metadata = 7;
+  gmv.common.v1.AccessGrant access = 8;
+}
+
+message SourceSpec {
+  oneof source {
+    OwnedImageRef owned_image = 1;
+    ImageUrlSource image_url = 2;
+    StreamFrameRef stream_frame = 3;
+  }
+}
+
+message EvidenceRef {
+  gmv.common.v1.ResourceRef resource = 1;
+  ImageMetadata metadata = 2;
+  gmv.common.v1.AccessGrant access = 3;
+}
+
+message AiTaskResult {
+  VersionedPayload output = 1;
+  ModelRef actual_model = 2;
+  repeated EvidenceRef evidence = 3;
+  int64 completed_at_epoch_ms = 4;
 }
 
 enum AiTaskState {

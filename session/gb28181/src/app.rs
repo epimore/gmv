@@ -126,6 +126,14 @@ impl
                 GlobalRuntime::request_shutdown_with_error();
                 return;
             }
+            if let Err(err) =
+                crate::http::image::start_source_uds_service(&service_rt, &http.image_source_uds)
+                    .await
+            {
+                error!("session image source UDS initialization failed: {err}");
+                GlobalRuntime::request_shutdown_with_error();
+                return;
+            }
             let mut node = SessionGuardNode::new(node_id, generate_instance_id(), http_endpoint);
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {

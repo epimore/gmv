@@ -266,6 +266,8 @@ fn session_record_query_contract_is_stable() {
 fn session_device_online_status_filter_is_optional_and_appended() {
     let descriptor = descriptor();
     let session = descriptor_file(&descriptor, "gmv.session.v1");
+    let snapshot = descriptor_message(session, "SnapshotImageResponse");
+    assert_eq!(descriptor_field_number(snapshot, "image_ids"), Some(3));
     let request = descriptor_message(session, "ListGbDevicesRequest");
     let field = request
         .field
@@ -643,6 +645,93 @@ fn stream_output_lifecycle_contract_is_stable() {
         field_number("StreamJsonRequest", "subscription_id"),
         Some(2)
     );
+}
+
+#[test]
+fn avai_multisource_task_contract_is_additive_and_typed() {
+    let descriptor = descriptor();
+    let common = descriptor_file(&descriptor, "gmv.common.v1");
+    let endpoint = descriptor_message(common, "DataEndpoint");
+    assert_eq!(descriptor_field_number(endpoint, "uri"), Some(2));
+    assert_eq!(descriptor_field_number(endpoint, "capabilities"), Some(3));
+    let grant = descriptor_message(common, "AccessGrant");
+    assert_eq!(descriptor_field_number(grant, "expected_consumer"), Some(2));
+    assert_eq!(descriptor_field_number(grant, "endpoints"), Some(5));
+    assert_eq!(descriptor_field_number(grant, "proof"), Some(6));
+
+    let avai = descriptor_file(&descriptor, "gmv.avai.v1");
+    let create = descriptor_message(avai, "CreateTaskRequest");
+    for (field, number) in [
+        ("task_type", 3),
+        ("payload", 6),
+        ("capability", 7),
+        ("requested_model", 8),
+        ("source", 9),
+        ("domain_config", 10),
+        ("deadline_epoch_ms", 11),
+    ] {
+        assert_eq!(descriptor_field_number(create, field), Some(number));
+    }
+    let source = descriptor_message(avai, "SourceSpec");
+    assert_eq!(source.oneof_decl.len(), 1);
+    for (field, number) in [("owned_image", 1), ("image_url", 2), ("stream_frame", 3)] {
+        let field = source
+            .field
+            .iter()
+            .find(|item| item.name.as_deref() == Some(field))
+            .unwrap();
+        assert_eq!(field.number, Some(number));
+        assert_eq!(field.oneof_index, Some(0));
+    }
+    let query = descriptor_message(avai, "QueryTaskResponse");
+    assert_eq!(descriptor_field_number(query, "result"), Some(3));
+    assert_eq!(descriptor_field_number(query, "typed_result"), Some(5));
+    let prepare_upload = descriptor_message(avai, "PrepareImageUploadRequest");
+    assert_eq!(
+        descriptor_field_number(prepare_upload, "expected_avai"),
+        Some(2)
+    );
+    assert_eq!(
+        descriptor_field_number(prepare_upload, "deadline_epoch_ms"),
+        Some(6)
+    );
+    let upload_ticket = descriptor_message(avai, "ImageUploadTicket");
+    assert_eq!(descriptor_field_number(upload_ticket, "endpoint"), Some(2));
+    assert_eq!(descriptor_field_number(upload_ticket, "proof"), Some(3));
+    let finalize_upload = descriptor_message(avai, "FinalizeImageUploadResponse");
+    assert_eq!(descriptor_field_number(finalize_upload, "source"), Some(1));
+
+    let session = descriptor_file(&descriptor, "gmv.session.v1");
+    let service = session
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("SessionControl"))
+        .unwrap();
+    assert!(
+        service
+            .method
+            .iter()
+            .any(|method| method.name.as_deref() == Some("IssueGbChannelImageSourceAccess"))
+    );
+    let request = descriptor_message(session, "IssueGbChannelImageSourceAccessRequest");
+    assert_eq!(
+        descriptor_field_number(request, "expected_consumer"),
+        Some(5)
+    );
+    assert_eq!(
+        descriptor_field_number(request, "deadline_epoch_ms"),
+        Some(7)
+    );
+    let response = descriptor_message(session, "IssueGbChannelImageSourceAccessResponse");
+    assert_eq!(descriptor_field_number(response, "access"), Some(1));
+    assert_eq!(descriptor_field_number(response, "error"), Some(6));
+    let read_request = descriptor_message(session, "ReadGrantedImageRequest");
+    assert_eq!(descriptor_field_number(read_request, "grant_id"), Some(1));
+    assert_eq!(descriptor_field_number(read_request, "proof"), Some(2));
+    assert_eq!(descriptor_field_number(read_request, "image_id"), Some(3));
+    let read_response = descriptor_message(session, "ReadGrantedImageResponse");
+    assert_eq!(descriptor_field_number(read_response, "image"), Some(1));
+    assert_eq!(descriptor_field_number(read_response, "error"), Some(4));
 }
 
 #[test]

@@ -25,6 +25,11 @@ http:
         enabled: false #仅控制本机HTTP监听TLS；若由Nginx终止HTTPS，可保持false并将public_url配置为https
         certificate_path: ""
         private_key_path: ""
+    image_source_uds:
+        enabled: true #同机Session向AVAI交付图片的首选数据面；关闭后仅发布HTTP内部grant端点
+        socket_root: ./run
+        socket_path: ./run/session-image.sock
+        max_message_size: 20971520 #完整消息上限，需大于允许的最大图片及protobuf开销
 
 db:
     backend: mysql # mysql|sqlite；SQLite 使用独立 session-gb28181.db 文件

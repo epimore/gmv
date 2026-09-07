@@ -22,7 +22,8 @@ use gmv_domain::info::output::{
 };
 use gmv_nodec::NodeEventSender;
 use gmv_protocol::common::v1::{
-    Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
+    AccessGrant, DataEndpoint, Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind,
+    OperationRef, ResourceRef, TransportCapabilities, TransportMode,
 };
 use gmv_protocol::guard::v1::{
     AllocateStreamRequest, AllocateStreamResponse, EventPriority, LeaseRequest, NodeEvent,
@@ -43,6 +44,7 @@ use gmv_protocol::session::v1::{
     GetGbChannelResponse, GetGbDeviceRequest, GetGbDeviceResponse, GetSessionConfigRequest,
     GetSessionConfigResponse, IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
     IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
+    IssueGbChannelImageSourceAccessRequest, IssueGbChannelImageSourceAccessResponse,
     ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, ListCloudRecordingsRequest, ListCloudRecordingsResponse,
     ListGbChannelImagesRequest, ListGbChannelImagesResponse, ListGbChannelsRequest,
@@ -1609,16 +1611,29 @@ impl SessionControl for SessionControlRpc {
             interval,
         };
         let response = match edge_serv::snapshot_image(info).await {
-            Ok(session_id) => SnapshotImageResponse {
-                session_id,
-                error: None,
-            },
+            Ok(session_id) => {
+                let image_ids =
+                    crate::storage::guard_query::GbChannelImageView::list_by_business_id(
+                        &session_id,
+                    )
+                    .await
+                    .map_err(storage_status)?
+                    .into_iter()
+                    .map(|image| image.image_id)
+                    .collect();
+                SnapshotImageResponse {
+                    session_id,
+                    error: None,
+                    image_ids,
+                }
+            }
             Err(err) => SnapshotImageResponse {
                 session_id: String::new(),
                 error: Some(gmv_nodec::error::global_error_detail(
                     "snapshot_failed",
                     &err,
                 )),
+                image_ids: Vec::new(),
             },
         };
         Ok(tonic::Response::new(response))
@@ -1981,6 +1996,88 @@ impl SessionControl for SessionControlRpc {
             file_name: issued.file_name,
             file_size: issued.file_size,
         }))
+    }
+
+    async fn issue_gb_channel_image_source_access(
+        &self,
+        request: tonic::Request<IssueGbChannelImageSourceAccessRequest>,
+    ) -> Result<tonic::Response<IssueGbChannelImageSourceAccessResponse>, tonic::Status> {
+        let request = request.into_inner();
+        let expected = request
+            .expected_consumer
+            .as_ref()
+            .ok_or_else(|| tonic::Status::invalid_argument("expected_consumer is required"))?;
+        if expected.kind != NodeKind::Avai as i32 {
+            return Err(tonic::Status::invalid_argument(
+                "expected_consumer must be an Avai node",
+            ));
+        }
+        let issued = crate::http::image::issue_source_grant(
+            &request.image_id,
+            &request.device_id,
+            &request.channel_id,
+            &expected.node_id,
+            &expected.instance_id,
+            &request.task_id,
+            &request.purpose,
+            request.deadline_epoch_ms,
+        )
+        .await?;
+        let mut endpoints = Vec::with_capacity(2);
+        if let Some(uri) = issued.uds_url.clone() {
+            endpoints.push(DataEndpoint {
+                name: "session-image-uds".to_string(),
+                uri,
+                capabilities: Some(TransportCapabilities {
+                    reliable: true,
+                    ordered: true,
+                    preserves_message_boundary: false,
+                    encrypted: false,
+                    congestion_controlled: true,
+                    local_only: true,
+                    max_message_size: issued.uds_max_message_size as u64,
+                    mode: TransportMode::Stream as i32,
+                }),
+                labels: HashMap::from([(
+                    "framing".to_string(),
+                    "length-delimited-u32be".to_string(),
+                )]),
+            });
+        }
+        endpoints.push(DataEndpoint {
+            name: "session-image-http".to_string(),
+            uri: issued.url.clone(),
+            capabilities: Some(TransportCapabilities {
+                reliable: true,
+                ordered: true,
+                preserves_message_boundary: false,
+                encrypted: crate::http::Http::get_http_by_conf()
+                    .public_url
+                    .starts_with("https://"),
+                congestion_controlled: true,
+                local_only: false,
+                max_message_size: issued.file_size,
+                mode: TransportMode::Stream as i32,
+            }),
+            labels: HashMap::new(),
+        });
+        Ok(tonic::Response::new(
+            IssueGbChannelImageSourceAccessResponse {
+                access: Some(AccessGrant {
+                    grant_id: issued.grant_id,
+                    expected_consumer: request.expected_consumer,
+                    purpose: request.purpose,
+                    expires_at_epoch_ms: issued.expires_at_ms,
+                    endpoints,
+                    proof: issued.proof,
+                }),
+                content_type: issued.content_type,
+                file_name: issued.file_name,
+                file_size: issued.file_size,
+                sha256: issued.sha256,
+                error: None,
+            },
+        ))
     }
 
     async fn set_gb_channel_cover(

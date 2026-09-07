@@ -28,6 +28,8 @@ pub struct Http {
     pub public_url: String,
     #[serde(default)]
     pub tls: HttpTlsConf,
+    #[serde(default)]
+    pub image_source_uds: ImageSourceUdsConf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -40,11 +42,51 @@ pub struct HttpTlsConf {
     #[serde(default)]
     pub private_key_path: PathBuf,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+pub struct ImageSourceUdsConf {
+    #[serde(default = "default_image_source_uds_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_image_source_uds_root")]
+    pub socket_root: PathBuf,
+    #[serde(default = "default_image_source_uds_path")]
+    pub socket_path: PathBuf,
+    #[serde(default = "default_image_source_uds_max_message_size")]
+    pub max_message_size: usize,
+}
+
+impl Default for ImageSourceUdsConf {
+    fn default() -> Self {
+        Self {
+            enabled: default_image_source_uds_enabled(),
+            socket_root: default_image_source_uds_root(),
+            socket_path: default_image_source_uds_path(),
+            max_message_size: default_image_source_uds_max_message_size(),
+        }
+    }
+}
 serde_default!(
     default_listen_addr,
     SocketAddr,
     "0.0.0.0:8080".parse().expect("valid default HTTP address")
 );
+
+fn default_image_source_uds_enabled() -> bool {
+    cfg!(unix)
+}
+
+fn default_image_source_uds_root() -> PathBuf {
+    PathBuf::from("./run")
+}
+
+fn default_image_source_uds_path() -> PathBuf {
+    PathBuf::from("./run/session-image.sock")
+}
+
+fn default_image_source_uds_max_message_size() -> usize {
+    20 * 1024 * 1024
+}
 serde_default!(
     default_public_url,
     String,
@@ -68,6 +110,25 @@ impl CheckFromConf for Http {
             return Err(FieldCheckError::BizError(
                 "http.tls启用时certificate_path和private_key_path不能为空".to_string(),
             ));
+        }
+        if self.image_source_uds.enabled {
+            if !cfg!(unix) {
+                return Err(FieldCheckError::BizError(
+                    "http.image_source_uds仅支持Unix平台".to_string(),
+                ));
+            }
+            if self.image_source_uds.max_message_size == 0 {
+                return Err(FieldCheckError::BizError(
+                    "http.image_source_uds.max_message_size必须大于0".to_string(),
+                ));
+            }
+            if self.image_source_uds.socket_root.as_os_str().is_empty()
+                || self.image_source_uds.socket_path.as_os_str().is_empty()
+            {
+                return Err(FieldCheckError::BizError(
+                    "http.image_source_uds的socket_root和socket_path不能为空".to_string(),
+                ));
+            }
         }
         Ok(())
     }
@@ -229,6 +290,7 @@ mod tests {
             listen_addr: "0.0.0.0:28567".parse().unwrap(),
             public_url: "https://gmv.example.com/session-1".to_string(),
             tls: Default::default(),
+            image_source_uds: Default::default(),
         };
 
         assert_eq!(
@@ -249,6 +311,7 @@ mod tests {
                 listen_addr: "0.0.0.0:28567".parse().unwrap(),
                 public_url: public_url.to_string(),
                 tls: Default::default(),
+                image_source_uds: Default::default(),
             };
             assert!(conf.public_endpoint().is_err());
         }

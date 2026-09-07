@@ -600,7 +600,7 @@ impl MqttCommandExecutor {
             "gb.image.snapshot" => {
                 let device_id = required_payload_string(&command.payload, "device_id")?;
                 let channel_id = command_target_or_payload(command, "channel_id")?;
-                let session_id = self
+                let snapshot = self
                     .control
                     .snapshot_image(
                         &command.command_id,
@@ -610,7 +610,10 @@ impl MqttCommandExecutor {
                         payload_u32(&command.payload, "interval"),
                     )
                     .await?;
-                Ok(base::serde_json::json!({"session_id": session_id}))
+                Ok(base::serde_json::json!({
+                    "session_id": snapshot.session_id,
+                    "image_ids": snapshot.image_ids,
+                }))
             }
             "gb.image.access" => self.issue_gb_image_access(command).await,
             "gb.image.cover" => self.set_gb_image_cover(command).await,

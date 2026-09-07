@@ -31,6 +31,39 @@ message Endpoint {
   map<string, string> labels = 6;
 }
 
+enum TransportMode {
+  TRANSPORT_MODE_UNSPECIFIED = 0;
+  TRANSPORT_MODE_DATAGRAM = 1;
+  TRANSPORT_MODE_STREAM = 2;
+}
+
+message TransportCapabilities {
+  bool reliable = 1;
+  bool ordered = 2;
+  bool preserves_message_boundary = 3;
+  bool encrypted = 4;
+  bool congestion_controlled = 5;
+  bool local_only = 6;
+  uint64 max_message_size = 7;
+  TransportMode mode = 8;
+}
+
+message DataEndpoint {
+  string name = 1;
+  string uri = 2;
+  TransportCapabilities capabilities = 3;
+  map<string, string> labels = 4;
+}
+
+message AccessGrant {
+  string grant_id = 1;
+  NodeIdentity expected_consumer = 2;
+  string purpose = 3;
+  int64 expires_at_epoch_ms = 4;
+  repeated DataEndpoint endpoints = 5;
+  bytes proof = 6;
+}
+
 message ResourceRef {
   string resource_id = 1;
   string resource_type = 2;

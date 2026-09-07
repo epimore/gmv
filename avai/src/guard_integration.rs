@@ -7,8 +7,9 @@ use std::{
 use base_rpc::RpcChannelConfig;
 use gmv_protocol::avai::v1::{
     AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest, CreateTaskResponse,
-    QueryCapabilitiesRequest, QueryCapabilitiesResponse, QueryTaskRequest, QueryTaskResponse,
-    avai_control_server::AvaiControl,
+    FinalizeImageUploadRequest, FinalizeImageUploadResponse, PrepareImageUploadRequest,
+    PrepareImageUploadResponse, QueryCapabilitiesRequest, QueryCapabilitiesResponse,
+    QueryTaskRequest, QueryTaskResponse, avai_control_server::AvaiControl,
 };
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, PageResponse,
@@ -18,6 +19,8 @@ use gmv_protocol::guard::v1::{
     EventPriority, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
     RegisterNodeRequest, ResourceReport, ResourceState, node_to_guard_message,
 };
+
+use crate::{task::TaskManager, upload::UploadManager};
 
 #[derive(Debug, Clone)]
 pub struct AvaiGuardNode {
@@ -148,20 +151,58 @@ impl FrameReference {
 
 #[derive(Clone)]
 pub struct AvaiControlRpc {
-    inner: Arc<Mutex<AvaiControlAdapter>>,
+    inner: Arc<AvaiControlBackend>,
+    capabilities: Vec<String>,
+}
+
+enum AvaiControlBackend {
+    Legacy(Mutex<AvaiControlAdapter>),
+    Managed {
+        tasks: TaskManager,
+        uploads: UploadManager,
+    },
 }
 
 impl AvaiControlRpc {
     pub fn new(adapter: AvaiControlAdapter) -> Self {
+        let capabilities = adapter.capabilities.clone();
         Self {
-            inner: Arc::new(Mutex::new(adapter)),
+            inner: Arc::new(AvaiControlBackend::Legacy(Mutex::new(adapter))),
+            capabilities,
+        }
+    }
+
+    pub fn new_managed(
+        manager: TaskManager,
+        uploads: UploadManager,
+        capabilities: Vec<String>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(AvaiControlBackend::Managed {
+                tasks: manager,
+                uploads,
+            }),
+            capabilities,
         }
     }
 
     pub fn running_task_count(&self) -> usize {
-        self.inner
-            .lock()
-            .map_or(0, |adapter| adapter.running_task_count())
+        match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(adapter) => adapter
+                .lock()
+                .map_or(0, |adapter| adapter.running_task_count()),
+            AvaiControlBackend::Managed { tasks, .. } => tasks.running_task_count(),
+        }
+    }
+
+    pub async fn resource_snapshot(&self) -> NodeResourceSnapshot {
+        match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(adapter) => adapter.lock().map_or_else(
+                |_| NodeResourceSnapshot::default(),
+                |adapter| adapter.resource_snapshot(),
+            ),
+            AvaiControlBackend::Managed { tasks, .. } => tasks.resource_snapshot().await,
+        }
     }
 }
 
@@ -172,23 +213,29 @@ impl AvaiControl for AvaiControlRpc {
         request: tonic::Request<CreateTaskRequest>,
     ) -> Result<tonic::Response<CreateTaskResponse>, tonic::Status> {
         let request = request.into_inner();
+        let capability = request_capability(&request).to_string();
         base::log::debug!(
-            "avai_control.create_task, req: operation={:?}, task_id={}, task_type={}, route_id={}, expected_avai={:?}, payload_bytes={}",
+            "avai_control.create_task, req: operation={:?}, task_id={}, capability={}, route_id={}, expected_avai={:?}, legacy_payload_bytes={}, typed_source={}",
             request.operation,
             request.task_id,
-            request.task_type,
+            capability,
             request.route_id,
             request.expected_avai,
-            request.payload.len()
+            request.payload.len(),
+            request.source.is_some()
         );
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
         let task_id = request.task_id.clone();
-        let task_type = request.task_type.clone();
+        let task_type = capability;
         let route_id = request.route_id.clone();
-        let response = control.create_task(request, now_epoch_ms());
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(control) => control
+                .lock()
+                .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?
+                .create_task(request, now_epoch_ms()),
+            AvaiControlBackend::Managed { tasks, .. } => {
+                tasks.create_task(request, now_epoch_ms()).await
+            }
+        };
         if let Some(error) = &response.error {
             base::log::warn!(
                 "Avai task rejected: action=ai_task, stage=create, outcome=rejected, task_id={}, task_type={}, route_id={}, error_code={}",
@@ -215,11 +262,14 @@ impl AvaiControl for AvaiControlRpc {
     ) -> Result<tonic::Response<CancelTaskResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("avai_control.cancel_task, req:{request:?}");
-        let mut control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(control.cancel_task(request)))
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(control) => control
+                .lock()
+                .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?
+                .cancel_task(request),
+            AvaiControlBackend::Managed { tasks, .. } => tasks.cancel_task(request).await,
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn query_task(
@@ -228,11 +278,14 @@ impl AvaiControl for AvaiControlRpc {
     ) -> Result<tonic::Response<QueryTaskResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("avai_control.query_task, req:{request:?}");
-        let control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(control.query_task(request)))
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(control) => control
+                .lock()
+                .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?
+                .query_task(request),
+            AvaiControlBackend::Managed { tasks, .. } => tasks.query_task(request).await,
+        };
+        Ok(tonic::Response::new(response))
     }
 
     async fn query_capabilities(
@@ -241,11 +294,57 @@ impl AvaiControl for AvaiControlRpc {
     ) -> Result<tonic::Response<QueryCapabilitiesResponse>, tonic::Status> {
         let request = request.into_inner();
         base::log::debug!("avai_control.query_capabilities, req:{request:?}");
-        let control = self
-            .inner
-            .lock()
-            .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?;
-        Ok(tonic::Response::new(control.query_capabilities(request)))
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Legacy(control) => control
+                .lock()
+                .map_err(|_| tonic::Status::internal("avai control lock poisoned"))?
+                .query_capabilities(request),
+            AvaiControlBackend::Managed { .. } => QueryCapabilitiesResponse {
+                capabilities: self.capabilities.clone(),
+                page: Some(PageResponse {
+                    next_page_token: String::new(),
+                }),
+            },
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn prepare_image_upload(
+        &self,
+        request: tonic::Request<PrepareImageUploadRequest>,
+    ) -> Result<tonic::Response<PrepareImageUploadResponse>, tonic::Status> {
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Managed { uploads, .. } => {
+                uploads.prepare(request.into_inner(), now_epoch_ms()).await
+            }
+            AvaiControlBackend::Legacy(_) => PrepareImageUploadResponse {
+                ticket: None,
+                error: Some(error(
+                    "upload_unavailable",
+                    "image upload is unavailable on the legacy Avai adapter",
+                )),
+            },
+        };
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn finalize_image_upload(
+        &self,
+        request: tonic::Request<FinalizeImageUploadRequest>,
+    ) -> Result<tonic::Response<FinalizeImageUploadResponse>, tonic::Status> {
+        let response = match self.inner.as_ref() {
+            AvaiControlBackend::Managed { uploads, .. } => {
+                uploads.finalize(request.into_inner(), now_epoch_ms()).await
+            }
+            AvaiControlBackend::Legacy(_) => FinalizeImageUploadResponse {
+                source: None,
+                error: Some(error(
+                    "upload_unavailable",
+                    "image upload is unavailable on the legacy Avai adapter",
+                )),
+            },
+        };
+        Ok(tonic::Response::new(response))
     }
 }
 
@@ -282,10 +381,11 @@ impl AvaiControlAdapter {
                 Some(error("stale_instance", "avai instance does not match")),
             );
         }
+        let capability = request_capability(&request).to_string();
         if !self
             .capabilities
             .iter()
-            .any(|capability| capability == &request.task_type)
+            .any(|available| available == &capability)
         {
             return create_response(
                 &request.task_id,
@@ -299,7 +399,7 @@ impl AvaiControlAdapter {
         if let Some(existing) = self.tasks.get(&request.task_id) {
             return create_response(&request.task_id, existing.state, None);
         }
-        let frame = if request.payload.is_empty() {
+        let frame = if request.source.is_some() || request.payload.is_empty() {
             None
         } else {
             FrameReference::decode(&request.payload)
@@ -313,7 +413,7 @@ impl AvaiControlAdapter {
                 Some(error("frame_expired", "frame reference has expired")),
             );
         }
-        let _ = (request.task_type, request.route_id, frame);
+        let _ = (capability, request.route_id, frame);
         create_response(
             &request.task_id,
             AiTaskState::Failed,
@@ -365,12 +465,14 @@ impl AvaiControlAdapter {
                 state: task.state as i32,
                 result: task.result.clone(),
                 error: None,
+                typed_result: None,
             },
             None => QueryTaskResponse {
                 task_id: request.task_id,
                 state: AiTaskState::Failed as i32,
                 result: vec![],
                 error: Some(error("task_not_found", "task does not exist")),
+                typed_result: None,
             },
         }
     }
@@ -530,6 +632,14 @@ fn create_response(
     }
 }
 
+fn request_capability(request: &CreateTaskRequest) -> &str {
+    if request.capability.is_empty() {
+        &request.task_type
+    } else {
+        &request.capability
+    }
+}
+
 fn error(code: &str, message: &str) -> ErrorDetail {
     gmv_nodec::error::error_detail(code, message)
 }
@@ -580,6 +690,7 @@ mod tests {
             route_id: "route-1".to_string(),
             expected_avai: Some(node.identity.clone()),
             payload: frame.encode(),
+            ..Default::default()
         };
         let response = control.create_task(request.clone(), 1000);
         assert_eq!(response.state, AiTaskState::Failed as i32);
@@ -638,6 +749,7 @@ mod tests {
                 route_id: "route-1".to_string(),
                 expected_avai: Some(node.identity.clone()),
                 payload: expired.encode(),
+                ..Default::default()
             },
             20,
         );
@@ -650,6 +762,7 @@ mod tests {
                 route_id: "route-1".to_string(),
                 expected_avai: Some(node.identity.clone()),
                 payload: vec![],
+                ..Default::default()
             },
             20,
         );
@@ -667,6 +780,7 @@ mod tests {
                 route_id: "route-1".to_string(),
                 expected_avai: Some(stale),
                 payload: vec![],
+                ..Default::default()
             },
             20,
         );

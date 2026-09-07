@@ -32,8 +32,8 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use uuid::Uuid;
 
 use crate::api::v2::control::{
-    BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl, DeviceStreamOptions,
-    GbDevicePage, GbSessionConfigSummary,
+    AiTaskSourceInput, BroadcastOperationOptions, BroadcastTargetOptions, BusinessControl,
+    DeviceStreamOptions, GbDevicePage, GbSessionConfigSummary, GbSnapshotOptions,
 };
 use crate::api::v2::model::{
     ActiveStreamDialogItem, ActiveStreamDialogPage, ActiveStreamManagementInfo,
@@ -318,6 +318,8 @@ pub fn router(state: HttpState) -> Router {
             post(close_stream_output),
         )
         .route("/ai/tasks", get(ai_tasks).post(start_ai_task))
+        .route("/ai/uploads", post(prepare_ai_upload))
+        .route("/ai/tasks/{task_id}", get(ai_task))
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
         .with_state(state)
@@ -465,6 +467,8 @@ const OPEN_BUSINESS_OPERATIONS: &[(&str, &[&str])] = &[
     ("/streams/{stream_id}/outputs", &["get", "post"]),
     ("/streams/{stream_id}/outputs/{output_id}/close", &["post"]),
     ("/ai/tasks", &["get", "post"]),
+    ("/ai/uploads", &["post"]),
+    ("/ai/tasks/{task_id}", &["get"]),
     ("/ai/tasks/{task_id}/cancel", &["post"]),
     ("/runtime/status", &["get"]),
 ];
@@ -1154,6 +1158,8 @@ fn openapi_operation_summary(method: &str, path: &str) -> &'static str {
         ("post", "/streams/{stream_id}/outputs/{output_id}/close") => "关闭媒体流输出",
         ("get", "/ai/tasks") => "查询智能分析任务",
         ("post", "/ai/tasks") => "启动智能分析任务",
+        ("post", "/ai/uploads") => "创建智能分析图片上传授权",
+        ("get", "/ai/tasks/{task_id}") => "查询智能分析任务详情",
         ("post", "/ai/tasks/{task_id}/cancel") => "取消智能分析任务",
         ("get", "/runtime/status") => "查询 Guard 运行状态",
         ("get", _) => "查询 Guard 业务数据",
@@ -1401,7 +1407,28 @@ fn openapi_request_fields(method: &str, path: &str) -> &'static [(&'static str, 
             ("audio_codec", false),
             ("startup_timeout_ms", false),
         ],
-        "/ai/tasks" => &[("request_id", true), ("stream_id", true), ("model", true)],
+        "/ai/tasks" => &[
+            ("request_id", true),
+            ("capability", true),
+            ("model", false),
+            ("image_url", false),
+            ("image_max_bytes", false),
+            ("session_node_id", false),
+            ("image_id", false),
+            ("device_id", false),
+            ("channel_id", false),
+            ("upload_id", false),
+            ("avai_node_id", false),
+            ("snapshot", false),
+            ("snapshot_count", false),
+            ("snapshot_interval", false),
+            ("stream_id", false),
+        ],
+        "/ai/uploads" => &[
+            ("request_id", true),
+            ("capability", true),
+            ("content_type", true),
+        ],
         _ => &[],
     }
 }
@@ -1709,7 +1736,11 @@ fn openapi_field_type(name: &str) -> &'static str {
         | "count"
         | "interval"
         | "position_sec"
-        | "expected_generation" => "integer",
+        | "expected_generation"
+        | "max_bytes"
+        | "image_max_bytes"
+        | "snapshot_count"
+        | "snapshot_interval" => "integer",
         _ => "string",
     }
 }
@@ -1827,6 +1858,14 @@ fn openapi_field_description(name: &str) -> &'static str {
         }
         "renew" => "是否同意续期播放票据；仅 true 才执行续期。",
         "model" => "智能分析模型标识。",
+        "capability" => "AVAI 节点已注册的智能分析能力标识。",
+        "content_type" => "待上传图片的媒体类型，仅支持 image/jpeg、image/png 或 image/webp。",
+        "max_bytes" | "image_max_bytes" => "允许读取或上传的图片最大字节数，0 表示使用服务端上限。",
+        "image_url" => "由 AVAI 按安全策略受控拉取的 HTTP 或 HTTPS 图片地址。",
+        "upload_id" => "通过图片上传授权获得的上传资源标识。",
+        "avai_node_id" => "签发上传授权并持有上传图片的 AVAI 节点标识。",
+        "snapshot_count" => "触发抓拍后分析时的截图数量，当前任务使用最后一张成功持久化图片。",
+        "snapshot_interval" => "触发连续抓拍时的图片间隔，单位为秒。",
         "ids" => "以英文逗号分隔的操作标识列表，最多 100 项。",
         "after_id" => "从该事件标识之后继续查询。",
         "limit" => "本次最多返回的记录数。",
@@ -1900,7 +1939,12 @@ fn openapi_success_response_kind(method: &str, path: &str) -> (&'static str, &'s
     if method == "post" && path == "/gb28181/devices/{device_id}/delete" {
         return ("204", "设备删除成功，无响应正文。", false);
     }
-    if method == "post" && matches!(path, "/gb28181/devices" | "/gb28181/broadcasts/start") {
+    if method == "post"
+        && matches!(
+            path,
+            "/gb28181/devices" | "/gb28181/broadcasts/start" | "/ai/uploads"
+        )
+    {
         return ("201", "资源创建成功，返回新建资源 JSON。", true);
     }
     if method == "post"
@@ -2115,7 +2159,7 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
         | "/playbacks/{playback_id}/state" => &["accepted", "generation"],
         "/playbacks/presence/heartbeat" => &["server_time_ms", "items"],
         "/playback-tickets/{token}/renew" => &["renewed", "revoked", "expires_at_ms"],
-        "/ai/tasks" | "/ai/tasks/{task_id}/cancel" => &[
+        "/ai/tasks" | "/ai/tasks/{task_id}" | "/ai/tasks/{task_id}/cancel" => &[
             "task_id",
             "model",
             "stream_id",
@@ -2124,6 +2168,16 @@ fn openapi_success_schema(method: &str, path: &str, summary: &str) -> base::serd
             "lease_id",
             "route_id",
             "state",
+        ],
+        "/ai/uploads" => &[
+            "upload_id",
+            "node_id",
+            "instance_id",
+            "upload_url",
+            "proof",
+            "expires_at_epoch_ms",
+            "max_bytes",
+            "content_type",
         ],
         "/runtime/status" => &[
             "guard_available",
@@ -3683,6 +3737,8 @@ fn open_business_router(state: HttpState) -> Router<HttpState> {
             post(close_stream_output),
         )
         .route("/ai/tasks", get(ai_tasks).post(start_ai_task))
+        .route("/ai/uploads", post(prepare_ai_upload))
+        .route("/ai/tasks/{task_id}", get(ai_task))
         .route("/ai/tasks/{task_id}/cancel", post(cancel_ai_task))
         .route("/runtime/status", get(runtime_status))
         .layer(middleware::from_fn_with_state(
@@ -6451,8 +6507,108 @@ struct GbPtzRequest {
 #[serde(crate = "base::serde")]
 struct StartAiRequest {
     request_id: String,
+    #[serde(default)]
+    capability: String,
+    #[serde(default)]
     stream_id: String,
+    #[serde(default)]
     model: String,
+    #[serde(default)]
+    image_url: String,
+    #[serde(default)]
+    image_max_bytes: u64,
+    #[serde(default)]
+    session_node_id: String,
+    #[serde(default)]
+    image_id: String,
+    #[serde(default)]
+    device_id: String,
+    #[serde(default)]
+    channel_id: String,
+    #[serde(default)]
+    upload_id: String,
+    #[serde(default)]
+    avai_node_id: String,
+    #[serde(default)]
+    snapshot: bool,
+    #[serde(default)]
+    snapshot_count: u32,
+    #[serde(default)]
+    snapshot_interval: u32,
+}
+
+#[derive(Debug, base::serde::Deserialize)]
+#[serde(crate = "base::serde")]
+struct PrepareAiUploadRequest {
+    request_id: String,
+    capability: String,
+    content_type: String,
+    #[serde(default)]
+    max_bytes: u64,
+}
+
+impl StartAiRequest {
+    fn capability(&self) -> Result<String, HttpError> {
+        if !self.capability.trim().is_empty() {
+            return Ok(self.capability.trim().to_string());
+        }
+        if !self.model.trim().is_empty() {
+            return Ok(format!("ai.{}", self.model.trim()));
+        }
+        Err(HttpError::bad_request("AI capability is required"))
+    }
+
+    fn source(&self) -> Result<AiTaskSourceInput, HttpError> {
+        let mut source_count = 0;
+        source_count += usize::from(!self.image_url.trim().is_empty());
+        source_count += usize::from(!self.image_id.trim().is_empty());
+        source_count += usize::from(!self.stream_id.trim().is_empty());
+        source_count += usize::from(!self.upload_id.trim().is_empty());
+        source_count += usize::from(self.snapshot);
+        if source_count != 1 {
+            return Err(HttpError::bad_request(
+                "exactly one of image_url, image_id, upload_id, snapshot or stream_id is required",
+            ));
+        }
+        if !self.image_url.trim().is_empty() {
+            return Ok(AiTaskSourceInput::ImageUrl {
+                url: self.image_url.trim().to_string(),
+                max_bytes: self.image_max_bytes,
+            });
+        }
+        if !self.image_id.trim().is_empty() {
+            if self.device_id.trim().is_empty() || self.channel_id.trim().is_empty() {
+                return Err(HttpError::bad_request(
+                    "device_id and channel_id are required for a Session image",
+                ));
+            }
+            return Ok(AiTaskSourceInput::SessionImage {
+                session_node_id: self.session_node_id.trim().to_string(),
+                image_id: self.image_id.trim().to_string(),
+                device_id: self.device_id.trim().to_string(),
+                channel_id: self.channel_id.trim().to_string(),
+            });
+        }
+        if !self.upload_id.trim().is_empty() {
+            if self.avai_node_id.trim().is_empty() {
+                return Err(HttpError::bad_request(
+                    "avai_node_id is required for an uploaded image",
+                ));
+            }
+            return Ok(AiTaskSourceInput::AvaiUpload {
+                avai_node_id: self.avai_node_id.trim().to_string(),
+                upload_id: self.upload_id.trim().to_string(),
+            });
+        }
+        if self.snapshot {
+            return Err(HttpError::bad_request(
+                "snapshot source must be started through snapshot orchestration",
+            ));
+        }
+        Ok(AiTaskSourceInput::StreamFrame {
+            stream_id: self.stream_id.trim().to_string(),
+        })
+    }
 }
 
 #[derive(Debug, base::serde::Deserialize)]
@@ -8008,13 +8164,15 @@ async fn gb_snapshot_image(
         )
         .await;
     match result {
-        Ok(session_id) => {
+        Ok(snapshot) => {
             state
                 .api
                 .succeed_operation(&operation_id, "snapshot accepted")?;
             Ok((
                 StatusCode::ACCEPTED,
-                Json(GbSnapshotResponse { session_id }),
+                Json(GbSnapshotResponse {
+                    session_id: snapshot.session_id,
+                }),
             ))
         }
         Err(error) => {
@@ -9896,6 +10054,51 @@ async fn ai_tasks(
     Ok(Json(real_ai_tasks(&state)))
 }
 
+async fn prepare_ai_upload(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Json(request): Json<PrepareAiUploadRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::api::v2::model::AiUploadTicketSummary>,
+    ),
+    HttpError,
+> {
+    debug!(
+        "/api/v2/ai/uploads, req: request_id={}, capability={}, content_type={}, max_bytes={}",
+        request.request_id, request.capability, request.content_type, request.max_bytes
+    );
+    let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let operation_id = request.request_id.clone();
+    state.api.start_operation(operation_request(
+        operation_id.clone(),
+        "ai.upload.prepare",
+        &session,
+        Role::Operator,
+    ))?;
+    let result = BusinessControl::new(state.api.store())
+        .prepare_ai_upload(
+            &request.request_id,
+            request.capability.trim(),
+            request.content_type.trim(),
+            request.max_bytes,
+        )
+        .await;
+    match result {
+        Ok(ticket) => {
+            state
+                .api
+                .succeed_operation(&operation_id, "ai upload ticket created")?;
+            Ok((StatusCode::CREATED, Json(ticket)))
+        }
+        Err(error) => {
+            let _ = state.api.fail_operation(&operation_id, error.clone());
+            Err(HttpError::from_operation(error, &operation_id))
+        }
+    }
+}
+
 async fn start_ai_task(
     State(state): State<HttpState>,
     headers: HeaderMap,
@@ -9903,6 +10106,12 @@ async fn start_ai_task(
 ) -> Result<(StatusCode, Json<AiTaskSummary>), HttpError> {
     debug!("/api/v2/ai/tasks, req:{request:?}");
     let session = require_write(&state.auth, &headers, Role::Operator)?;
+    let capability = request.capability()?;
+    let source = if request.snapshot {
+        None
+    } else {
+        Some(request.source()?)
+    };
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
         operation_id.clone(),
@@ -9910,9 +10119,36 @@ async fn start_ai_task(
         &session,
         Role::Operator,
     ))?;
-    let start_result = BusinessControl::new(state.api.store())
-        .start_ai(&request.request_id, &request.stream_id, &request.model)
-        .await;
+    let control = BusinessControl::new(state.api.store());
+    let start_result = if request.snapshot {
+        if request.device_id.trim().is_empty() || request.channel_id.trim().is_empty() {
+            return Err(HttpError::bad_request(
+                "device_id and channel_id are required for snapshot analysis",
+            ));
+        }
+        control
+            .start_ai_after_snapshot(
+                &request.request_id,
+                &capability,
+                &request.model,
+                request.device_id.trim(),
+                request.channel_id.trim(),
+                GbSnapshotOptions {
+                    count: request.snapshot_count,
+                    interval: request.snapshot_interval,
+                },
+            )
+            .await
+    } else {
+        control
+            .start_ai_source(
+                &request.request_id,
+                &capability,
+                &request.model,
+                source.expect("validated non-snapshot source"),
+            )
+            .await
+    };
     match start_result {
         Ok(task) => {
             state
@@ -9925,6 +10161,19 @@ async fn start_ai_task(
             Err(HttpError::from_operation(error, &operation_id))
         }
     }
+}
+
+async fn ai_task(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+    Path(task_id): Path<String>,
+) -> Result<Json<crate::api::v2::model::AiTaskDetail>, HttpError> {
+    debug!("/api/v2/ai/tasks/{{task_id}}, req: task_id={task_id}");
+    require_role(&state.auth, &headers, Role::Viewer)?;
+    let detail = BusinessControl::new(state.api.store())
+        .query_ai(&task_id)
+        .await?;
+    Ok(Json(detail))
 }
 
 async fn cancel_ai_task(
@@ -10044,7 +10293,11 @@ pub(crate) fn ai_task_summaries(store: &InMemoryGuardStore) -> Vec<AiTaskSummary
             let lease = leases.iter().find(|lease| lease.route_id == route.route_id);
             AiTaskSummary {
                 task_id: route.resource_id,
+                capability: lease
+                    .map(|lease| lease.stream_type.clone())
+                    .unwrap_or_default(),
                 model: String::new(),
+                source_type: String::new(),
                 stream_id: String::new(),
                 node_id: route.node_id,
                 instance_id: route.instance_id,
@@ -10065,6 +10318,8 @@ pub(crate) fn ai_task_summaries(store: &InMemoryGuardStore) -> Vec<AiTaskSummary
                     AiTaskSummaryState::Cancelled
                 } else if matches!(route.state, RouteState::Orphaned | RouteState::Conflict) {
                     AiTaskSummaryState::Failed
+                } else if route.state == RouteState::Allocated {
+                    AiTaskSummaryState::Pending
                 } else {
                     AiTaskSummaryState::Running
                 },
@@ -10690,7 +10945,7 @@ mod tests {
 
     #[test]
     fn public_contract_has_explicit_success_and_nested_request_schemas() {
-        assert_eq!(OPEN_BUSINESS_OPERATIONS.len(), 58);
+        assert_eq!(OPEN_BUSINESS_OPERATIONS.len(), 60);
         for (path, methods) in OPEN_BUSINESS_OPERATIONS {
             for method in *methods {
                 let schema =
@@ -10875,7 +11130,10 @@ mod tests {
                     );
                 } else {
                     special_count += 1;
-                    assert_eq!((*method, *path), ("get", "/events"));
+                    assert!(matches!(
+                        (*method, *path),
+                        ("get", "/events") | ("post", "/ai/uploads")
+                    ));
                 }
 
                 let operation = &openapi["paths"][format!("/openapi/v1{path}")][*method];
@@ -10899,8 +11157,8 @@ mod tests {
             }
         }
 
-        assert_eq!(operation_count, 65);
-        assert_eq!(special_count, 1);
+        assert_eq!(operation_count, 67);
+        assert_eq!(special_count, 2);
         assert_eq!(
             action_usage.len(),
             crate::integration::model::MQTT_COMMAND_ACTIONS.len()

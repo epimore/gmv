@@ -4,10 +4,14 @@ use std::time::{Duration, Instant};
 
 use gmv_nodec::error::META_GLOBAL_CODE;
 use gmv_protocol::avai::v1::avai_control_client::AvaiControlClient;
-use gmv_protocol::avai::v1::{AiTaskState, CancelTaskRequest, CreateTaskRequest};
+use gmv_protocol::avai::v1::{
+    AiTaskState, CancelTaskRequest, CreateTaskRequest, FinalizeImageUploadRequest, ImageMetadata,
+    ImageUrlSource, OwnedImageRef, PrepareImageUploadRequest, QueryTaskRequest, SourceSpec,
+    StreamFrameRef, source_spec,
+};
 use gmv_protocol::common::v1::{
     EndpointMode, ErrorDetail, NodeIdentity as ProtoIdentity, NodeKind as ProtoNodeKind,
-    OperationRef,
+    OperationRef, ResourceRef,
 };
 use gmv_protocol::session::v1::session_control_client::SessionControlClient;
 use gmv_protocol::session::v1::{
@@ -18,12 +22,12 @@ use gmv_protocol::session::v1::{
     GetGbChannelRequest, GetGbDeviceRequest, GetSessionConfigRequest,
     IssueCloudRecordingAccessRequest, IssueCloudRecordingAccessResponse,
     IssueGbChannelImageAccessRequest, IssueGbChannelImageAccessResponse,
-    ListActiveStreamDialogsRequest, ListActiveStreamDialogsResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, ListCloudRecordingsRequest, ListGbChannelImagesRequest,
-    ListGbChannelImagesResponse, ListGbChannelsRequest, ListGbDevicesRequest,
-    ListGbResourcesRequest, ListStreamHistoryRequest, ListStreamHistoryResponse,
-    PlaybackPresenceHeartbeat, PlaybackPresenceHeartbeatResult, PlaybackState,
-    QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
+    IssueGbChannelImageSourceAccessRequest, ListActiveStreamDialogsRequest,
+    ListActiveStreamDialogsResponse, ListActiveStreamsRequest, ListActiveStreamsResponse,
+    ListCloudRecordingsRequest, ListGbChannelImagesRequest, ListGbChannelImagesResponse,
+    ListGbChannelsRequest, ListGbDevicesRequest, ListGbResourcesRequest, ListStreamHistoryRequest,
+    ListStreamHistoryResponse, PlaybackPresenceHeartbeat, PlaybackPresenceHeartbeatResult,
+    PlaybackState, QueryGbChannelRecordsRequest, RefreshPlaybackPresenceRequest,
     ResetGbResourceConfirmationRequest, SaveGbResourceConfirmationRequest, SeekPlaybackRequest,
     SetGbChannelCoverRequest, SetPlaybackSpeedRequest, SetPlaybackStateRequest,
     SnapshotImageRequest, StartDeviceStreamRequest, StopCloudRecordingRequest,
@@ -38,8 +42,9 @@ use gmv_protocol::stream::v1::{
 use uuid::Uuid;
 
 use crate::api::v2::model::{
-    AiTaskSummary, AiTaskSummaryState, BroadcastOperationSummary, BroadcastTargetSummary,
-    StreamOutputState, StreamOutputSummary, StreamSummary, StreamSummaryState,
+    AiTaskDetail, AiTaskSummary, AiTaskSummaryState, AiUploadTicketSummary,
+    BroadcastOperationSummary, BroadcastTargetSummary, StreamOutputState, StreamOutputSummary,
+    StreamSummary, StreamSummaryState,
 };
 use crate::core::{
     ConnectionState, GmvGuardErrorCode, GuardError, GuardResult, LeaseState, NodeIdentity,
@@ -60,6 +65,38 @@ const STREAM_OUTPUT_READY_TIMEOUT: Duration = Duration::from_secs(12);
 const STREAM_OUTPUT_READY_POLL: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone)]
+pub enum AiTaskSourceInput {
+    ImageUrl {
+        url: String,
+        max_bytes: u64,
+    },
+    SessionImage {
+        session_node_id: String,
+        image_id: String,
+        device_id: String,
+        channel_id: String,
+    },
+    AvaiUpload {
+        avai_node_id: String,
+        upload_id: String,
+    },
+    StreamFrame {
+        stream_id: String,
+    },
+}
+
+impl AiTaskSourceInput {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::ImageUrl { .. } => "image_url",
+            Self::SessionImage { .. } => "session_image",
+            Self::AvaiUpload { .. } => "upload",
+            Self::StreamFrame { .. } => "stream_frame",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct BusinessControl {
     store: InMemoryGuardStore,
 }
@@ -70,6 +107,19 @@ pub struct GbSessionConfigSummary {
     pub domain_id: String,
     pub wan_ip: String,
     pub wan_port: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GbSnapshotResult {
+    pub session_id: String,
+    pub session_node_id: String,
+    pub image_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GbSnapshotOptions {
+    pub count: u32,
+    pub interval: u32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1465,7 +1515,7 @@ impl BusinessControl {
         channel_id: &str,
         count: u32,
         interval: u32,
-    ) -> GuardResult<String> {
+    ) -> GuardResult<GbSnapshotResult> {
         let device = self
             .get_gb_device(device_id)
             .await?
@@ -1526,7 +1576,11 @@ impl BusinessControl {
             ));
         }
         edge.success();
-        Ok(response.session_id)
+        Ok(GbSnapshotResult {
+            session_id: response.session_id,
+            session_node_id: session.identity.node_id,
+            image_ids: response.image_ids,
+        })
     }
 
     pub async fn start_live(
@@ -2869,8 +2923,174 @@ impl BusinessControl {
         stream_id: &str,
         model: &str,
     ) -> GuardResult<AiTaskSummary> {
-        let capability = ai_capability(model);
-        let avai = self.select_node(NodeKind::Avai, &capability)?;
+        self.start_ai_source(
+            operation_id,
+            &ai_capability(model),
+            model,
+            AiTaskSourceInput::StreamFrame {
+                stream_id: stream_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn start_ai_after_snapshot(
+        &self,
+        operation_id: &str,
+        capability: &str,
+        model: &str,
+        device_id: &str,
+        channel_id: &str,
+        snapshot: GbSnapshotOptions,
+    ) -> GuardResult<AiTaskSummary> {
+        let snapshot = self
+            .snapshot_image(
+                operation_id,
+                device_id,
+                channel_id,
+                snapshot.count.max(1),
+                snapshot.interval,
+            )
+            .await?;
+        let image_id = snapshot.image_ids.last().cloned().ok_or_else(|| {
+            GuardError::Conflict(
+                "session completed the snapshot without a persisted image identity".to_string(),
+            )
+        })?;
+        self.start_ai_source(
+            operation_id,
+            capability,
+            model,
+            AiTaskSourceInput::SessionImage {
+                session_node_id: snapshot.session_node_id,
+                image_id,
+                device_id: device_id.to_string(),
+                channel_id: channel_id.to_string(),
+            },
+        )
+        .await
+    }
+
+    pub async fn prepare_ai_upload(
+        &self,
+        operation_id: &str,
+        capability: &str,
+        content_type: &str,
+        max_bytes: u64,
+    ) -> GuardResult<AiUploadTicketSummary> {
+        if operation_id.trim().is_empty() || capability.trim().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "AI upload operation and capability are required".to_string(),
+            ));
+        }
+        let avai = self.select_node(NodeKind::Avai, capability)?;
+        let mut client = AvaiControlClient::new(connect_rpc(&grpc_uri(&avai)?, "avai").await?);
+        let edge = RpcEdge::new(
+            "avai",
+            "prepare_image_upload",
+            &avai.identity.node_id,
+            operation_id,
+            operation_id,
+        );
+        let response = edge.response(
+            client
+                .prepare_image_upload(PrepareImageUploadRequest {
+                    operation: Some(OperationRef {
+                        operation_id: operation_id.to_string(),
+                        idempotency_key: operation_id.to_string(),
+                    }),
+                    expected_avai: Some(proto_identity(&avai.identity)),
+                    capability: capability.to_string(),
+                    content_type: content_type.to_string(),
+                    max_bytes,
+                    deadline_epoch_ms: now_ms().saturating_add(5 * 60 * 1_000),
+                })
+                .await,
+        )?;
+        if let Some(error) = non_empty_error(response.error) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "avai",
+                "prepare_image_upload",
+                error,
+                "avai_upload_rejected",
+                "AI 图片上传授权创建失败",
+                true,
+            ));
+        }
+        let ticket = response.ticket.ok_or_else(|| {
+            edge.invalid_response("empty_upload_ticket");
+            GuardError::Conflict("avai returned an empty upload ticket".to_string())
+        })?;
+        let owner = ticket.owner.as_ref().ok_or_else(|| {
+            edge.invalid_response("empty_upload_owner");
+            GuardError::Conflict("avai returned an upload ticket without owner".to_string())
+        })?;
+        if owner.node_id != avai.identity.node_id || owner.instance_id != avai.identity.instance_id
+        {
+            edge.invalid_response("stale_upload_owner");
+            return Err(GuardError::Conflict(
+                "avai returned an upload ticket for another instance".to_string(),
+            ));
+        }
+        let endpoint = ticket.endpoint.ok_or_else(|| {
+            edge.invalid_response("empty_upload_endpoint");
+            GuardError::Conflict("avai returned an upload ticket without endpoint".to_string())
+        })?;
+        use base::base64::Engine;
+        let proof = base::base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(ticket.proof);
+        edge.success();
+        Ok(AiUploadTicketSummary {
+            upload_id: ticket.upload_id,
+            node_id: owner.node_id.clone(),
+            instance_id: owner.instance_id.clone(),
+            upload_url: endpoint.uri,
+            proof,
+            expires_at_epoch_ms: ticket.expires_at_epoch_ms,
+            max_bytes: ticket.max_bytes,
+            content_type: ticket.content_type,
+        })
+    }
+
+    pub async fn start_ai_source(
+        &self,
+        operation_id: &str,
+        capability: &str,
+        model: &str,
+        source_input: AiTaskSourceInput,
+    ) -> GuardResult<AiTaskSummary> {
+        if capability.trim().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "AI capability is required".to_string(),
+            ));
+        }
+        let capability = capability.to_string();
+        let source_type = source_input.kind().to_string();
+        let stream_id = match &source_input {
+            AiTaskSourceInput::StreamFrame { stream_id } => stream_id.clone(),
+            _ => String::new(),
+        };
+        let avai = match &source_input {
+            AiTaskSourceInput::AvaiUpload { avai_node_id, .. } => {
+                let avai = self
+                    .store
+                    .get_node(avai_node_id)
+                    .ok_or_else(|| GuardError::NotFound(format!("avai node {avai_node_id}")))?;
+                if avai.identity.kind != NodeKind::Avai
+                    || avai.connection != ConnectionState::Connected
+                    || avai.scheduling != SchedulingState::Enabled
+                    || !avai.capabilities.iter().any(|item| item == &capability)
+                {
+                    return Err(node_unavailable(
+                        "avai",
+                        "finalize_image_upload",
+                        avai_node_id,
+                    ));
+                }
+                avai
+            }
+            _ => self.select_node(NodeKind::Avai, &capability)?,
+        };
         let task_id = format!("ai-{operation_id}");
         let lease_id = format!("lease-ai-{operation_id}");
         let route_id = format!("route-ai-{operation_id}");
@@ -2909,6 +3129,173 @@ impl BusinessControl {
             observed_sequence: 0,
         })?;
 
+        let deadline_epoch_ms = now_ms() + 30_000;
+        let source = match source_input {
+            AiTaskSourceInput::ImageUrl { url, max_bytes } => SourceSpec {
+                source: Some(source_spec::Source::ImageUrl(ImageUrlSource {
+                    url,
+                    expected: None,
+                    max_bytes,
+                })),
+            },
+            AiTaskSourceInput::SessionImage {
+                session_node_id,
+                image_id,
+                device_id,
+                channel_id,
+            } => {
+                let session = if session_node_id.is_empty() {
+                    self.select_any_session()?
+                } else {
+                    let session = self.store.get_node(&session_node_id).ok_or_else(|| {
+                        GuardError::NotFound(format!("session node {session_node_id}"))
+                    })?;
+                    if !is_gb_session_node(&session)
+                        || session.connection != ConnectionState::Connected
+                        || session.scheduling != SchedulingState::Enabled
+                    {
+                        return Err(node_unavailable(
+                            "session",
+                            "issue_image_source_access",
+                            &session_node_id,
+                        ));
+                    }
+                    session
+                };
+                let mut session_client = self.session_client(&session).await?;
+                let grant_request = IssueGbChannelImageSourceAccessRequest {
+                    operation: Some(OperationRef {
+                        operation_id: operation_id.to_string(),
+                        idempotency_key: operation_id.to_string(),
+                    }),
+                    image_id: image_id.clone(),
+                    device_id,
+                    channel_id,
+                    expected_consumer: Some(proto_identity(&avai.identity)),
+                    task_id: task_id.clone(),
+                    deadline_epoch_ms,
+                    purpose: capability.clone(),
+                };
+                let edge = RpcEdge::new(
+                    "session",
+                    "issue_image_source_access",
+                    &session.identity.node_id,
+                    operation_id,
+                    &image_id,
+                );
+                let grant = edge.response(
+                    session_client
+                        .issue_gb_channel_image_source_access(grant_request)
+                        .await,
+                )?;
+                if let Some(error) = non_empty_error(grant.error) {
+                    edge.business_rejection(&error);
+                    return Err(remote_error(
+                        "session",
+                        "issue_image_source_access",
+                        error,
+                        "image_source_grant_rejected",
+                        "抓拍图片暂时无法交付给 AI 节点",
+                        true,
+                    ));
+                }
+                let access = grant.access.ok_or_else(|| {
+                    edge.invalid_response("empty_image_source_access");
+                    GuardError::Conflict("session returned an empty image source grant".to_string())
+                })?;
+                edge.success();
+                SourceSpec {
+                    source: Some(source_spec::Source::OwnedImage(OwnedImageRef {
+                        owner: Some(proto_identity(&session.identity)),
+                        resource: Some(ResourceRef {
+                            resource_id: image_id,
+                            resource_type: "gb28181_image".to_string(),
+                        }),
+                        metadata: Some(ImageMetadata {
+                            content_type: grant.content_type,
+                            size_bytes: grant.file_size,
+                            sha256: grant.sha256,
+                            width: 0,
+                            height: 0,
+                        }),
+                        access: Some(access),
+                    })),
+                }
+            }
+            AiTaskSourceInput::AvaiUpload {
+                avai_node_id: _,
+                upload_id,
+            } => {
+                let mut avai_client =
+                    AvaiControlClient::new(connect_rpc(&grpc_uri(&avai)?, "avai").await?);
+                let edge = RpcEdge::new(
+                    "avai",
+                    "finalize_image_upload",
+                    &avai.identity.node_id,
+                    operation_id,
+                    &upload_id,
+                );
+                let finalized = edge.response(
+                    avai_client
+                        .finalize_image_upload(FinalizeImageUploadRequest {
+                            operation: Some(OperationRef {
+                                operation_id: operation_id.to_string(),
+                                idempotency_key: operation_id.to_string(),
+                            }),
+                            expected_avai: Some(proto_identity(&avai.identity)),
+                            upload_id: upload_id.clone(),
+                            capability: capability.clone(),
+                        })
+                        .await,
+                )?;
+                if let Some(error) = non_empty_error(finalized.error) {
+                    edge.business_rejection(&error);
+                    return Err(remote_error(
+                        "avai",
+                        "finalize_image_upload",
+                        error,
+                        "avai_upload_finalize_rejected",
+                        "AI 图片尚未完成上传或已失效",
+                        true,
+                    ));
+                }
+                let source = finalized.source.ok_or_else(|| {
+                    edge.invalid_response("empty_uploaded_image_source");
+                    GuardError::Conflict("avai returned an empty uploaded image source".to_string())
+                })?;
+                let owner = source.owner.as_ref().ok_or_else(|| {
+                    edge.invalid_response("empty_uploaded_image_owner");
+                    GuardError::Conflict(
+                        "avai returned an uploaded image source without owner".to_string(),
+                    )
+                })?;
+                if owner.node_id != avai.identity.node_id
+                    || owner.instance_id != avai.identity.instance_id
+                {
+                    edge.invalid_response("stale_uploaded_image_owner");
+                    return Err(GuardError::Conflict(
+                        "avai returned an uploaded image owned by another instance".to_string(),
+                    ));
+                }
+                edge.success();
+                SourceSpec {
+                    source: Some(source_spec::Source::OwnedImage(source)),
+                }
+            }
+            AiTaskSourceInput::StreamFrame { stream_id } => SourceSpec {
+                source: Some(source_spec::Source::StreamFrame(StreamFrameRef {
+                    owner: None,
+                    source_id: stream_id,
+                    subscription_id: operation_id.to_string(),
+                    generation: 1,
+                    sequence: 0,
+                    capture_at_epoch_ms: 0,
+                    metadata: Some(ImageMetadata::default()),
+                    access: None,
+                })),
+            },
+        };
+
         let avai_grpc = grpc_uri(&avai)?;
         let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
         let request = CreateTaskRequest {
@@ -2920,11 +3307,12 @@ impl BusinessControl {
             task_type: capability.clone(),
             route_id: route_id.clone(),
             expected_avai: Some(proto_identity(&avai.identity)),
-            payload: format!(
-                "frame_ref={operation_id};stream_id={stream_id};expires_at_epoch_ms={}",
-                now_ms() + 30_000
-            )
-            .into_bytes(),
+            payload: Vec::new(),
+            capability: capability.clone(),
+            requested_model: None,
+            source: Some(source),
+            domain_config: None,
+            deadline_epoch_ms,
         };
         base::log::debug!(
             "guard rpc client outbound: method=avai_control.create_task, node={}, req: operation={:?}, task_id={}, task_type={}, route_id={}, expected_avai={:?}, payload_bytes={}",
@@ -2957,12 +3345,16 @@ impl BusinessControl {
                 true,
             ));
         }
-        if response.state != AiTaskState::Running as i32 {
-            edge.invalid_response("task_not_running");
-            return Err(GuardError::Conflict(
-                "avai task did not enter running state".to_string(),
-            ));
-        }
+        let summary_state = match AiTaskState::try_from(response.state) {
+            Ok(AiTaskState::Pending) => AiTaskSummaryState::Pending,
+            Ok(AiTaskState::Running) => AiTaskSummaryState::Running,
+            _ => {
+                edge.invalid_response("task_not_accepted");
+                return Err(GuardError::Conflict(
+                    "avai task was not accepted".to_string(),
+                ));
+            }
+        };
         edge.success();
         LeaseService::new(self.store.clone()).confirm(&lease_id, &avai.identity.instance_id)?;
         RouteService::new(self.store.clone()).apply_snapshot(ResourceSnapshot {
@@ -2981,13 +3373,15 @@ impl BusinessControl {
         })?;
         Ok(AiTaskSummary {
             task_id: response.task_id,
+            capability,
             model: model.to_string(),
-            stream_id: stream_id.to_string(),
+            source_type,
+            stream_id,
             node_id: avai.identity.node_id,
             instance_id: avai.identity.instance_id,
             lease_id,
             route_id,
-            state: AiTaskSummaryState::Running,
+            state: summary_state,
         })
     }
 
@@ -3057,13 +3451,123 @@ impl BusinessControl {
         }
         Ok(AiTaskSummary {
             task_id: task_id.to_string(),
+            capability: String::new(),
             model: String::new(),
+            source_type: String::new(),
             stream_id: String::new(),
             node_id: avai.identity.node_id,
             instance_id: avai.identity.instance_id,
             lease_id: String::new(),
             route_id: route.route_id,
             state: AiTaskSummaryState::Cancelled,
+        })
+    }
+
+    pub async fn query_ai(&self, task_id: &str) -> GuardResult<AiTaskDetail> {
+        let route = self
+            .store
+            .routes()
+            .into_iter()
+            .find(|route| route.resource_id == task_id)
+            .ok_or_else(|| GuardError::NotFound(format!("AI task {task_id}")))?;
+        let avai = self
+            .store
+            .get_node(&route.node_id)
+            .filter(|node| node.identity.instance_id == route.instance_id)
+            .ok_or_else(|| {
+                GuardError::Conflict(format!("AI task owner for {task_id} is unavailable"))
+            })?;
+        let mut avai_client = AvaiControlClient::new(connect_rpc(&grpc_uri(&avai)?, "avai").await?);
+        let edge = RpcEdge::new("avai", "query_task", &avai.identity.node_id, "", task_id);
+        let response = edge.response(
+            avai_client
+                .query_task(QueryTaskRequest {
+                    task_id: task_id.to_string(),
+                })
+                .await,
+        )?;
+        if let Some(error) = non_empty_error(response.error.clone()) {
+            edge.business_rejection(&error);
+            return Err(remote_error(
+                "avai",
+                "query_task",
+                error,
+                "avai_query_failed",
+                "AI 任务状态暂时无法查询",
+                true,
+            ));
+        }
+        let state = match AiTaskState::try_from(response.state) {
+            Ok(AiTaskState::Pending) => AiTaskSummaryState::Pending,
+            Ok(AiTaskState::Running) => AiTaskSummaryState::Running,
+            Ok(AiTaskState::Succeeded) => AiTaskSummaryState::Succeeded,
+            Ok(AiTaskState::Failed) => AiTaskSummaryState::Failed,
+            Ok(AiTaskState::Cancelled) => AiTaskSummaryState::Cancelled,
+            _ => {
+                edge.invalid_response("unknown_task_state");
+                return Err(GuardError::Conflict(
+                    "avai returned an unknown task state".to_string(),
+                ));
+            }
+        };
+        let lease = self
+            .store
+            .leases()
+            .into_iter()
+            .find(|lease| lease.resource_id == task_id);
+        let typed = response.typed_result;
+        let output = typed.as_ref().and_then(|result| result.output.as_ref());
+        let actual_model = typed
+            .as_ref()
+            .and_then(|result| result.actual_model.as_ref());
+        let result_bytes =
+            output.map_or(response.result.as_slice(), |output| output.json.as_slice());
+        let result = (!result_bytes.is_empty())
+            .then(|| base::serde_json::from_slice(result_bytes).ok())
+            .flatten();
+        edge.success();
+        Ok(AiTaskDetail {
+            summary: AiTaskSummary {
+                task_id: task_id.to_string(),
+                capability: lease
+                    .as_ref()
+                    .map(|lease| lease.stream_type.clone())
+                    .unwrap_or_default(),
+                model: actual_model
+                    .map(|model| model.model_id.clone())
+                    .unwrap_or_default(),
+                source_type: String::new(),
+                stream_id: String::new(),
+                node_id: avai.identity.node_id,
+                instance_id: avai.identity.instance_id,
+                lease_id: lease
+                    .as_ref()
+                    .map(|lease| lease.lease_id.clone())
+                    .unwrap_or_default(),
+                route_id: route.route_id,
+                state,
+            },
+            result_schema: output
+                .map(|output| output.schema.clone())
+                .unwrap_or_default(),
+            result_schema_version: output.map(|output| output.version).unwrap_or_default(),
+            actual_model_id: actual_model
+                .map(|model| model.model_id.clone())
+                .unwrap_or_default(),
+            actual_model_version: actual_model
+                .map(|model| model.version.clone())
+                .unwrap_or_default(),
+            result,
+            error_code: response
+                .error
+                .as_ref()
+                .map(|error| error.code.clone())
+                .unwrap_or_default(),
+            error_message: response
+                .error
+                .as_ref()
+                .map(|error| error.message.clone())
+                .unwrap_or_default(),
         })
     }
 

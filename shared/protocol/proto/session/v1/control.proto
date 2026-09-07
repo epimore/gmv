@@ -31,6 +31,7 @@ service SessionControl {
   rpc UpdateGbChannel(UpdateGbChannelRequest) returns (UpdateGbChannelResponse);
   rpc ListGbChannelImages(ListGbChannelImagesRequest) returns (ListGbChannelImagesResponse);
   rpc IssueGbChannelImageAccess(IssueGbChannelImageAccessRequest) returns (IssueGbChannelImageAccessResponse);
+  rpc IssueGbChannelImageSourceAccess(IssueGbChannelImageSourceAccessRequest) returns (IssueGbChannelImageSourceAccessResponse);
   rpc SetGbChannelCover(SetGbChannelCoverRequest) returns (UpdateGbChannelResponse);
   rpc GetGbChannelRecords(GetGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
   rpc QueryGbChannelRecords(QueryGbChannelRecordsRequest) returns (GetGbChannelRecordsResponse);
@@ -377,6 +378,7 @@ message SnapshotImageRequest {
 message SnapshotImageResponse {
   string session_id = 1;
   gmv.common.v1.ErrorDetail error = 2;
+  repeated string image_ids = 3;
 }
 
 message GetSessionConfigRequest {}
@@ -572,6 +574,40 @@ message IssueGbChannelImageAccessResponse {
   string content_type = 3;
   string file_name = 4;
   uint64 file_size = 5;
+}
+
+message IssueGbChannelImageSourceAccessRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  string image_id = 2;
+  string device_id = 3;
+  string channel_id = 4;
+  gmv.common.v1.NodeIdentity expected_consumer = 5;
+  string task_id = 6;
+  int64 deadline_epoch_ms = 7;
+  string purpose = 8;
+}
+
+message IssueGbChannelImageSourceAccessResponse {
+  gmv.common.v1.AccessGrant access = 1;
+  string content_type = 2;
+  string file_name = 3;
+  uint64 file_size = 4;
+  string sha256 = 5;
+  gmv.common.v1.ErrorDetail error = 6;
+}
+
+// Internal complete-message protocol carried by a granted UDS stream endpoint.
+message ReadGrantedImageRequest {
+  string grant_id = 1;
+  bytes proof = 2;
+  string image_id = 3;
+}
+
+message ReadGrantedImageResponse {
+  bytes image = 1;
+  string content_type = 2;
+  string sha256 = 3;
+  gmv.common.v1.ErrorDetail error = 4;
 }
 
 message SetGbChannelCoverRequest {
