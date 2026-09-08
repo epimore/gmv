@@ -209,6 +209,28 @@ async fn run_service(
             GlobalRuntime::request_shutdown_with_error();
         }
     })?;
+    let cleanup_cancel = cancel.clone();
+    let cleanup_uploads = uploads.clone();
+    let upload_cleanup_task = runtime.spawn("avai-upload-cleanup", async move {
+        let mut interval =
+            base::tokio::time::interval(std::time::Duration::from_secs(60));
+        interval.set_missed_tick_behavior(base::tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            base::tokio::select! {
+                _ = cleanup_cancel.cancelled() => break,
+                _ = interval.tick() => {
+                    if let Err(error) = cleanup_uploads.cleanup_expired(now_epoch_ms()).await {
+                        base::log::warn!(
+                            "Avai upload cleanup failed: action=image_upload, stage=cleanup, error_code={}, reason={}",
+                            error.code,
+                            error.message
+                        );
+                    }
+                }
+            }
+        }
+    })?;
     let address: SocketAddr = format!("0.0.0.0:{}", server.grpc_port).parse()?;
     let shutdown = cancel.clone();
     base::log::debug!(
@@ -227,14 +249,23 @@ async fn run_service(
         }
         GlobalRuntime::request_shutdown_with_error();
     }
-    if let Err(error) = upload_task.await {
+    let upload_join = upload_task.await;
+    let cleanup_join = upload_cleanup_task.await;
+    let manager_close = manager.close_and_wait().await;
+    let final_cleanup = uploads.cleanup_expired(now_epoch_ms()).await;
+    uploads.close().await;
+    if let Err(error) = upload_join {
         return Err(format!("join Avai upload HTTP server: {error}").into());
     }
-    manager
-        .close_and_wait()
-        .await
-        .map_err(|error| format!("close Avai task manager: {}", error.message))?;
-    uploads.close().await;
+    if let Err(error) = cleanup_join {
+        return Err(format!("join Avai upload cleanup: {error}").into());
+    }
+    if let Err(error) = manager_close {
+        return Err(format!("close Avai task manager: {}", error.message).into());
+    }
+    if let Err(error) = final_cleanup {
+        return Err(format!("finalize Avai upload cleanup: {}", error.message).into());
+    }
     match serve_result {
         Ok(()) if expected_shutdown => {
             base::log::debug!("avai rpc service outbound: bind_addr={address}");

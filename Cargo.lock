@@ -217,6 +217,7 @@ dependencies = [
  "reqwest",
  "tokio",
  "tonic",
+ "tower",
  "url",
  "uuid",
 ]

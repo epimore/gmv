@@ -10104,7 +10104,21 @@ async fn start_ai_task(
     headers: HeaderMap,
     Json(request): Json<StartAiRequest>,
 ) -> Result<(StatusCode, Json<AiTaskSummary>), HttpError> {
-    debug!("/api/v2/ai/tasks, req:{request:?}");
+    let source_type = if request.snapshot {
+        "snapshot"
+    } else if !request.upload_id.trim().is_empty() {
+        "upload"
+    } else if !request.image_id.trim().is_empty() {
+        "session_image"
+    } else if !request.image_url.trim().is_empty() {
+        "image_url"
+    } else {
+        "stream"
+    };
+    debug!(
+        "/api/v2/ai/tasks, req: request_id={}, capability={}, source_type={}",
+        request.request_id, request.capability, source_type
+    );
     let session = require_write(&state.auth, &headers, Role::Operator)?;
     let capability = request.capability()?;
     let source = if request.snapshot {
@@ -10112,6 +10126,13 @@ async fn start_ai_task(
     } else {
         Some(request.source()?)
     };
+    if request.snapshot
+        && (request.device_id.trim().is_empty() || request.channel_id.trim().is_empty())
+    {
+        return Err(HttpError::bad_request(
+            "device_id and channel_id are required for snapshot analysis",
+        ));
+    }
     let operation_id = request.request_id.clone();
     state.api.start_operation(operation_request(
         operation_id.clone(),
@@ -10121,11 +10142,6 @@ async fn start_ai_task(
     ))?;
     let control = BusinessControl::new(state.api.store());
     let start_result = if request.snapshot {
-        if request.device_id.trim().is_empty() || request.channel_id.trim().is_empty() {
-            return Err(HttpError::bad_request(
-                "device_id and channel_id are required for snapshot analysis",
-            ));
-        }
         control
             .start_ai_after_snapshot(
                 &request.request_id,

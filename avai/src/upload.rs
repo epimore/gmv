@@ -142,14 +142,16 @@ impl UploadManager {
         .execute(&pool)
         .await
         .map_err(|error| UploadError::internal("initialize_schema", error))?;
-        Ok(Self {
+        let manager = Self {
             identity,
             capabilities: Arc::new(capabilities.into_iter().collect()),
             pool,
             object_root: Arc::new(object_root),
             public_url: Arc::new(public_url),
             max_image_bytes: config.max_image_bytes,
-        })
+        };
+        manager.cleanup_expired(now_epoch_ms()).await?;
+        Ok(manager)
     }
 
     pub async fn prepare(
@@ -229,8 +231,8 @@ impl UploadManager {
             width: 0,
             height: 0,
         };
-        base_db::sqlx::query(
-            "INSERT INTO avai_image_upload(upload_id,idempotency_key,capability,content_type,max_bytes,proof,expires_at_ms,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+        let inserted = base_db::sqlx::query(
+            "INSERT INTO avai_image_upload(upload_id,idempotency_key,capability,content_type,max_bytes,proof,expires_at_ms,state,created_at_ms) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(idempotency_key) DO NOTHING",
         )
         .bind(&record.upload_id)
         .bind(&record.idempotency_key)
@@ -244,6 +246,28 @@ impl UploadManager {
         .execute(&self.pool)
         .await
         .map_err(|error| UploadError::internal("insert_upload", error))?;
+        if inserted.rows_affected() == 0 {
+            let existing = self
+                .get_by_idempotency(&record.idempotency_key)
+                .await?
+                .ok_or_else(|| {
+                    UploadError::internal(
+                        "resolve_insert_conflict",
+                        "ignored upload insert has no conflicting row",
+                    )
+                })?;
+            if existing.capability == record.capability
+                && existing.content_type == record.content_type
+                && existing.max_bytes == record.max_bytes
+                && existing.expires_at_ms > now_ms
+            {
+                return Ok(existing);
+            }
+            return Err(UploadError::new(
+                "upload_conflict",
+                "idempotency key is already used by another upload request",
+            ));
+        }
         Ok(record)
     }
 
@@ -406,12 +430,16 @@ impl UploadManager {
             .await
         {
             Ok(mut file) => {
-                file.write_all(bytes)
-                    .await
-                    .map_err(|error| UploadError::internal("write_upload", error))?;
-                file.sync_all()
-                    .await
-                    .map_err(|error| UploadError::internal("flush_upload", error))?;
+                if let Err(error) = file.write_all(bytes).await {
+                    drop(file);
+                    remove_upload_file_best_effort(&final_path, &record.upload_id).await;
+                    return Err(UploadError::internal("write_upload", error));
+                }
+                if let Err(error) = file.sync_all().await {
+                    drop(file);
+                    remove_upload_file_best_effort(&final_path, &record.upload_id).await;
+                    return Err(UploadError::internal("flush_upload", error));
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let existing = base::tokio::fs::read(&final_path)
@@ -439,10 +467,13 @@ impl UploadManager {
         .await
         .map_err(|error| UploadError::internal("complete_upload", error))?;
         if updated.rows_affected() == 0 {
-            let current = self
-                .get(upload_id)
-                .await?
-                .ok_or_else(|| UploadError::new("upload_not_found", "image upload disappeared"))?;
+            let Some(current) = self.get(upload_id).await? else {
+                remove_upload_file_best_effort(&final_path, &record.upload_id).await;
+                return Err(UploadError::new(
+                    "upload_not_found",
+                    "image upload disappeared",
+                ));
+            };
             if current.state == 1 && current.sha256 == sha256 {
                 return Ok(());
             }
@@ -477,6 +508,44 @@ impl UploadManager {
             ));
         }
         Ok(record.max_bytes)
+    }
+
+    pub async fn cleanup_expired(&self, now_ms: i64) -> Result<usize, UploadError> {
+        let rows = base_db::sqlx::query(
+            "SELECT upload_id FROM avai_image_upload WHERE expires_at_ms<=? ORDER BY expires_at_ms,upload_id",
+        )
+        .bind(now_ms)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| UploadError::internal("list_expired_uploads", error))?;
+        let mut cleaned = 0usize;
+        for row in rows {
+            let upload_id: String = row
+                .try_get("upload_id")
+                .map_err(|error| UploadError::internal("decode_expired_upload", error))?;
+            let path = self.object_root.join(&upload_id);
+            match base::tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    base::log::warn!(
+                        "Avai expired upload file cleanup failed: action=image_upload, stage=cleanup_file, upload_id={}, reason={error}",
+                        upload_id
+                    );
+                    continue;
+                }
+            }
+            let deleted = base_db::sqlx::query(
+                "DELETE FROM avai_image_upload WHERE upload_id=? AND expires_at_ms<=?",
+            )
+            .bind(&upload_id)
+            .bind(now_ms)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| UploadError::internal("delete_expired_upload", error))?;
+            cleaned = cleaned.saturating_add(deleted.rows_affected() as usize);
+        }
+        Ok(cleaned)
     }
 
     pub async fn close(&self) {
@@ -665,6 +734,19 @@ fn proof_matches(expected: &[u8], actual: &str) -> bool {
         .is_ok_and(|actual| actual == expected)
 }
 
+async fn remove_upload_file_best_effort(path: &std::path::Path, upload_id: &str) {
+    match base::tokio::fs::remove_file(path).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            base::log::warn!(
+                "Avai partial upload cleanup failed: action=image_upload, stage=cleanup_partial, upload_id={}, reason={error}",
+                upload_id
+            );
+        }
+    }
+}
+
 fn decode_record(row: base_db::sqlx::sqlite::SqliteRow) -> Result<UploadRecord, UploadError> {
     Ok(UploadRecord {
         upload_id: row.try_get("upload_id").map_err(decode_error)?,
@@ -714,6 +796,7 @@ mod tests {
         common::v1::{NodeKind, OperationRef},
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tower::ServiceExt;
 
     static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -761,8 +844,10 @@ mod tests {
             max_bytes: 1024,
             deadline_epoch_ms: now_epoch_ms() + 60_000,
         };
-        let first = manager.prepare(request.clone(), now_epoch_ms()).await;
-        let repeated = manager.prepare(request, now_epoch_ms()).await;
+        let (first, repeated) = base::tokio::join!(
+            manager.prepare(request.clone(), now_epoch_ms()),
+            manager.prepare(request, now_epoch_ms())
+        );
         assert_eq!(
             first.ticket.as_ref().unwrap().upload_id,
             repeated.ticket.as_ref().unwrap().upload_id
@@ -784,16 +869,19 @@ mod tests {
                 .code,
             "upload_denied"
         );
-        manager
-            .accept(
-                &ticket.upload_id,
-                &proof,
-                "image/png",
-                &bytes,
-                now_epoch_ms(),
+        let response = routes(manager.clone())
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri(format!("/internal/uploads/{}", ticket.upload_id))
+                    .header("x-gmv-upload-proof", &proof)
+                    .header(header::CONTENT_TYPE, "image/png")
+                    .body(Body::from(bytes.clone()))
+                    .unwrap(),
             )
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
         let finalize = FinalizeImageUploadRequest {
             operation: Some(OperationRef {
                 operation_id: "finalize-1".to_string(),
@@ -825,6 +913,14 @@ mod tests {
                 .error
                 .is_none()
         );
+        assert_eq!(
+            reopened
+                .cleanup_expired(ticket.expires_at_epoch_ms + 1)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!root.join("objects").join(&ticket.upload_id).exists());
         reopened.close().await;
         std::fs::remove_dir_all(root).unwrap();
     }

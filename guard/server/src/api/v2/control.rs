@@ -3094,41 +3094,6 @@ impl BusinessControl {
         let task_id = format!("ai-{operation_id}");
         let lease_id = format!("lease-ai-{operation_id}");
         let route_id = format!("route-ai-{operation_id}");
-        let allocation =
-            AllocationService::new(self.store.clone()).allocate(AllocationRequest {
-                request_id: operation_id.to_string(),
-                resource_id: task_id.clone(),
-                capability: capability.clone(),
-                zone: avai.zone.clone(),
-                constraints: std::collections::HashMap::new(),
-            })?;
-        if allocation.owner.node_id != avai.identity.node_id {
-            return Err(GuardError::Conflict(
-                "selected avai node changed during allocation".to_string(),
-            ));
-        }
-        LeaseService::new(self.store.clone()).allocate(LeaseRequest {
-            lease_id: lease_id.clone(),
-            route_id: route_id.clone(),
-            resource_id: task_id.clone(),
-            stream_type: capability.clone(),
-            idempotency_key: format!("ai-{operation_id}"),
-            owner: avai.identity.clone(),
-            constraints: std::collections::HashMap::new(),
-            now_ms: now_ms(),
-            ttl_ms: 30_000,
-        })?;
-        RouteService::new(self.store.clone()).create_allocated(RouteRecord {
-            route_id: route_id.clone(),
-            resource_id: task_id.clone(),
-            node_id: avai.identity.node_id.clone(),
-            instance_id: avai.identity.instance_id.clone(),
-            state: RouteState::Allocated,
-            desired_generation: 1,
-            observed_generation: 0,
-            observed_sequence: 0,
-        })?;
-
         let deadline_epoch_ms = now_ms() + 30_000;
         let source = match source_input {
             AiTaskSourceInput::ImageUrl { url, max_bytes } => SourceSpec {
@@ -3296,8 +3261,74 @@ impl BusinessControl {
             },
         };
 
-        let avai_grpc = grpc_uri(&avai)?;
-        let mut avai_client = AvaiControlClient::new(connect_rpc(&avai_grpc, "avai").await?);
+        let allocation =
+            AllocationService::new(self.store.clone()).allocate(AllocationRequest {
+                request_id: operation_id.to_string(),
+                resource_id: task_id.clone(),
+                capability: capability.clone(),
+                zone: avai.zone.clone(),
+                constraints: std::collections::HashMap::new(),
+            })?;
+        if allocation.owner.node_id != avai.identity.node_id {
+            return Err(GuardError::Conflict(
+                "selected avai node changed during allocation".to_string(),
+            ));
+        }
+        LeaseService::new(self.store.clone()).allocate(LeaseRequest {
+            lease_id: lease_id.clone(),
+            route_id: route_id.clone(),
+            resource_id: task_id.clone(),
+            stream_type: capability.clone(),
+            idempotency_key: format!("ai-{operation_id}"),
+            owner: avai.identity.clone(),
+            constraints: std::collections::HashMap::new(),
+            now_ms: now_ms(),
+            ttl_ms: 30_000,
+        })?;
+        if let Err(error) = RouteService::new(self.store.clone()).create_allocated(RouteRecord {
+            route_id: route_id.clone(),
+            resource_id: task_id.clone(),
+            node_id: avai.identity.node_id.clone(),
+            instance_id: avai.identity.instance_id.clone(),
+            state: RouteState::Allocated,
+            desired_generation: 1,
+            observed_generation: 0,
+            observed_sequence: 0,
+        }) {
+            fail_ai_allocation(
+                &self.store,
+                &lease_id,
+                &route_id,
+                &avai.identity.instance_id,
+            );
+            return Err(error);
+        }
+
+        let avai_grpc = match grpc_uri(&avai) {
+            Ok(uri) => uri,
+            Err(error) => {
+                fail_ai_allocation(
+                    &self.store,
+                    &lease_id,
+                    &route_id,
+                    &avai.identity.instance_id,
+                );
+                return Err(error);
+            }
+        };
+        let channel = match connect_rpc(&avai_grpc, "avai").await {
+            Ok(channel) => channel,
+            Err(error) => {
+                fail_ai_allocation(
+                    &self.store,
+                    &lease_id,
+                    &route_id,
+                    &avai.identity.instance_id,
+                );
+                return Err(error);
+            }
+        };
+        let mut avai_client = AvaiControlClient::new(channel);
         let request = CreateTaskRequest {
             operation: Some(OperationRef {
                 operation_id: operation_id.to_string(),
@@ -3331,11 +3362,27 @@ impl BusinessControl {
             operation_id,
             &task_id,
         );
-        let response = edge.response(avai_client.create_task(request).await)?;
+        let response = match edge.response(avai_client.create_task(request).await) {
+            Ok(response) => response,
+            Err(error) => {
+                compensate_avai_task_start(&mut avai_client, operation_id, &task_id).await;
+                fail_ai_allocation(
+                    &self.store,
+                    &lease_id,
+                    &route_id,
+                    &avai.identity.instance_id,
+                );
+                return Err(error);
+            }
+        };
         if let Some(error) = non_empty_error(response.error) {
             edge.business_rejection(&error);
-            let _ =
-                LeaseService::new(self.store.clone()).fail(&lease_id, &avai.identity.instance_id);
+            fail_ai_allocation(
+                &self.store,
+                &lease_id,
+                &route_id,
+                &avai.identity.instance_id,
+            );
             return Err(remote_error(
                 "avai",
                 "create_task",
@@ -3350,14 +3397,32 @@ impl BusinessControl {
             Ok(AiTaskState::Running) => AiTaskSummaryState::Running,
             _ => {
                 edge.invalid_response("task_not_accepted");
+                compensate_avai_task_start(&mut avai_client, operation_id, &task_id).await;
+                fail_ai_allocation(
+                    &self.store,
+                    &lease_id,
+                    &route_id,
+                    &avai.identity.instance_id,
+                );
                 return Err(GuardError::Conflict(
                     "avai task was not accepted".to_string(),
                 ));
             }
         };
         edge.success();
-        LeaseService::new(self.store.clone()).confirm(&lease_id, &avai.identity.instance_id)?;
-        RouteService::new(self.store.clone()).apply_snapshot(ResourceSnapshot {
+        if let Err(error) =
+            LeaseService::new(self.store.clone()).confirm(&lease_id, &avai.identity.instance_id)
+        {
+            compensate_avai_task_start(&mut avai_client, operation_id, &task_id).await;
+            fail_ai_allocation(
+                &self.store,
+                &lease_id,
+                &route_id,
+                &avai.identity.instance_id,
+            );
+            return Err(error);
+        }
+        if let Err(error) = RouteService::new(self.store.clone()).apply_snapshot(ResourceSnapshot {
             owner: avai.identity.clone(),
             generation: 1,
             sequence: 1,
@@ -3370,7 +3435,16 @@ impl BusinessControl {
                 route_state: RouteState::Running,
                 endpoints: Vec::new(),
             }],
-        })?;
+        }) {
+            compensate_avai_task_start(&mut avai_client, operation_id, &task_id).await;
+            fail_ai_allocation(
+                &self.store,
+                &lease_id,
+                &route_id,
+                &avai.identity.instance_id,
+            );
+            return Err(error);
+        }
         Ok(AiTaskSummary {
             task_id: response.task_id,
             capability,
@@ -4173,6 +4247,58 @@ fn stream_output_summary(output: OutputInfo) -> StreamOutputSummary {
     }
 }
 
+async fn compensate_avai_task_start(
+    client: &mut AvaiControlClient<tonic::transport::Channel>,
+    operation_id: &str,
+    task_id: &str,
+) {
+    let result = client
+        .cancel_task(CancelTaskRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("compensate-{operation_id}"),
+                idempotency_key: format!("compensate-{operation_id}"),
+            }),
+            task_id: task_id.to_string(),
+            reason: "guard_start_compensation".to_string(),
+        })
+        .await;
+    match result {
+        Ok(response) => {
+            if let Some(error) = non_empty_error(response.into_inner().error) {
+                base::log::warn!(
+                    "Avai task start compensation rejected: action=ai_task, stage=compensate, task_id={}, error_code={}",
+                    task_id,
+                    error.code
+                );
+            }
+        }
+        Err(error) => {
+            base::log::warn!(
+                "Avai task start compensation failed: action=ai_task, stage=compensate, task_id={}, reason={error}",
+                task_id
+            );
+        }
+    }
+}
+
+fn fail_ai_allocation(
+    store: &InMemoryGuardStore,
+    lease_id: &str,
+    route_id: &str,
+    instance_id: &str,
+) {
+    if let Err(error) = LeaseService::new(store.clone()).fail(lease_id, instance_id) {
+        base::log::warn!(
+            "AI allocation compensation failed: action=ai_task, stage=lease_fail, lease_id={}, reason={error}",
+            lease_id
+        );
+    }
+    if let Some(mut route) = store.get_route(route_id) {
+        route.state = RouteState::Closed;
+        store.upsert_route(route);
+    }
+}
+
 fn user_error(
     code: impl Into<String>,
     message: impl Into<String>,
@@ -4416,6 +4542,52 @@ mod tests {
             },
         );
         assert_eq!(replacement.node_id, "session-b");
+    }
+
+    #[test]
+    fn failed_ai_start_closes_route_and_fails_lease() {
+        let store = InMemoryGuardStore::default();
+        let owner = NodeIdentity {
+            node_id: "avai-a".to_string(),
+            instance_id: "instance-a".to_string(),
+            kind: NodeKind::Avai,
+        };
+        LeaseService::new(store.clone())
+            .allocate(LeaseRequest {
+                lease_id: "lease-ai-test".to_string(),
+                route_id: "route-ai-test".to_string(),
+                resource_id: "ai-test".to_string(),
+                stream_type: "image.metadata.inspect".to_string(),
+                idempotency_key: "ai-test".to_string(),
+                owner: owner.clone(),
+                constraints: HashMap::new(),
+                now_ms: 1,
+                ttl_ms: 30_000,
+            })
+            .unwrap();
+        RouteService::new(store.clone())
+            .create_allocated(RouteRecord {
+                route_id: "route-ai-test".to_string(),
+                resource_id: "ai-test".to_string(),
+                node_id: owner.node_id,
+                instance_id: owner.instance_id.clone(),
+                state: RouteState::Allocated,
+                desired_generation: 1,
+                observed_generation: 0,
+                observed_sequence: 0,
+            })
+            .unwrap();
+
+        fail_ai_allocation(&store, "lease-ai-test", "route-ai-test", &owner.instance_id);
+
+        assert_eq!(
+            store.get_lease("lease-ai-test").unwrap().state,
+            LeaseState::Failed
+        );
+        assert_eq!(
+            store.get_route("route-ai-test").unwrap().state,
+            RouteState::Closed
+        );
     }
 
     #[test]

@@ -474,9 +474,16 @@ async fn fetch_url(
                         "image redirect has no valid location",
                     )
                 })?;
-            current = current.join(location).map_err(|_| {
+            let next = current.join(location).map_err(|_| {
                 SourceError::new("source_fetch_denied", "image redirect URL is invalid")
             })?;
+            if extra_header.is_some() && !same_origin(&current, &next) {
+                return Err(SourceError::new(
+                    "source_fetch_denied",
+                    "credentialed image fetch cannot redirect to another origin",
+                ));
+            }
+            current = next;
             continue;
         }
         if response.status() != StatusCode::OK {
@@ -519,6 +526,12 @@ async fn fetch_url(
         });
     }
     unreachable!("redirect loop has an explicit upper bound")
+}
+
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host() == right.host()
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 async fn validate_network_target(
@@ -743,6 +756,27 @@ mod tests {
             stable_url_identity("https://example.com/image.jpg?token=secret#x").unwrap(),
             "https://example.com/image.jpg"
         );
+    }
+
+    #[test]
+    fn credentialed_redirect_origin_comparison_includes_scheme_host_and_port() {
+        let source = Url::parse("https://session.internal:8443/image/1").unwrap();
+        assert!(same_origin(
+            &source,
+            &Url::parse("https://session.internal:8443/image/2").unwrap()
+        ));
+        assert!(!same_origin(
+            &source,
+            &Url::parse("https://other.internal:8443/image/2").unwrap()
+        ));
+        assert!(!same_origin(
+            &source,
+            &Url::parse("http://session.internal:8443/image/2").unwrap()
+        ));
+        assert!(!same_origin(
+            &source,
+            &Url::parse("https://session.internal:9443/image/2").unwrap()
+        ));
     }
 
     #[test]

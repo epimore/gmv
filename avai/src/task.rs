@@ -82,6 +82,7 @@ pub struct TaskManager {
     queue: mpsc::Sender<String>,
     cancel: CancellationToken,
     workers: Arc<Mutex<Vec<base::tokio::task::JoinHandle<()>>>>,
+    task_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
     event_sender: Arc<RwLock<Option<NodeEventSender>>>,
     running: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
@@ -102,6 +103,7 @@ impl TaskManager {
         }
         let repository = TaskRepository::open(&config.database_path).await?;
         repository.recover_interrupted().await?;
+        let pending = repository.pending_task_ids().await?;
         let resolver = SourceResolver::new(identity.clone(), config.source_policy, runtime)
             .map_err(source_task_error)?;
         let provider = Arc::new(ProviderRegistry::builtin(&capabilities)?);
@@ -110,6 +112,7 @@ impl TaskManager {
         let receiver = Arc::new(Mutex::new(receiver));
         let cancel = runtime.cancel.child_token();
         let workers = Arc::new(Mutex::new(Vec::new()));
+        let task_cancellations = Arc::new(Mutex::new(HashMap::new()));
         let event_sender = Arc::new(RwLock::new(None));
         let running = Arc::new(AtomicUsize::new(0));
 
@@ -121,6 +124,7 @@ impl TaskManager {
                 provider: provider.clone(),
                 receiver: receiver.clone(),
                 cancel: cancel.clone(),
+                task_cancellations: task_cancellations.clone(),
                 event_sender: event_sender.clone(),
                 running: running.clone(),
             };
@@ -140,17 +144,32 @@ impl TaskManager {
             queue,
             cancel,
             workers,
+            task_cancellations,
             event_sender,
             running,
             closed: Arc::new(AtomicBool::new(false)),
         };
-        for task_id in manager.repository.pending_task_ids().await? {
-            if manager.queue.send(task_id).await.is_err() {
-                return Err(TaskError::new(
-                    "executor_unavailable",
-                    "task worker queue closed during recovery",
-                ));
-            }
+        if !pending.is_empty() {
+            let recovery_queue = manager.queue.clone();
+            let recovery_cancel = manager.cancel.clone();
+            let recovery = runtime
+                .spawn("avai-task-recovery-feeder", async move {
+                    for task_id in pending {
+                        let sent = base::tokio::select! {
+                            _ = recovery_cancel.cancelled() => return,
+                            sent = recovery_queue.send(task_id) => sent,
+                        };
+                        if sent.is_err() {
+                            base::log::error!(
+                                "Avai task recovery stopped: action=ai_task, stage=recovery_enqueue, reason=worker_queue_closed"
+                            );
+                            GlobalRuntime::request_shutdown_with_error();
+                            return;
+                        }
+                    }
+                })
+                .map_err(|error| TaskError::internal("spawn_recovery_feeder", error))?;
+            manager.workers.lock().await.push(recovery);
         }
         Ok(manager)
     }
@@ -229,11 +248,23 @@ impl TaskManager {
     }
 
     pub async fn cancel_task(&self, request: CancelTaskRequest) -> CancelTaskResponse {
-        match self
+        let outcome = self
             .repository
             .cancel(&request.task_id, now_epoch_ms())
+            .await;
+        if outcome.as_ref().is_ok_and(|record| {
+            record
+                .as_ref()
+                .is_some_and(|record| record.state == AiTaskState::Cancelled)
+        }) && let Some(cancel) = self
+            .task_cancellations
+            .lock()
             .await
+            .remove(&request.task_id)
         {
+            cancel.cancel();
+        }
+        match outcome {
             Ok(Some(record)) => CancelTaskResponse {
                 state: record.state as i32,
                 error: record.error_detail(),
@@ -325,6 +356,7 @@ struct WorkerContext {
     provider: Arc<ProviderRegistry>,
     receiver: Arc<Mutex<mpsc::Receiver<String>>>,
     cancel: CancellationToken,
+    task_cancellations: Arc<Mutex<HashMap<String, CancellationToken>>>,
     event_sender: Arc<RwLock<Option<NodeEventSender>>>,
     running: Arc<AtomicUsize>,
 }
@@ -342,15 +374,12 @@ async fn worker_loop(context: WorkerContext) {
             return;
         };
         context.running.fetch_add(1, Ordering::AcqRel);
-        let result = base::tokio::select! {
-            _ = context.cancel.cancelled() => None,
-            result = process_task(&context, &task_id) => Some(result),
-        };
+        let result = process_task(&context, &task_id).await;
         context.running.fetch_sub(1, Ordering::AcqRel);
         match result {
-            Some(Ok(Some(record))) => emit_terminal_event(&context, &record).await,
-            Some(Ok(None)) => {}
-            Some(Err(error)) => {
+            Ok(Some(record)) => emit_terminal_event(&context, &record).await,
+            Ok(None) => {}
+            Err(error) => {
                 base::log::error!(
                     "Avai task execution failed: action=ai_task, stage=worker, task_id={}, error_code={}, error={}",
                     task_id,
@@ -358,7 +387,6 @@ async fn worker_loop(context: WorkerContext) {
                     error.message
                 );
             }
-            None => return,
         }
     }
 }
@@ -372,49 +400,87 @@ async fn process_task(
     };
     let request = CreateTaskRequest::decode(record.request.as_slice())
         .map_err(|error| TaskError::internal("decode_request", error))?;
-    let source = request
-        .source
-        .as_ref()
-        .ok_or_else(|| TaskError::new("invalid_source", "persisted task has no typed source"));
-    let terminal = match source {
-        Ok(source) => match context
-            .resolver
-            .resolve(source, &record.capability, now_epoch_ms())
-            .await
-        {
-            Ok(image) => match context
-                .provider
-                .infer(&record.capability, image, request.requested_model.as_ref())
+    if request.deadline_epoch_ms != 0 && request.deadline_epoch_ms <= now_epoch_ms() {
+        return context
+            .repository
+            .fail_running(
+                task_id,
+                "task_expired",
+                "task deadline expired while waiting for execution",
+                now_epoch_ms(),
+            )
+            .await;
+    }
+    let task_cancel = CancellationToken::new();
+    context
+        .task_cancellations
+        .lock()
+        .await
+        .insert(task_id.to_string(), task_cancel.clone());
+    match context.repository.get(task_id).await {
+        Ok(Some(current)) if current.state != AiTaskState::Running => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return Ok(Some(current));
+        }
+        Ok(_) => {}
+        Err(error) => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return Err(error);
+        }
+    }
+    let execute = async {
+        let source = request
+            .source
+            .as_ref()
+            .ok_or_else(|| TaskError::new("invalid_source", "persisted task has no typed source"));
+        match source {
+            Ok(source) => match context
+                .resolver
+                .resolve(source, &record.capability, now_epoch_ms())
                 .await
             {
-                Ok(output) => {
-                    context
-                        .repository
-                        .succeed(task_id, output, now_epoch_ms())
-                        .await?
-                }
+                Ok(image) => match context
+                    .provider
+                    .infer(&record.capability, image, request.requested_model.as_ref())
+                    .await
+                {
+                    Ok(output) => {
+                        context
+                            .repository
+                            .succeed(task_id, output, now_epoch_ms())
+                            .await
+                    }
+                    Err(error) => {
+                        context
+                            .repository
+                            .fail_running(task_id, error.code, &error.message, now_epoch_ms())
+                            .await
+                    }
+                },
                 Err(error) => {
                     context
                         .repository
                         .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                        .await?
+                        .await
                 }
             },
             Err(error) => {
                 context
                     .repository
                     .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                    .await?
+                    .await
             }
-        },
-        Err(error) => {
-            context
-                .repository
-                .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                .await?
         }
     };
-    Ok(terminal)
+    let terminal = base::tokio::select! {
+        _ = context.cancel.cancelled() => Ok(None),
+        _ = task_cancel.cancelled() => context.repository.get(task_id).await.map(|record| {
+            record.filter(|record| record.state != AiTaskState::Running)
+        }),
+        terminal = execute => terminal,
+    };
+    context.task_cancellations.lock().await.remove(task_id);
+    terminal
 }
 
 async fn emit_terminal_event(context: &WorkerContext, record: &TaskRecord) {
@@ -723,30 +789,9 @@ impl TaskRepository {
         now_epoch_ms: i64,
     ) -> Result<InsertOutcome, TaskError> {
         let operation = request.operation.as_ref().expect("validated operation");
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| TaskError::internal("begin_create", error))?;
-        if let Some(existing) = self
-            .get_in(&mut transaction, "task_id", &request.task_id)
-            .await?
-        {
-            return existing_outcome(transaction, existing, operation, request_hash).await;
-        }
-        if let Some(existing) = self
-            .get_in(
-                &mut transaction,
-                "idempotency_key",
-                &operation.idempotency_key,
-            )
-            .await?
-        {
-            return existing_outcome(transaction, existing, operation, request_hash).await;
-        }
         let encoded = request.encode_to_vec();
-        base_db::sqlx::query(
-            "INSERT INTO avai_task(task_id,idempotency_key,request_hash,request,capability,route_id,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+        let inserted = base_db::sqlx::query(
+            "INSERT OR IGNORE INTO avai_task(task_id,idempotency_key,request_hash,request,capability,route_id,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
         )
         .bind(&request.task_id)
         .bind(&operation.idempotency_key)
@@ -757,13 +802,30 @@ impl TaskRepository {
         .bind(AiTaskState::Pending as i32)
         .bind(now_epoch_ms)
         .bind(now_epoch_ms)
-        .execute(&mut *transaction)
+        .execute(&self.pool)
         .await
         .map_err(|error| TaskError::internal("insert_task", error))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| TaskError::internal("commit_create", error))?;
+        if inserted.rows_affected() == 0 {
+            let existing = if let Some(existing) = self.get(&request.task_id).await? {
+                Some(existing)
+            } else {
+                base_db::sqlx::query(SELECT_TASK_BY_IDEMPOTENCY)
+                    .bind(&operation.idempotency_key)
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|error| TaskError::internal("query_existing", error))?
+                    .map(decode_task_row)
+                    .transpose()?
+            };
+            return existing
+                .map(|existing| existing_outcome(existing, operation, request_hash))
+                .unwrap_or_else(|| {
+                    Err(TaskError::internal(
+                        "resolve_insert_conflict",
+                        "ignored task insert has no conflicting row",
+                    ))
+                });
+        }
         Ok(InsertOutcome {
             created: true,
             record: TaskRecord {
@@ -779,25 +841,6 @@ impl TaskRepository {
                 error_message: None,
             },
         })
-    }
-
-    async fn get_in(
-        &self,
-        transaction: &mut base_db::sqlx::Transaction<'_, base_db::sqlx::Sqlite>,
-        column: &str,
-        value: &str,
-    ) -> Result<Option<TaskRecord>, TaskError> {
-        let statement = match column {
-            "task_id" => SELECT_TASK_BY_ID,
-            "idempotency_key" => SELECT_TASK_BY_IDEMPOTENCY,
-            _ => unreachable!("fixed repository column"),
-        };
-        let row = base_db::sqlx::query(statement)
-            .bind(value)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|error| TaskError::internal("query_existing", error))?;
-        row.map(decode_task_row).transpose()
     }
 
     async fn get(&self, task_id: &str) -> Result<Option<TaskRecord>, TaskError> {
@@ -930,16 +973,11 @@ impl TaskRepository {
     }
 }
 
-async fn existing_outcome(
-    transaction: base_db::sqlx::Transaction<'_, base_db::sqlx::Sqlite>,
+fn existing_outcome(
     existing: TaskRecord,
     operation: &gmv_protocol::common::v1::OperationRef,
     request_hash: &str,
 ) -> Result<InsertOutcome, TaskError> {
-    transaction
-        .rollback()
-        .await
-        .map_err(|error| TaskError::internal("rollback_duplicate", error))?;
     if existing.idempotency_key == operation.idempotency_key
         && existing.request_hash == request_hash
     {
@@ -1125,7 +1163,7 @@ mod tests {
             TransportMode,
         },
     };
-    use std::io::Write;
+    use std::{io::Write, time::Duration};
 
     static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -1348,6 +1386,237 @@ mod tests {
             vec!["task-recovery".to_string()]
         );
         reopened.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn concurrent_idempotent_inserts_resolve_to_one_durable_task() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "avai-concurrent-create-test-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = TaskRepository::open(&root.join("avai.db")).await.unwrap();
+        let request = test_request("task-concurrent");
+        let hash = request_hash(&request);
+        let (first, second) = base::tokio::join!(
+            repository.insert_or_get(&request, &hash, 1),
+            repository.insert_or_get(&request, &hash, 1)
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_ne!(first.created, second.created);
+        assert_eq!(first.record.task_id, second.record.task_id);
+        assert_eq!(repository.list().await.unwrap().len(), 1);
+        repository.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn recovery_feeder_does_not_block_startup_when_the_queue_is_full() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("avai-feeder-test-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let listener = base::tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let database_path = root.join("avai.db");
+        let repository = TaskRepository::open(&database_path).await.unwrap();
+        for index in 0..4 {
+            let request = test_request_with_source(
+                &format!("task-feeder-{index}"),
+                SourceSpec {
+                    source: Some(source_spec::Source::ImageUrl(ImageUrlSource {
+                        url: format!("http://{address}/image.png"),
+                        expected: None,
+                        max_bytes: 1024,
+                    })),
+                },
+            );
+            repository
+                .insert_or_get(&request, &request_hash(&request), 1)
+                .await
+                .unwrap();
+        }
+        repository.pool.close().await;
+        let server_cancel = CancellationToken::new();
+        let wait_cancel = server_cancel.clone();
+        let server = base::tokio::spawn(async move {
+            let mut connections = Vec::new();
+            loop {
+                base::tokio::select! {
+                    _ = wait_cancel.cancelled() => return,
+                    accepted = listener.accept() => connections.push(accepted.unwrap().0),
+                }
+            }
+        });
+        let runtime = GlobalRuntime::register_default(base::utils::rt::RuntimeType::Custom(
+            format!("avai-feeder-test-{id}"),
+        ))
+        .unwrap();
+        let manager = base::tokio::time::timeout(
+            Duration::from_millis(500),
+            TaskManager::open(
+                test_identity(),
+                vec![BUILTIN_CAPABILITY.to_string()],
+                TaskManagerConfig {
+                    database_path,
+                    worker_count: 1,
+                    queue_size: 1,
+                    source_policy: SourcePolicy {
+                        allow_private_image_urls: true,
+                        allowed_internal_hosts: HashSet::from(["127.0.0.1".to_string()]),
+                        request_timeout: Duration::from_secs(30),
+                        ..SourcePolicy::default()
+                    },
+                },
+                &runtime,
+            ),
+        )
+        .await
+        .expect("task manager startup must not wait for the recovery queue")
+        .unwrap();
+        manager.close_and_wait().await.unwrap();
+        server_cancel.cancel();
+        server.await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_and_success_race_selects_one_immutable_terminal_state() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("avai-race-test-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let repository = TaskRepository::open(&root.join("avai.db")).await.unwrap();
+        let request = test_request("task-race");
+        repository
+            .insert_or_get(&request, &request_hash(&request), 1)
+            .await
+            .unwrap();
+        repository.claim("task-race", 2).await.unwrap().unwrap();
+        let (cancelled, succeeded) = base::tokio::join!(
+            repository.cancel("task-race", 3),
+            repository.succeed(
+                "task-race",
+                InferenceOutput {
+                    result: AiTaskResult::default(),
+                },
+                3,
+            )
+        );
+        cancelled.unwrap();
+        succeeded.unwrap();
+        let terminal = repository.get("task-race").await.unwrap().unwrap().state;
+        assert!(matches!(
+            terminal,
+            AiTaskState::Succeeded | AiTaskState::Cancelled
+        ));
+
+        repository.cancel("task-race", 4).await.unwrap();
+        repository
+            .succeed(
+                "task-race",
+                InferenceOutput {
+                    result: AiTaskResult::default(),
+                },
+                4,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            repository.get("task-race").await.unwrap().unwrap().state,
+            terminal
+        );
+        repository.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn full_queue_fails_the_new_task_without_unbounded_waiting() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("avai-queue-test-{}-{id}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let runtime = GlobalRuntime::register_default(base::utils::rt::RuntimeType::Custom(
+            format!("avai-queue-test-{id}"),
+        ))
+        .unwrap();
+        let listener = base::tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_cancel = CancellationToken::new();
+        let wait_cancel = server_cancel.clone();
+        let server = base::tokio::spawn(async move {
+            let _connection = listener.accept().await.unwrap();
+            wait_cancel.cancelled().await;
+        });
+        let manager = TaskManager::open(
+            test_identity(),
+            vec![BUILTIN_CAPABILITY.to_string()],
+            TaskManagerConfig {
+                database_path: root.join("avai.db"),
+                worker_count: 1,
+                queue_size: 1,
+                source_policy: SourcePolicy {
+                    allow_private_image_urls: true,
+                    allowed_internal_hosts: HashSet::from(["127.0.0.1".to_string()]),
+                    request_timeout: Duration::from_secs(30),
+                    ..SourcePolicy::default()
+                },
+            },
+            &runtime,
+        )
+        .await
+        .unwrap();
+        let blocking_request = |task_id: &str| {
+            test_request_with_source(
+                task_id,
+                SourceSpec {
+                    source: Some(source_spec::Source::ImageUrl(ImageUrlSource {
+                        url: format!("http://{address}/image.png"),
+                        expected: None,
+                        max_bytes: 1024,
+                    })),
+                },
+            )
+        };
+        manager
+            .create_task(blocking_request("task-running"), now_epoch_ms())
+            .await;
+        for _ in 0..100 {
+            if manager.running_task_count() == 1 {
+                break;
+            }
+            base::tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(manager.running_task_count(), 1);
+        let mut queued = blocking_request("task-queued");
+        queued.deadline_epoch_ms = now_epoch_ms() + 20;
+        manager.create_task(queued, now_epoch_ms()).await;
+        let rejected = manager
+            .create_task(blocking_request("task-rejected"), now_epoch_ms())
+            .await;
+        assert_eq!(rejected.state, AiTaskState::Failed as i32);
+        assert_eq!(rejected.error.unwrap().code, "resource_exhausted");
+
+        base::tokio::time::sleep(Duration::from_millis(30)).await;
+        let cancelled = manager
+            .cancel_task(CancelTaskRequest {
+                task_id: "task-running".to_string(),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(cancelled.state, AiTaskState::Cancelled as i32);
+        let queued = wait_terminal(&manager, "task-queued").await;
+        assert_eq!(queued.state, AiTaskState::Failed as i32);
+        assert_eq!(queued.error.unwrap().code, "task_expired");
+        manager.close_and_wait().await.unwrap();
+        server_cancel.cancel();
+        server.await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 

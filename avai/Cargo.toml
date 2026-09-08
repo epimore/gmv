@@ -24,6 +24,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+tower = { version = "0.5", features = ["util"] }
 #burn = "0.19"
 #burn-tensor = "0.19"
 #candle-transformers = "0.9"
