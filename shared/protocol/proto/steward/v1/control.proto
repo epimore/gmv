@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package gmv.steward.v1;
+
+import "common/v1/types.proto";
+
+service StewardGateway {
+  rpc OpenControlStream(stream StewardToCenterMessage) returns (stream CenterToStewardMessage);
+}
+
+message StewardToCenterMessage {
+  string message_id = 1;
+  uint64 sequence = 2;
+  int64 sent_at_epoch_ms = 3;
+  string installation_id = 4;
+  string steward_instance_id = 5;
+  uint32 protocol_version = 6;
+  oneof payload {
+    StewardHello hello = 10;
+    StewardHeartbeat heartbeat = 11;
+    InventorySnapshot inventory = 12;
+    DeliveryReceipt delivery_receipt = 13;
+    CommandReceipt command_receipt = 14;
+  }
+}
+
+message CenterToStewardMessage {
+  string message_id = 1;
+  uint64 sequence = 2;
+  int64 sent_at_epoch_ms = 3;
+  string installation_id = 4;
+  string expected_steward_instance_id = 5;
+  uint32 protocol_version = 6;
+  oneof payload {
+    DesiredState desired_state = 10;
+    TypedCommand command = 11;
+    ReceiptAck receipt_ack = 12;
+  }
+}
+
+message ReceiptAck {
+  string receipt_message_id = 1;
+}
+
+message StewardHello {
+  gmv.common.v1.NodeIdentity identity = 1;
+  string software_version = 2;
+  string manifest_revision = 3;
+  string platform = 4;
+  string architecture = 5;
+}
+
+message StewardHeartbeat {
+  int64 observed_at_epoch_ms = 1;
+  string current_revision = 2;
+  string desired_revision = 3;
+  string staged_revision = 4;
+}
+
+message InventorySnapshot {
+  string manifest_revision = 1;
+  int64 observed_at_epoch_ms = 2;
+  repeated ComponentObservation components = 3;
+}
+
+message ComponentObservation {
+  string component_id = 1;
+  string service_type = 2;
+  string declared_version = 3;
+  string observed_version = 4;
+  ComponentState state = 5;
+  string stable_reason = 6;
+}
+
+enum ComponentState {
+  COMPONENT_STATE_UNSPECIFIED = 0;
+  COMPONENT_STATE_UNKNOWN = 1;
+  COMPONENT_STATE_RUNNING = 2;
+  COMPONENT_STATE_STOPPED = 3;
+  COMPONENT_STATE_MISSING = 4;
+  COMPONENT_STATE_VERSION_MISMATCH = 5;
+  COMPONENT_STATE_UNMANAGED = 6;
+}
+
+message ArtifactManifest {
+  string artifact_id = 1;
+  string version = 2;
+  string revision = 3;
+  ArtifactKind kind = 4;
+  string platform = 5;
+  string architecture = 6;
+  string required_steward_version = 7;
+  string gmv_compatibility = 8;
+  uint64 content_size = 9;
+  string sha256 = 10;
+  bytes signature = 11;
+  string signing_key_id = 12;
+  string package_layout_version = 13;
+  string license_id = 14;
+  string source_framework = 15;
+  string base_model = 16;
+  string redistribution_policy = 17;
+  string training_lineage = 18;
+  string download_url = 19;
+  int64 download_expires_at_epoch_ms = 20;
+}
+
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_GMV_BUNDLE = 1;
+  ARTIFACT_KIND_AI_MODEL = 2;
+}
+
+message DesiredState {
+  string assignment_id = 1;
+  string channel = 2;
+  ArtifactManifest artifact = 3;
+  int64 deadline_epoch_ms = 4;
+}
+
+message DeliveryReceipt {
+  string assignment_id = 1;
+  string artifact_id = 2;
+  string revision = 3;
+  DeliveryState state = 4;
+  string stable_error_code = 5;
+  string detail_digest = 6;
+  int64 observed_at_epoch_ms = 7;
+}
+
+enum DeliveryState {
+  DELIVERY_STATE_UNSPECIFIED = 0;
+  DELIVERY_STATE_NOTICED = 1;
+  DELIVERY_STATE_DOWNLOADING = 2;
+  DELIVERY_STATE_DOWNLOADED = 3;
+  DELIVERY_STATE_VERIFIED = 4;
+  DELIVERY_STATE_STAGED = 5;
+  DELIVERY_STATE_FAILED = 6;
+  DELIVERY_STATE_ACTIVE = 7;
+  DELIVERY_STATE_ROLLED_BACK = 8;
+}
+
+message TypedCommand {
+  string command_id = 1;
+  StewardCommandType command_type = 2;
+  int64 deadline_epoch_ms = 3;
+  string expected_manifest_revision = 4;
+}
+
+enum StewardCommandType {
+  STEWARD_COMMAND_TYPE_UNSPECIFIED = 0;
+  STEWARD_COMMAND_TYPE_INVENTORY_REFRESH = 1;
+  STEWARD_COMMAND_TYPE_HEALTH_SNAPSHOT = 2;
+}
+
+message CommandReceipt {
+  string command_id = 1;
+  CommandState state = 2;
+  string stable_error_code = 3;
+  bytes result = 4;
+  int64 completed_at_epoch_ms = 5;
+}
+
+enum CommandState {
+  COMMAND_STATE_UNSPECIFIED = 0;
+  COMMAND_STATE_SUCCEEDED = 1;
+  COMMAND_STATE_FAILED = 2;
+  COMMAND_STATE_REJECTED = 3;
+}

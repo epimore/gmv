@@ -26,6 +26,7 @@ sqlx = { version = "0.9", default-features = false, features = ["derive"] }
 # base_rpc = { git = "https://github.com/epimore/pigs.git", rev = "6ef154f" }
 base_rpc = { path = "../../../pigs/base_rpc" }
 tonic = "0.14"
+prost = "0.14"
 tokio-stream = "0.1"
 reqwest = { workspace = true, features = ["stream"] }
 url.workspace = true
@@ -43,6 +44,7 @@ sha2 = "0.10"
 
 [dev-dependencies]
 tower = { workspace = true, features = ["util"] }
+tokio = { version = "1.52", features = ["macros", "rt-multi-thread"] }
 
 [features]
 default = ["db-all"]

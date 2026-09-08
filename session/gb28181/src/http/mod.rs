@@ -29,7 +29,8 @@ pub struct Http {
     #[serde(default)]
     pub tls: HttpTlsConf,
     #[serde(default)]
-    pub image_source_uds: ImageSourceUdsConf,
+    #[serde(alias = "image_source_uds")]
+    pub image_source_local: ImageSourceLocalConf,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -45,24 +46,30 @@ pub struct HttpTlsConf {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(crate = "base::serde")]
-pub struct ImageSourceUdsConf {
-    #[serde(default = "default_image_source_uds_enabled")]
+pub struct ImageSourceLocalConf {
+    #[serde(default = "default_image_source_local_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_image_source_uds_root")]
+    #[serde(default = "default_image_source_local_root")]
     pub socket_root: PathBuf,
-    #[serde(default = "default_image_source_uds_path")]
+    #[serde(default = "default_image_source_local_path")]
     pub socket_path: PathBuf,
-    #[serde(default = "default_image_source_uds_max_message_size")]
+    #[serde(default = "default_image_source_pipe_namespace")]
+    pub pipe_namespace: String,
+    #[serde(default = "default_image_source_pipe_name")]
+    pub pipe_name: String,
+    #[serde(default = "default_image_source_local_max_message_size")]
     pub max_message_size: usize,
 }
 
-impl Default for ImageSourceUdsConf {
+impl Default for ImageSourceLocalConf {
     fn default() -> Self {
         Self {
-            enabled: default_image_source_uds_enabled(),
-            socket_root: default_image_source_uds_root(),
-            socket_path: default_image_source_uds_path(),
-            max_message_size: default_image_source_uds_max_message_size(),
+            enabled: default_image_source_local_enabled(),
+            socket_root: default_image_source_local_root(),
+            socket_path: default_image_source_local_path(),
+            pipe_namespace: default_image_source_pipe_namespace(),
+            pipe_name: default_image_source_pipe_name(),
+            max_message_size: default_image_source_local_max_message_size(),
         }
     }
 }
@@ -72,19 +79,27 @@ serde_default!(
     "0.0.0.0:8080".parse().expect("valid default HTTP address")
 );
 
-fn default_image_source_uds_enabled() -> bool {
-    cfg!(unix)
+fn default_image_source_local_enabled() -> bool {
+    cfg!(any(unix, windows))
 }
 
-fn default_image_source_uds_root() -> PathBuf {
+fn default_image_source_local_root() -> PathBuf {
     PathBuf::from("./run")
 }
 
-fn default_image_source_uds_path() -> PathBuf {
+fn default_image_source_local_path() -> PathBuf {
     PathBuf::from("./run/session-image.sock")
 }
 
-fn default_image_source_uds_max_message_size() -> usize {
+fn default_image_source_pipe_namespace() -> String {
+    "gmv".to_string()
+}
+
+fn default_image_source_pipe_name() -> String {
+    "session-image".to_string()
+}
+
+fn default_image_source_local_max_message_size() -> usize {
     20 * 1024 * 1024
 }
 serde_default!(
@@ -111,22 +126,31 @@ impl CheckFromConf for Http {
                 "http.tls启用时certificate_path和private_key_path不能为空".to_string(),
             ));
         }
-        if self.image_source_uds.enabled {
-            if !cfg!(unix) {
+        if self.image_source_local.enabled {
+            if !cfg!(any(unix, windows)) {
                 return Err(FieldCheckError::BizError(
-                    "http.image_source_uds仅支持Unix平台".to_string(),
+                    "http.image_source_local仅支持Unix或Windows平台".to_string(),
                 ));
             }
-            if self.image_source_uds.max_message_size == 0 {
+            if self.image_source_local.max_message_size == 0 {
                 return Err(FieldCheckError::BizError(
-                    "http.image_source_uds.max_message_size必须大于0".to_string(),
+                    "http.image_source_local.max_message_size必须大于0".to_string(),
                 ));
             }
-            if self.image_source_uds.socket_root.as_os_str().is_empty()
-                || self.image_source_uds.socket_path.as_os_str().is_empty()
+            if cfg!(unix)
+                && (self.image_source_local.socket_root.as_os_str().is_empty()
+                    || self.image_source_local.socket_path.as_os_str().is_empty())
             {
                 return Err(FieldCheckError::BizError(
-                    "http.image_source_uds的socket_root和socket_path不能为空".to_string(),
+                    "http.image_source_local的socket_root和socket_path不能为空".to_string(),
+                ));
+            }
+            if cfg!(windows)
+                && (self.image_source_local.pipe_namespace.trim().is_empty()
+                    || self.image_source_local.pipe_name.trim().is_empty())
+            {
+                return Err(FieldCheckError::BizError(
+                    "http.image_source_local的pipe_namespace和pipe_name不能为空".to_string(),
                 ));
             }
         }
@@ -290,7 +314,7 @@ mod tests {
             listen_addr: "0.0.0.0:28567".parse().unwrap(),
             public_url: "https://gmv.example.com/session-1".to_string(),
             tls: Default::default(),
-            image_source_uds: Default::default(),
+            image_source_local: Default::default(),
         };
 
         assert_eq!(
@@ -311,7 +335,7 @@ mod tests {
                 listen_addr: "0.0.0.0:28567".parse().unwrap(),
                 public_url: public_url.to_string(),
                 tls: Default::default(),
-                image_source_uds: Default::default(),
+                image_source_local: Default::default(),
             };
             assert!(conf.public_endpoint().is_err());
         }

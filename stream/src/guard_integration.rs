@@ -200,6 +200,7 @@ pub struct StreamGuardNode {
     pub endpoints: Vec<Endpoint>,
     pub capabilities: Vec<String>,
     pub host_id: String,
+    pub installation_id: String,
 }
 
 impl StreamGuardNode {
@@ -252,6 +253,7 @@ impl StreamGuardNode {
                 "download".to_string(),
                 "broadcast".to_string(),
             ],
+            installation_id: String::new(),
         }
     }
 
@@ -267,6 +269,7 @@ impl StreamGuardNode {
             zone: String::new(),
             takeover: cfg!(debug_assertions),
             config: self.config_summary(),
+            installation_id: self.installation_id.clone(),
         }
     }
 
@@ -274,6 +277,7 @@ impl StreamGuardNode {
         HashMap::from([
             ("node_id".to_string(), self.identity.node_id.clone()),
             ("host_id".to_string(), self.host_id.clone()),
+            ("installation_id".to_string(), self.installation_id.clone()),
             (
                 "software_version".to_string(),
                 self.software_version.clone(),

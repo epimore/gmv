@@ -5,11 +5,11 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use base::net::named_pipe::{ManagedNamedPipeStream, NamedPipeTransportConfig};
 #[cfg(unix)]
-use base::net::{
-    transport::MessageTransport,
-    uds::{ManagedUnixStream, UnixTransportConfig},
-};
+use base::net::uds::{ManagedUnixStream, UnixTransportConfig};
+use base::net::{local_stream::ManagedLocalStream, transport::MessageTransport};
 use base::{
     base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD},
     bytes::{Bytes, BytesMut},
@@ -109,18 +109,21 @@ impl SourceResolver {
                 "Avai object root cannot be resolved",
             )
         })?;
-        std::fs::create_dir_all(&policy.uds_socket_root).map_err(|_| {
-            SourceError::new(
-                "invalid_source_policy",
-                "Avai UDS socket root cannot be created",
-            )
-        })?;
-        policy.uds_socket_root = policy.uds_socket_root.canonicalize().map_err(|_| {
-            SourceError::new(
-                "invalid_source_policy",
-                "Avai UDS socket root cannot be resolved",
-            )
-        })?;
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(&policy.uds_socket_root).map_err(|_| {
+                SourceError::new(
+                    "invalid_source_policy",
+                    "Avai UDS socket root cannot be created",
+                )
+            })?;
+            policy.uds_socket_root = policy.uds_socket_root.canonicalize().map_err(|_| {
+                SourceError::new(
+                    "invalid_source_policy",
+                    "Avai UDS socket root cannot be resolved",
+                )
+            })?;
+        }
         Ok(Self {
             identity,
             policy,
@@ -192,50 +195,78 @@ impl SourceResolver {
                     );
                 }
 
+                let mut local_error = None;
+
                 #[cfg(unix)]
                 if let Some(endpoint) = grant
                     .endpoints
                     .iter()
                     .find(|endpoint| endpoint.uri.starts_with("unix://"))
                 {
-                    let fetched = read_granted_uds(
+                    match read_granted_uds(
                         endpoint,
                         grant,
                         &resource.resource_id,
                         &self.policy,
                         &self.runtime,
                     )
-                    .await?;
-                    return validate_image(
-                        fetched,
-                        source.metadata.as_ref(),
-                        format!(
-                            "owned:{}/{}/{}",
-                            owner.node_id, resource.resource_type, resource.resource_id
-                        ),
-                    );
+                    .await
+                    {
+                        Ok(fetched) => {
+                            return validate_image(
+                                fetched,
+                                source.metadata.as_ref(),
+                                format!(
+                                    "owned:{}/{}/{}",
+                                    owner.node_id, resource.resource_type, resource.resource_id
+                                ),
+                            );
+                        }
+                        Err(error) if is_fallback_eligible(&error) => local_error = Some(error),
+                        Err(error) => return Err(error),
+                    }
                 }
 
-                #[cfg(not(unix))]
-                if grant
+                #[cfg(windows)]
+                if let Some(endpoint) = grant
                     .endpoints
                     .iter()
-                    .any(|endpoint| endpoint.uri.starts_with("unix://"))
+                    .find(|endpoint| endpoint.uri.starts_with("pipe://"))
                 {
-                    return Err(SourceError::new(
-                        "source_transport_unsupported",
-                        "owned image UDS endpoint is unsupported on this platform",
-                    ));
+                    match read_granted_pipe(
+                        endpoint,
+                        grant,
+                        &resource.resource_id,
+                        &self.policy,
+                        &self.runtime,
+                    )
+                    .await
+                    {
+                        Ok(fetched) => {
+                            return validate_image(
+                                fetched,
+                                source.metadata.as_ref(),
+                                format!(
+                                    "owned:{}/{}/{}",
+                                    owner.node_id, resource.resource_type, resource.resource_id
+                                ),
+                            );
+                        }
+                        Err(error) if is_fallback_eligible(&error) => local_error = Some(error),
+                        Err(error) => return Err(error),
+                    }
                 }
 
                 let endpoint = grant.endpoints.iter().find(|endpoint| {
                     endpoint.uri.starts_with("https://") || endpoint.uri.starts_with("http://")
                 });
                 let endpoint = endpoint.ok_or_else(|| {
-                    SourceError::new(
-                        "source_transport_unsupported",
-                        "owned image grant has no supported HTTP endpoint",
-                    )
+                    local_error.unwrap_or_else(|| {
+                        SourceError::new(
+                            "source_transport_unsupported",
+                            "owned image grant has no endpoint supported on this platform",
+                        )
+                    })
                 })?;
                 let parsed = Url::parse(&endpoint.uri).map_err(|_| {
                     SourceError::new("invalid_source", "owned image endpoint is not a valid URL")
@@ -279,6 +310,13 @@ impl SourceResolver {
     }
 }
 
+fn is_fallback_eligible(error: &SourceError) -> bool {
+    matches!(
+        error.code,
+        "source_transport_unavailable" | "source_transport_timeout"
+    )
+}
+
 #[cfg(unix)]
 async fn read_granted_uds(
     endpoint: &gmv_protocol::common::v1::DataEndpoint,
@@ -313,6 +351,57 @@ async fn read_granted_uds(
             format!("owned image UDS connection failed: {error}"),
         )
     })?;
+    read_granted_local_stream(connection, grant, image_id, policy, "UDS").await
+}
+
+#[cfg(windows)]
+async fn read_granted_pipe(
+    endpoint: &gmv_protocol::common::v1::DataEndpoint,
+    grant: &gmv_protocol::common::v1::AccessGrant,
+    image_id: &str,
+    policy: &SourcePolicy,
+    runtime: &GlobalRuntime,
+) -> Result<FetchedBody, SourceError> {
+    let pipe_address = endpoint
+        .uri
+        .strip_prefix("pipe://")
+        .filter(|address| !address.is_empty())
+        .ok_or_else(|| {
+            SourceError::new("invalid_source", "owned image pipe endpoint is invalid")
+        })?;
+    let (namespace, name) = pipe_address.split_once('/').ok_or_else(|| {
+        SourceError::new("invalid_source", "owned image pipe endpoint is invalid")
+    })?;
+    let advertised_max = endpoint
+        .capabilities
+        .as_ref()
+        .and_then(|capabilities| usize::try_from(capabilities.max_message_size).ok())
+        .filter(|size| *size > 0)
+        .unwrap_or(policy.max_image_bytes.saturating_add(64 * 1024));
+    let mut config = NamedPipeTransportConfig::new(namespace, name);
+    config.max_message_size = advertised_max.min(policy.max_image_bytes.saturating_add(64 * 1024));
+    let connection = ManagedNamedPipeStream::connect(
+        config,
+        runtime,
+        format!("avai-image-source-pipe-{}", grant.grant_id),
+    )
+    .await
+    .map_err(|error| {
+        SourceError::new(
+            "source_transport_unavailable",
+            format!("owned image pipe connection failed: {error}"),
+        )
+    })?;
+    read_granted_local_stream(connection, grant, image_id, policy, "pipe").await
+}
+
+async fn read_granted_local_stream(
+    connection: ManagedLocalStream,
+    grant: &gmv_protocol::common::v1::AccessGrant,
+    image_id: &str,
+    policy: &SourcePolicy,
+    transport: &'static str,
+) -> Result<FetchedBody, SourceError> {
     let request = ReadGrantedImageRequest {
         grant_id: grant.grant_id.clone(),
         proof: grant.proof.clone(),
@@ -325,19 +414,19 @@ async fn read_granted_uds(
             .map_err(|error| {
                 SourceError::new(
                     "source_transport_unavailable",
-                    format!("owned image UDS request failed: {error}"),
+                    format!("owned image {transport} request failed: {error}"),
                 )
             })?;
         let message = connection.receive().await.map_err(|error| {
             SourceError::new(
                 "source_transport_unavailable",
-                format!("owned image UDS response failed: {error}"),
+                format!("owned image {transport} response failed: {error}"),
             )
         })?;
         ReadGrantedImageResponse::decode(message.payload).map_err(|_| {
             SourceError::new(
                 "source_transport_invalid",
-                "owned image UDS response is invalid",
+                format!("owned image {transport} response is invalid"),
             )
         })
     })
@@ -345,12 +434,12 @@ async fn read_granted_uds(
     .map_err(|_| {
         SourceError::new(
             "source_transport_timeout",
-            "owned image UDS request timed out",
+            format!("owned image {transport} request timed out"),
         )
     });
     let close_result = connection.close_and_wait().await;
     if let Err(error) = close_result {
-        base::log::debug!("close owned image UDS connection failed: {error}");
+        base::log::debug!("close owned image {transport} connection failed: {error}");
     }
     let response = exchanged??;
     if let Some(error) = response.error {

@@ -22,6 +22,7 @@ pub mod sip;
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server.session", check)]
 pub struct SessionConf {
+    pub installation_id: String,
     pub domain: String,
     pub domain_id: String,
     pub lan_ip: Ipv4Addr,
@@ -39,6 +40,11 @@ fn default_playback_pause_timeout_secs() -> u64 {
 }
 impl CheckFromConf for SessionConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
+        if self.installation_id.trim().is_empty() {
+            return Err(FieldCheckError::BizError(
+                "installation_id must not be empty".to_string(),
+            ));
+        }
         let re = Regex::new(r"^\d{20}$").unwrap();
         if !re.is_match(&self.domain_id) {
             return Err(FieldCheckError::BizError(format!(

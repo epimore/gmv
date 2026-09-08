@@ -30,3 +30,10 @@ pub mod avai {
         tonic::include_proto!("gmv.avai.v1");
     }
 }
+
+pub mod steward {
+    #[allow(clippy::large_enum_variant)]
+    pub mod v1 {
+        tonic::include_proto!("gmv.steward.v1");
+    }
+}

@@ -10,27 +10,25 @@ use axum::routing::get;
 use base::chrono::Local;
 use base::dashmap::DashMap;
 use base::err::BaseErrorCode;
+#[cfg(windows)]
+use base::net::named_pipe::{ManagedNamedPipeListener, NamedPipeTransportConfig};
+#[cfg(unix)]
+use base::net::uds::{ManagedUnixStreamListener, UnixTransportConfig};
 use base::serde::Deserialize;
 use base::sha2::{Digest, Sha256};
 use base::tokio::fs::File;
 use base::tokio_util::io::ReaderStream;
 use base::utils::rt::GlobalRuntime;
-#[cfg(unix)]
 use base::{
     bytes::Bytes,
-    net::{
-        transport::MessageTransport,
-        uds::{ManagedUnixStream, ManagedUnixStreamListener, UnixTransportConfig},
-    },
+    net::{local_stream::ManagedLocalStream, transport::MessageTransport},
 };
 use gmv_protocol::common::v1::ErrorDetail;
-#[cfg(unix)]
 use gmv_protocol::session::v1::{ReadGrantedImageRequest, ReadGrantedImageResponse};
-#[cfg(unix)]
 use prost::Message;
 use uuid::Uuid;
 
-use crate::http::{Http, ImageSourceUdsConf};
+use crate::http::{Http, ImageSourceLocalConf};
 use crate::storage::guard_query::GbChannelImageView;
 use crate::storage::pics::Pics;
 
@@ -73,8 +71,8 @@ pub struct IssuedAccess {
 pub struct IssuedSourceAccess {
     pub grant_id: String,
     pub url: String,
-    pub uds_url: Option<String>,
-    pub uds_max_message_size: usize,
+    pub local_url: Option<String>,
+    pub local_max_message_size: usize,
     pub proof: Vec<u8>,
     pub expires_at_ms: i64,
     pub content_type: String,
@@ -86,7 +84,7 @@ pub struct IssuedSourceAccess {
 static ACCESS_TICKETS: LazyLock<DashMap<String, AccessTicket>> = LazyLock::new(DashMap::new);
 static SOURCE_ACCESS_GRANTS: LazyLock<DashMap<String, SourceAccessGrant>> =
     LazyLock::new(DashMap::new);
-static ACTIVE_SOURCE_UDS: LazyLock<RwLock<Option<(PathBuf, usize)>>> =
+static ACTIVE_SOURCE_LOCAL: LazyLock<RwLock<Option<(String, usize)>>> =
     LazyLock::new(|| RwLock::new(None));
 
 enum ResolvePathError {
@@ -274,8 +272,8 @@ pub async fn issue_source_grant(
     Ok(IssuedSourceAccess {
         grant_id,
         url: build_source_access_url(&http.public_url, image_id),
-        uds_url: active_source_uds_uri(),
-        uds_max_message_size: http.image_source_uds.max_message_size,
+        local_url: active_source_local_uri(),
+        local_max_message_size: http.image_source_local.max_message_size,
         proof,
         expires_at_ms,
         content_type: content_type.to_string(),
@@ -450,18 +448,17 @@ fn consume_source_grant(
         .then_some(grant)
 }
 
-fn active_source_uds_uri() -> Option<String> {
-    ACTIVE_SOURCE_UDS.read().ok().and_then(|active| {
-        active
-            .as_ref()
-            .map(|(path, _)| format!("unix://{}", path.display()))
-    })
+fn active_source_local_uri() -> Option<String> {
+    ACTIVE_SOURCE_LOCAL
+        .read()
+        .ok()
+        .and_then(|active| active.as_ref().map(|(uri, _)| uri.clone()))
 }
 
 #[cfg(unix)]
-pub async fn start_source_uds_service(
+pub async fn start_source_local_service(
     runtime: &GlobalRuntime,
-    conf: &ImageSourceUdsConf,
+    conf: &ImageSourceLocalConf,
 ) -> Result<(), base::exception::GlobalError> {
     if !conf.enabled {
         return Ok(());
@@ -500,9 +497,12 @@ pub async fn start_source_uds_service(
     transport_conf.max_message_size = conf.max_message_size;
     let listener = ManagedUnixStreamListener::bind(transport_conf)
         .await
-        .map_err(source_uds_global_error)?;
-    if let Ok(mut active) = ACTIVE_SOURCE_UDS.write() {
-        *active = Some((socket_path.clone(), conf.max_message_size));
+        .map_err(source_local_global_error)?;
+    if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
+        *active = Some((
+            format!("unix://{}", socket_path.display()),
+            conf.max_message_size,
+        ));
     }
     let task_runtime = runtime.clone();
     let task_cancel = runtime.cancel.clone();
@@ -534,7 +534,7 @@ pub async fn start_source_uds_service(
                 );
                 if let Err(error) = task_runtime.spawn(
                     format!("session-image-source-uds-request-{sequence}"),
-                    handle_source_uds_connection(connection),
+                    handle_source_local_connection(connection, "uds"),
                 ) {
                     base::log::error!("spawn image source UDS request failed: {error}");
                     GlobalRuntime::request_shutdown_with_error();
@@ -546,17 +546,17 @@ pub async fn start_source_uds_service(
                 base::log::error!("close image source UDS listener failed: {error}");
                 GlobalRuntime::request_shutdown_with_error();
             }
-            if let Ok(mut active) = ACTIVE_SOURCE_UDS.write() {
+            if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
                 if active
                     .as_ref()
-                    .is_some_and(|(path, _)| path == &socket_path)
+                    .is_some_and(|(uri, _)| uri == &format!("unix://{}", socket_path.display()))
                 {
                     *active = None;
                 }
             }
         })
         .map_err(|error| {
-            if let Ok(mut active) = ACTIVE_SOURCE_UDS.write() {
+            if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
                 *active = None;
             }
             error
@@ -564,47 +564,120 @@ pub async fn start_source_uds_service(
     Ok(())
 }
 
-#[cfg(not(unix))]
-pub async fn start_source_uds_service(
+#[cfg(windows)]
+pub async fn start_source_local_service(
+    runtime: &GlobalRuntime,
+    conf: &ImageSourceLocalConf,
+) -> Result<(), base::exception::GlobalError> {
+    if !conf.enabled {
+        return Ok(());
+    }
+    let mut transport_conf = NamedPipeTransportConfig::new(&conf.pipe_namespace, &conf.pipe_name);
+    transport_conf.max_message_size = conf.max_message_size;
+    let listener = ManagedNamedPipeListener::bind(transport_conf)
+        .await
+        .map_err(source_local_global_error)?;
+    let source_uri = format!("pipe://{}/{}", conf.pipe_namespace, conf.pipe_name);
+    if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
+        *active = Some((source_uri.clone(), conf.max_message_size));
+    }
+    let task_runtime = runtime.clone();
+    let task_cancel = runtime.cancel.clone();
+    runtime
+        .spawn("session-image-source-pipe", async move {
+            let mut sequence = 0u64;
+            loop {
+                sequence = sequence.wrapping_add(1);
+                let accepted = base::tokio::select! {
+                    _ = task_cancel.cancelled() => break,
+                    accepted = listener.accept(
+                        &task_runtime,
+                        format!("session-image-source-pipe-io-{sequence}"),
+                    ) => accepted,
+                };
+                let (connection, identity) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        base::log::error!("image source pipe accept failed: {error}");
+                        GlobalRuntime::request_shutdown_with_error();
+                        break;
+                    }
+                };
+                base::log::debug!(
+                    "image source pipe peer accepted: pid={:?}",
+                    identity.process_id
+                );
+                if let Err(error) = task_runtime.spawn(
+                    format!("session-image-source-pipe-request-{sequence}"),
+                    handle_source_local_connection(connection, "pipe"),
+                ) {
+                    base::log::error!("spawn image source pipe request failed: {error}");
+                    GlobalRuntime::request_shutdown_with_error();
+                    break;
+                }
+            }
+            listener.close();
+            if let Err(error) = listener.close_and_wait().await {
+                base::log::error!("close image source pipe listener failed: {error}");
+                GlobalRuntime::request_shutdown_with_error();
+            }
+            if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
+                if active.as_ref().is_some_and(|(uri, _)| uri == &source_uri) {
+                    *active = None;
+                }
+            }
+        })
+        .map_err(|error| {
+            if let Ok(mut active) = ACTIVE_SOURCE_LOCAL.write() {
+                *active = None;
+            }
+            error
+        })?;
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub async fn start_source_local_service(
     _runtime: &GlobalRuntime,
-    conf: &ImageSourceUdsConf,
+    conf: &ImageSourceLocalConf,
 ) -> Result<(), base::exception::GlobalError> {
     if conf.enabled {
         return Err(base::exception::GlobalError::new_sys_error(
-            "image source UDS is unsupported on this platform",
+            "image source local stream is unsupported on this platform",
             |_| {},
         ));
     }
     Ok(())
 }
 
-#[cfg(unix)]
-async fn handle_source_uds_connection(connection: ManagedUnixStream) {
+async fn handle_source_local_connection(connection: ManagedLocalStream, transport: &'static str) {
     let response = match connection.receive().await {
         Ok(message) => match ReadGrantedImageRequest::decode(message.payload) {
-            Ok(request) => read_granted_image(request).await,
-            Err(_) => source_uds_error("invalid_request", "image source request is invalid"),
+            Ok(request) => read_granted_image(request, transport).await,
+            Err(_) => source_local_error("invalid_request", "image source request is invalid"),
         },
         Err(error) => {
-            base::log::debug!("image source UDS receive ended: {error}");
+            base::log::debug!("image source {transport} receive ended: {error}");
             connection.close();
             let _ = connection.close_and_wait().await;
             return;
         }
     };
     if let Err(error) = connection.send(Bytes::from(response.encode_to_vec())).await {
-        base::log::debug!("image source UDS response failed: {error}");
+        base::log::debug!("image source {transport} response failed: {error}");
     } else {
         let _ = base::tokio::time::timeout(std::time::Duration::from_secs(1), connection.receive())
             .await;
     }
     if let Err(error) = connection.close_and_wait().await {
-        base::log::debug!("image source UDS connection close failed: {error}");
+        base::log::debug!("image source {transport} connection close failed: {error}");
     }
 }
 
-#[cfg(unix)]
-async fn read_granted_image(request: ReadGrantedImageRequest) -> ReadGrantedImageResponse {
+async fn read_granted_image(
+    request: ReadGrantedImageRequest,
+    transport: &'static str,
+) -> ReadGrantedImageResponse {
     let proof = proof_header(&request.proof);
     let Some(grant) = consume_source_grant(
         &request.image_id,
@@ -612,30 +685,35 @@ async fn read_granted_image(request: ReadGrantedImageRequest) -> ReadGrantedImag
         &proof,
         Local::now().timestamp_millis(),
     ) else {
-        return source_uds_error("source_fetch_denied", "image source grant is invalid");
+        return source_local_error("source_fetch_denied", "image source grant is invalid");
     };
     let image =
         match GbChannelImageView::get(&request.image_id, &grant.device_id, &grant.channel_id).await
         {
             Ok(Some(image)) => image,
-            Ok(None) => return source_uds_error("source_not_found", "image source does not exist"),
-            Err(_) => return source_uds_error("source_unavailable", "image source lookup failed"),
+            Ok(None) => {
+                return source_local_error("source_not_found", "image source does not exist");
+            }
+            Err(_) => {
+                return source_local_error("source_unavailable", "image source lookup failed");
+            }
         };
     let Some(content_type) = image_content_type(&image.file_format) else {
-        return source_uds_error("source_type_unsupported", "image format is unsupported");
+        return source_local_error("source_type_unsupported", "image format is unsupported");
     };
     let path = match resolve_file_path(&image).await {
         Ok(path) => path,
         Err(_) => {
-            return source_uds_error("source_unavailable", "image source path is unavailable");
+            return source_local_error("source_unavailable", "image source path is unavailable");
         }
     };
     let bytes = match base::tokio::fs::read(path).await {
         Ok(bytes) => bytes,
-        Err(_) => return source_uds_error("source_unavailable", "image source read failed"),
+        Err(_) => return source_local_error("source_unavailable", "image source read failed"),
     };
     base::log::info!(
-        "internal image grant consumed: action=image_source, transport=uds, stage=read, outcome=accepted, grant_id={}, task_id={}, purpose={}, expected_node_id={}, expected_instance_id={}, image_id={}",
+        "internal image grant consumed: action=image_source, transport={}, stage=read, outcome=accepted, grant_id={}, task_id={}, purpose={}, expected_node_id={}, expected_instance_id={}, image_id={}",
+        transport,
         grant.grant_id,
         grant.task_id,
         grant.purpose,
@@ -651,8 +729,7 @@ async fn read_granted_image(request: ReadGrantedImageRequest) -> ReadGrantedImag
     }
 }
 
-#[cfg(unix)]
-fn source_uds_error(code: &str, message: &str) -> ReadGrantedImageResponse {
+fn source_local_error(code: &str, message: &str) -> ReadGrantedImageResponse {
     ReadGrantedImageResponse {
         error: Some(ErrorDetail {
             code: code.to_string(),
@@ -663,12 +740,11 @@ fn source_uds_error(code: &str, message: &str) -> ReadGrantedImageResponse {
     }
 }
 
-#[cfg(unix)]
-fn source_uds_global_error(
+fn source_local_global_error(
     error: base::net::transport::TransportError,
 ) -> base::exception::GlobalError {
     base::exception::GlobalError::new_sys_error(
-        &format!("start image source UDS failed: {error}"),
+        &format!("start image source local stream failed: {error}"),
         |_| {},
     )
 }

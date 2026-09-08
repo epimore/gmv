@@ -8,6 +8,7 @@ use crate::auth::AuthState;
 use crate::core::{GuardError, GuardResult};
 use crate::runtime::application_router;
 use crate::runtime::event_forwarder::EventForwarder;
+use crate::runtime::node_rpc::NodeControlHub;
 use base::tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ pub async fn serve(
     command_repository: crate::store::persistent::CommandRepository,
     integration_secrets: Option<crate::integration::secret::IntegrationSecretManager>,
     event_forwarder: Option<EventForwarder>,
+    node_control: NodeControlHub,
     cancel: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     config.validate()?;
@@ -103,6 +105,7 @@ pub async fn serve(
             integration_secrets,
             integration_nonces: crate::integration::hmac::HmacNonceCache::new(300_000, 10_000)?,
             event_forwarder,
+            node_control,
             media_https_http2_verified: config.media_https_http2_verified,
         },
         config.ui_dist_dir.clone(),

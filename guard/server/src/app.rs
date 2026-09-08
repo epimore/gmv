@@ -213,6 +213,7 @@ pub async fn start_guard(
         "outbox-worker",
         spawn_outbox_worker(&runtime, persistent.outbox_repository(), delivery)?,
     ));
+    let node_control = node_rpc::NodeControlHub::default();
     let web = web::serve(
         web_config,
         listeners.web,
@@ -224,15 +225,19 @@ pub async fn start_guard(
         persistent.command_repository(),
         integration_secrets,
         event_forwarder.clone(),
+        node_control.clone(),
         runtime.cancel.clone(),
     );
     let rpc = node_rpc::serve(
         rpc_config,
         listeners.rpc,
-        registry,
-        api_store.clone(),
-        auth,
-        event_forwarder,
+        node_rpc::NodeRpcState {
+            registry,
+            store: api_store.clone(),
+            auth,
+            forwarder: event_forwarder,
+            control_hub: node_control,
+        },
         runtime.cancel.clone(),
     );
     let web_cancel = runtime.cancel.clone();

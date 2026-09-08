@@ -7,6 +7,7 @@ pub enum NodeKind {
     Session,
     Stream,
     Avai,
+    Steward,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

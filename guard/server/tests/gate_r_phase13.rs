@@ -60,6 +60,7 @@ fn app() -> (axum::Router, InMemoryGuardStore) {
             )
             .unwrap(),
             event_forwarder: None,
+            node_control: Default::default(),
             media_https_http2_verified: false,
         }),
         store,

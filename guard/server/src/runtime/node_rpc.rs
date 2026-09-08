@@ -1,9 +1,12 @@
+use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
 use base::futures::Stream;
-use base::tokio::sync::mpsc;
+use base::tokio::sync::{mpsc, oneshot};
 use base::tokio_util::sync::CancellationToken;
 use gmv_protocol::common::v1::{
     Endpoint as ProtoEndpoint, EndpointMode as ProtoEndpointMode, NodeIdentity as ProtoIdentity,
@@ -14,11 +17,14 @@ use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
 use gmv_protocol::guard::v1::{
-    EventPriority, GuardToNodeMessage, HostMetrics, NodeHealth, NodeHeartbeat,
-    NodeResourceSnapshot, NodeToGuardMessage, RegisterDecision as ProtoRegisterDecision,
-    RegisterNodeRequest, RegisterNodeResponse, ResourceState, StreamAck, guard_to_node_message,
+    CommandResult, EventPriority, GuardCommand, GuardToNodeMessage, HostMetrics, NodeHealth,
+    NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
+    RegisterDecision as ProtoRegisterDecision, RegisterNodeRequest, RegisterNodeResponse,
+    ResourceState, StewardStatusQuery, StewardStatusSnapshot, StreamAck, guard_to_node_message,
     node_to_guard_message,
 };
+use parking_lot::Mutex;
+use prost::Message;
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::auth::AuthState;
@@ -43,6 +49,15 @@ pub struct NodeRpcTlsConfig {
     pub private_key_path: PathBuf,
 }
 
+#[derive(Clone)]
+pub struct NodeRpcState {
+    pub registry: RegistryService,
+    pub store: InMemoryGuardStore,
+    pub auth: AuthState,
+    pub forwarder: Option<EventForwarder>,
+    pub control_hub: NodeControlHub,
+}
+
 #[derive(Debug, Clone)]
 pub struct GuardNodeRpc {
     registry: RegistryService,
@@ -51,6 +66,150 @@ pub struct GuardNodeRpc {
     forwarder: Option<EventForwarder>,
     heartbeat_interval_ms: u64,
     heartbeat_timeout_ms: u64,
+    control_hub: NodeControlHub,
+}
+
+#[derive(Debug, Clone)]
+struct ControlConnection {
+    instance_id: String,
+    generation: u64,
+    sender: mpsc::Sender<Result<GuardToNodeMessage, Status>>,
+}
+
+#[derive(Debug)]
+struct PendingCommand {
+    node_id: String,
+    sender: oneshot::Sender<CommandResult>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct NodeControlHub {
+    connections: Arc<Mutex<HashMap<String, ControlConnection>>>,
+    pending: Arc<Mutex<HashMap<String, PendingCommand>>>,
+}
+
+impl NodeControlHub {
+    pub async fn query_steward_status(
+        &self,
+        node_id: &str,
+        expected_instance_id: &str,
+        installation_id: &str,
+        timeout: Duration,
+    ) -> Result<StewardStatusSnapshot, String> {
+        let connection = self
+            .connections
+            .lock()
+            .get(node_id)
+            .cloned()
+            .ok_or_else(|| "steward control stream is unavailable".to_string())?;
+        if connection.instance_id != expected_instance_id {
+            return Err("steward instance changed".to_string());
+        }
+
+        let command_id = uuid::Uuid::now_v7().to_string();
+        let (sender, receiver) = oneshot::channel();
+        self.pending.lock().insert(
+            command_id.clone(),
+            PendingCommand {
+                node_id: node_id.to_string(),
+                sender,
+            },
+        );
+        let message = GuardToNodeMessage {
+            message_id: command_id.clone(),
+            sent_at_epoch_ms: now_ms(),
+            payload: Some(guard_to_node_message::Payload::Command(GuardCommand {
+                command_id: command_id.clone(),
+                expected_instance_id: expected_instance_id.to_string(),
+                command_type: "steward.health.snapshot.v1".to_string(),
+                deadline_ms: u64::try_from(now_ms())
+                    .unwrap_or(0)
+                    .saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64),
+                payload: StewardStatusQuery {
+                    installation_id: installation_id.to_string(),
+                }
+                .encode_to_vec(),
+            })),
+        };
+        if connection.sender.send(Ok(message)).await.is_err() {
+            self.pending.lock().remove(&command_id);
+            return Err("steward control stream closed".to_string());
+        }
+        let result = match base::tokio::time::timeout(timeout, receiver).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => return Err("steward control response was cancelled".to_string()),
+            Err(_) => {
+                self.pending.lock().remove(&command_id);
+                return Err("steward control response timed out".to_string());
+            }
+        };
+        if result.status != gmv_protocol::guard::v1::CommandStatus::Succeeded as i32 {
+            return Err(result
+                .error
+                .map(|error| error.message)
+                .filter(|message| !message.is_empty())
+                .unwrap_or_else(|| "steward rejected status query".to_string()));
+        }
+        let snapshot = StewardStatusSnapshot::decode(result.payload.as_slice())
+            .map_err(|error| format!("invalid steward status response: {error}"))?;
+        if snapshot.installation_id != installation_id {
+            return Err("steward status installation mismatch".to_string());
+        }
+        Ok(snapshot)
+    }
+
+    fn attach(
+        &self,
+        owner: &ControlStreamOwner,
+        sender: mpsc::Sender<Result<GuardToNodeMessage, Status>>,
+    ) {
+        let previous = self.connections.lock().insert(
+            owner.identity.node_id.clone(),
+            ControlConnection {
+                instance_id: owner.identity.instance_id.clone(),
+                generation: owner.generation,
+                sender,
+            },
+        );
+        if previous.is_some_and(|connection| {
+            connection.instance_id != owner.identity.instance_id
+                || connection.generation != owner.generation
+        }) {
+            self.pending
+                .lock()
+                .retain(|_, pending| pending.node_id != owner.identity.node_id);
+        }
+    }
+
+    fn resolve(&self, node_id: &str, result: CommandResult) {
+        let mut pending_commands = self.pending.lock();
+        if pending_commands
+            .get(&result.command_id)
+            .is_none_or(|pending| pending.node_id != node_id)
+        {
+            return;
+        }
+        if let Some(pending) = pending_commands.remove(&result.command_id) {
+            let _ = pending.sender.send(result);
+        }
+    }
+
+    fn detach(&self, owner: &ControlStreamOwner) {
+        let should_remove = self
+            .connections
+            .lock()
+            .get(&owner.identity.node_id)
+            .is_some_and(|connection| {
+                connection.instance_id == owner.identity.instance_id
+                    && connection.generation == owner.generation
+            });
+        if should_remove {
+            self.connections.lock().remove(&owner.identity.node_id);
+            self.pending
+                .lock()
+                .retain(|_, pending| pending.node_id != owner.identity.node_id);
+        }
+    }
 }
 
 impl GuardNodeRpc {
@@ -61,6 +220,24 @@ impl GuardNodeRpc {
         heartbeat_timeout_ms: u64,
         forwarder: Option<EventForwarder>,
     ) -> Self {
+        Self::with_control_hub(
+            registry,
+            store,
+            heartbeat_interval_ms,
+            heartbeat_timeout_ms,
+            forwarder,
+            NodeControlHub::default(),
+        )
+    }
+
+    pub fn with_control_hub(
+        registry: RegistryService,
+        store: InMemoryGuardStore,
+        heartbeat_interval_ms: u64,
+        heartbeat_timeout_ms: u64,
+        forwarder: Option<EventForwarder>,
+        control_hub: NodeControlHub,
+    ) -> Self {
         Self {
             registry,
             routes: RouteService::new(store.clone()),
@@ -68,6 +245,7 @@ impl GuardNodeRpc {
             forwarder,
             heartbeat_interval_ms,
             heartbeat_timeout_ms,
+            control_hub,
         }
     }
 }
@@ -110,6 +288,10 @@ impl GuardNodeControl for GuardNodeRpc {
             request.host_metrics.is_some()
         );
         let identity = identity(request.identity)?;
+        let mut node_config = request.config;
+        if !request.installation_id.trim().is_empty() {
+            node_config.insert("installation_id".to_string(), request.installation_id);
+        }
         let startup_snapshot = request.startup_snapshot.clone();
         let decision = self
             .registry
@@ -121,7 +303,7 @@ impl GuardNodeControl for GuardNodeRpc {
                 zone: (!request.zone.is_empty()).then_some(request.zone),
                 now_ms: now_ms(),
                 takeover: request.takeover,
-                config: request.config,
+                config: node_config,
             })
             .map_err(status)?;
         if let Some(snapshot) = startup_snapshot {
@@ -159,6 +341,7 @@ impl GuardNodeControl for GuardNodeRpc {
         let routes = self.routes.clone();
         let store = self.store.clone();
         let forwarder = self.forwarder.clone();
+        let control_hub = self.control_hub.clone();
         let (tx, rx) = mpsc::channel(32);
         base::tokio::spawn(async move {
             let mut stream_owner: Option<ControlStreamOwner> = None;
@@ -192,7 +375,10 @@ impl GuardNodeControl for GuardNodeRpc {
                     }
                     break ControlStreamEnd::ApplicationError(error_message);
                 }
-                stream_owner.get_or_insert(message_owner.clone());
+                if stream_owner.is_none() {
+                    control_hub.attach(&message_owner, tx.clone());
+                    stream_owner = Some(message_owner.clone());
+                }
                 let sequence = message.sequence;
                 match &message.payload {
                     Some(node_to_guard_message::Payload::Heartbeat(_)) => {
@@ -255,6 +441,10 @@ impl GuardNodeControl for GuardNodeRpc {
                     Some(node_to_guard_message::Payload::Event(event)) => {
                         apply_event(&store, forwarder.as_ref(), event).await
                     }
+                    Some(node_to_guard_message::Payload::CommandResult(result)) => {
+                        control_hub.resolve(&message_owner.identity.node_id, result);
+                        Ok(())
+                    }
                     _ => Ok(()),
                 };
                 if let Err(error) = result {
@@ -275,6 +465,9 @@ impl GuardNodeControl for GuardNodeRpc {
                     break ControlStreamEnd::OutputReceiverDropped;
                 }
             };
+            if let Some(owner) = stream_owner.as_ref() {
+                control_hub.detach(owner);
+            }
             finish_control_stream(&registry, &store, stream_owner.as_ref(), end);
         });
         Ok(Response::new(Box::pin(
@@ -286,10 +479,7 @@ impl GuardNodeControl for GuardNodeRpc {
 pub async fn serve(
     config: NodeRpcConfig,
     listener: StdTcpListener,
-    registry: RegistryService,
-    store: InMemoryGuardStore,
-    auth: AuthState,
-    forwarder: Option<EventForwarder>,
+    state: NodeRpcState,
     cancel: CancellationToken,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     base::log::debug!(
@@ -297,14 +487,16 @@ pub async fn serve(
         config.bind_addr,
         config.tls.is_some()
     );
-    let node_service = GuardNodeRpc::new(
-        registry,
-        store.clone(),
+    let node_service = GuardNodeRpc::with_control_hub(
+        state.registry,
+        state.store.clone(),
         config.heartbeat_interval_ms,
         config.heartbeat_timeout_ms,
-        forwarder,
+        state.forwarder,
+        state.control_hub,
     );
-    let control_service = crate::runtime::control_rpc::GuardControlRpc::with_auth(store, auth);
+    let control_service =
+        crate::runtime::control_rpc::GuardControlRpc::with_auth(state.store, state.auth);
     let mut server_config = base_rpc::RpcServerConfig::default();
     if let Some(tls) = config.tls {
         server_config.tls = Some(base_rpc::load_server_tls_from_files(
@@ -626,6 +818,7 @@ fn identity(value: Option<ProtoIdentity>) -> Result<NodeIdentity, Status> {
         Some(ProtoNodeKind::Session) => NodeKind::Session,
         Some(ProtoNodeKind::Stream) => NodeKind::Stream,
         Some(ProtoNodeKind::Avai) => NodeKind::Avai,
+        Some(ProtoNodeKind::Steward) => NodeKind::Steward,
         _ => return Err(Status::invalid_argument("node kind is required")),
     };
     Ok(NodeIdentity::new(value.node_id, value.instance_id, kind))
@@ -675,4 +868,139 @@ fn now_ms() -> i64 {
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gmv_protocol::guard::v1::{CenterConnectionState, CommandStatus};
+
+    fn owner() -> ControlStreamOwner {
+        ControlStreamOwner {
+            identity: NodeIdentity::new("steward-1", "instance-1", NodeKind::Steward),
+            generation: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn steward_query_is_correlated_and_decoded() {
+        let hub = NodeControlHub::default();
+        let (sender, mut receiver) = mpsc::channel(2);
+        hub.attach(&owner(), sender);
+        let query_hub = hub.clone();
+        let query = base::tokio::spawn(async move {
+            query_hub
+                .query_steward_status(
+                    "steward-1",
+                    "instance-1",
+                    "installation-1",
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+
+        let outbound = receiver.recv().await.unwrap().unwrap();
+        let guard_to_node_message::Payload::Command(command) = outbound.payload.unwrap() else {
+            panic!("expected steward status command");
+        };
+        let request = StewardStatusQuery::decode(command.payload.as_slice()).unwrap();
+        assert_eq!(request.installation_id, "installation-1");
+        hub.resolve(
+            "steward-2",
+            CommandResult {
+                command_id: command.command_id.clone(),
+                status: CommandStatus::Succeeded as i32,
+                ..CommandResult::default()
+            },
+        );
+        base::tokio::task::yield_now().await;
+        assert!(!query.is_finished());
+        hub.resolve(
+            "steward-1",
+            CommandResult {
+                command_id: command.command_id,
+                status: CommandStatus::Succeeded as i32,
+                payload: StewardStatusSnapshot {
+                    installation_id: "installation-1".to_string(),
+                    center_connection: CenterConnectionState::Connected as i32,
+                    ..StewardStatusSnapshot::default()
+                }
+                .encode_to_vec(),
+                ..CommandResult::default()
+            },
+        );
+
+        let snapshot = query.await.unwrap().unwrap();
+        assert_eq!(snapshot.installation_id, "installation-1");
+        assert_eq!(
+            snapshot.center_connection,
+            CenterConnectionState::Connected as i32
+        );
+        assert!(hub.pending.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn steward_query_timeout_removes_pending_waiter() {
+        let hub = NodeControlHub::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        hub.attach(&owner(), sender);
+        let query_hub = hub.clone();
+        let query = base::tokio::spawn(async move {
+            query_hub
+                .query_steward_status(
+                    "steward-1",
+                    "instance-1",
+                    "installation-1",
+                    Duration::from_millis(10),
+                )
+                .await
+        });
+        receiver.recv().await.unwrap().unwrap();
+        assert!(query.await.unwrap().unwrap_err().contains("timed out"));
+        assert!(hub.pending.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn steward_query_rejects_a_snapshot_for_another_installation() {
+        let hub = NodeControlHub::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        hub.attach(&owner(), sender);
+        let query_hub = hub.clone();
+        let query = base::tokio::spawn(async move {
+            query_hub
+                .query_steward_status(
+                    "steward-1",
+                    "instance-1",
+                    "installation-1",
+                    Duration::from_secs(1),
+                )
+                .await
+        });
+        let outbound = receiver.recv().await.unwrap().unwrap();
+        let guard_to_node_message::Payload::Command(command) = outbound.payload.unwrap() else {
+            panic!("expected steward status command");
+        };
+        hub.resolve(
+            "steward-1",
+            CommandResult {
+                command_id: command.command_id,
+                status: CommandStatus::Succeeded as i32,
+                payload: StewardStatusSnapshot {
+                    installation_id: "installation-2".to_string(),
+                    ..StewardStatusSnapshot::default()
+                }
+                .encode_to_vec(),
+                ..CommandResult::default()
+            },
+        );
+
+        assert!(
+            query
+                .await
+                .unwrap()
+                .unwrap_err()
+                .contains("installation mismatch")
+        );
+        assert!(hub.pending.lock().is_empty());
+    }
 }

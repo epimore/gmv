@@ -13,8 +13,9 @@ use base::utils::rt::GlobalRuntime;
 use base_rpc::{RpcChannelConfig, connect_channel};
 use gmv_protocol::guard::v1::guard_node_control_client::GuardNodeControlClient;
 use gmv_protocol::guard::v1::{
-    HostMetrics, NodeEvent, NodeHealth, NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
-    RegisterNodeRequest, node_to_guard_message,
+    CommandResult, CommandStatus, GuardCommand, HostMetrics, NodeEvent, NodeHealth, NodeHeartbeat,
+    NodeResourceSnapshot, NodeToGuardMessage, RegisterNodeRequest, guard_to_node_message,
+    node_to_guard_message,
 };
 use sys_metrics::HostMetricsCollector;
 use tokio_stream::wrappers::ReceiverStream;
@@ -25,6 +26,8 @@ pub mod error_code;
 pub type BusinessMetrics = Arc<dyn Fn() -> HashMap<String, String> + Send + Sync>;
 pub type ResourceSnapshotFuture = Pin<Box<dyn Future<Output = NodeResourceSnapshot> + Send>>;
 pub type ResourceSnapshotProvider = Arc<dyn Fn() -> ResourceSnapshotFuture + Send + Sync>;
+pub type CommandFuture = Pin<Box<dyn Future<Output = CommandResult> + Send>>;
+pub type CommandHandler = Arc<dyn Fn(GuardCommand) -> CommandFuture + Send + Sync>;
 
 #[derive(Clone)]
 pub struct NodeReporterConfig {
@@ -33,6 +36,7 @@ pub struct NodeReporterConfig {
     pub health: NodeHealth,
     pub business_metrics: BusinessMetrics,
     pub resource_snapshot: Option<ResourceSnapshotProvider>,
+    pub command_handler: Option<CommandHandler>,
     pub reconnect_delay: Duration,
 }
 
@@ -44,6 +48,7 @@ impl NodeReporterConfig {
             health: NodeHealth::Ready,
             business_metrics: Arc::new(HashMap::new),
             resource_snapshot: None,
+            command_handler: None,
             reconnect_delay: Duration::from_secs(3),
         }
     }
@@ -220,6 +225,7 @@ async fn run_connection(
         .into_inner();
     let identity = register.identity;
     let mut interval = base::tokio::time::interval(Duration::from_millis(interval_ms));
+    let (command_result_tx, mut command_result_rx) = mpsc::channel::<CommandResult>(16);
     let mut recovered = false;
     loop {
         base::tokio::select! {
@@ -258,12 +264,36 @@ async fn run_connection(
                     return Ok(ControlStreamEnd::OutputReceiverDropped);
                 }
             }
+            Some(command_result) = command_result_rx.recv() => {
+                *sequence = sequence.saturating_add(1);
+                let message = NodeToGuardMessage {
+                    identity: identity.clone(),
+                    sequence: *sequence,
+                    sent_at_epoch_ms: now_ms(),
+                    payload: Some(node_to_guard_message::Payload::CommandResult(command_result)),
+                };
+                if tx.send(message).await.is_err() {
+                    return Ok(ControlStreamEnd::OutputReceiverDropped);
+                }
+            }
             response = output.message() => {
                 match response {
-                    Ok(Some(_)) => {
+                    Ok(Some(message)) => {
                         if !recovered {
                             record_connection_recovered(connection_episode);
                             recovered = true;
+                        }
+                        if let Some(guard_to_node_message::Payload::Command(command)) = message.payload {
+                            let result_tx = command_result_tx.clone();
+                            let handler = config.command_handler.clone();
+                            let current_instance = identity
+                                .as_ref()
+                                .map(|identity| identity.instance_id.clone())
+                                .unwrap_or_default();
+                            base::tokio::spawn(async move {
+                                let result = dispatch_command(command, &current_instance, handler).await;
+                                drop(result_tx.send(result).await);
+                            });
                         }
                     }
                     Ok(None) if cancel.is_cancelled() => {
@@ -277,6 +307,48 @@ async fn run_connection(
                 }
             }
         }
+    }
+}
+
+async fn dispatch_command(
+    command: GuardCommand,
+    current_instance: &str,
+    handler: Option<CommandHandler>,
+) -> CommandResult {
+    if !command.expected_instance_id.is_empty() && command.expected_instance_id != current_instance
+    {
+        return command_result(
+            command.command_id,
+            CommandStatus::RejectedStaleInstance,
+            "stale_instance",
+        );
+    }
+    if command.deadline_ms > 0 && command.deadline_ms < u64::try_from(now_ms()).unwrap_or(0) {
+        return command_result(command.command_id, CommandStatus::Failed, "command_expired");
+    }
+    let Some(handler) = handler else {
+        return command_result(
+            command.command_id,
+            CommandStatus::Failed,
+            "command_unsupported",
+        );
+    };
+    let command_id = command.command_id.clone();
+    let mut result = handler(command).await;
+    result.command_id = command_id;
+    result
+}
+
+fn command_result(command_id: String, status: CommandStatus, code: &str) -> CommandResult {
+    CommandResult {
+        command_id,
+        status: status as i32,
+        error: Some(gmv_protocol::common::v1::ErrorDetail {
+            code: code.to_string(),
+            message: code.to_string(),
+            metadata: Default::default(),
+        }),
+        payload: Vec::new(),
     }
 }
 

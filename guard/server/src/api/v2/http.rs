@@ -66,6 +66,7 @@ use crate::operation::OperationRequest;
 use crate::operation::{OperationRecord, OperationStatus};
 use crate::outbox::OutboxRepository;
 use crate::runtime::event_forwarder::EventForwarder;
+use crate::runtime::node_rpc::NodeControlHub;
 use crate::store::InMemoryGuardStore;
 use crate::store::command::{HttpCommandClaim, http_command_id, validate_request_id};
 use crate::store::model::{
@@ -101,6 +102,7 @@ pub struct HttpState {
     pub integration_secrets: Option<IntegrationSecretManager>,
     pub integration_nonces: HmacNonceCache,
     pub event_forwarder: Option<EventForwarder>,
+    pub node_control: NodeControlHub,
     pub media_https_http2_verified: bool,
 }
 
@@ -136,6 +138,7 @@ pub fn router(state: HttpState) -> Router {
             post(cancel_media_operation),
         )
         .route("/nodes", get(nodes))
+        .route("/avai/installations", get(avai_installations))
         .route("/leases", get(leases))
         .route("/events", get(events))
         .route("/users", get(list_users).post(create_user))
@@ -4466,6 +4469,169 @@ async fn nodes(
     Ok(Json(
         state.api.list_nodes().into_iter().map(Into::into).collect(),
     ))
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct AvaiInstallationResponse {
+    installation_id: String,
+    avai_nodes: Vec<AvaiInstallationNode>,
+    steward_nodes: Vec<AvaiInstallationNode>,
+    status_available: bool,
+    status_error: Option<String>,
+    center_connection: Option<String>,
+    current_revision: Option<String>,
+    desired_revision: Option<String>,
+    staged_revision: Option<String>,
+    delivery_state: Option<String>,
+    observed_at_epoch_ms: Option<i64>,
+    stale: bool,
+}
+
+#[derive(Debug, base::serde::Serialize)]
+#[serde(crate = "base::serde")]
+struct AvaiInstallationNode {
+    node_id: String,
+    instance_id: String,
+    connection: String,
+    health: String,
+    last_seen_at_ms: i64,
+}
+
+impl From<&NodeRecord> for AvaiInstallationNode {
+    fn from(node: &NodeRecord) -> Self {
+        Self {
+            node_id: node.identity.node_id.clone(),
+            instance_id: node.identity.instance_id.clone(),
+            connection: format!("{:?}", node.connection).to_uppercase(),
+            health: format!("{:?}", node.health).to_uppercase(),
+            last_seen_at_ms: node.last_seen_at_ms,
+        }
+    }
+}
+
+#[derive(Default)]
+struct AvaiInstallationGroup {
+    installation_id: String,
+    avai_nodes: Vec<NodeRecord>,
+    steward_nodes: Vec<NodeRecord>,
+}
+
+fn group_avai_installations(nodes: Vec<NodeRecord>) -> Vec<AvaiInstallationGroup> {
+    let mut groups = BTreeMap::<String, AvaiInstallationGroup>::new();
+    for node in nodes {
+        if !matches!(
+            node.identity.kind,
+            crate::core::NodeKind::Avai | crate::core::NodeKind::Steward
+        ) {
+            continue;
+        }
+        let installation_id = node
+            .config
+            .get("installation_id")
+            .map(|value| value.trim())
+            .unwrap_or_default()
+            .to_string();
+        let key = if installation_id.is_empty() {
+            format!(
+                "unassigned/{:?}/{}/{}",
+                node.identity.kind, node.identity.node_id, node.identity.instance_id
+            )
+        } else {
+            installation_id.clone()
+        };
+        let group = groups.entry(key).or_default();
+        group.installation_id = installation_id;
+        match node.identity.kind {
+            crate::core::NodeKind::Avai => group.avai_nodes.push(node),
+            crate::core::NodeKind::Steward => group.steward_nodes.push(node),
+            crate::core::NodeKind::Session | crate::core::NodeKind::Stream => unreachable!(),
+        }
+    }
+    for group in groups.values_mut() {
+        group
+            .avai_nodes
+            .sort_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id));
+        group
+            .steward_nodes
+            .sort_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id));
+    }
+    groups.into_values().collect()
+}
+
+async fn avai_installations(
+    State(state): State<HttpState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<AvaiInstallationResponse>>, HttpError> {
+    debug!("/api/v2/avai/installations, req:<empty>");
+    require_role(&state.auth, &headers, Role::Viewer)?;
+
+    let now = http_now_ms()?;
+    let futures = group_avai_installations(state.api.list_nodes())
+        .into_iter()
+        .map(|group| {
+            let hub = state.node_control.clone();
+            async move {
+                let query = if group.installation_id.is_empty() {
+                    Err("installation_id is not configured".to_string())
+                } else if group.steward_nodes.len() > 1 {
+                    Err("multiple Stewards are registered for this installation".to_string())
+                } else if let Some(steward) = group.steward_nodes.first() {
+                    hub.query_steward_status(
+                        &steward.identity.node_id,
+                        &steward.identity.instance_id,
+                        &group.installation_id,
+                        Duration::from_secs(2),
+                    )
+                    .await
+                } else {
+                    Err("no Steward is registered for this installation".to_string())
+                };
+                let (status_available, status_error, snapshot) = match query {
+                    Ok(snapshot) => (true, None, Some(snapshot)),
+                    Err(error) => (false, Some(error), None),
+                };
+                AvaiInstallationResponse {
+                    installation_id: group.installation_id,
+                    avai_nodes: group
+                        .avai_nodes
+                        .iter()
+                        .map(AvaiInstallationNode::from)
+                        .collect(),
+                    steward_nodes: group
+                        .steward_nodes
+                        .iter()
+                        .map(AvaiInstallationNode::from)
+                        .collect(),
+                    status_available,
+                    status_error,
+                    center_connection: snapshot.as_ref().map(|value| {
+                        format!(
+                            "{:?}",
+                            gmv_protocol::guard::v1::CenterConnectionState::try_from(
+                                value.center_connection
+                            )
+                            .unwrap_or(gmv_protocol::guard::v1::CenterConnectionState::Unspecified)
+                        )
+                        .to_uppercase()
+                    }),
+                    current_revision: snapshot
+                        .as_ref()
+                        .map(|value| value.current_revision.clone()),
+                    desired_revision: snapshot
+                        .as_ref()
+                        .map(|value| value.desired_revision.clone()),
+                    staged_revision: snapshot.as_ref().map(|value| value.staged_revision.clone()),
+                    delivery_state: snapshot.as_ref().map(|value| value.delivery_state.clone()),
+                    observed_at_epoch_ms: snapshot.as_ref().map(|value| value.observed_at_epoch_ms),
+                    stale: snapshot.as_ref().is_none_or(|value| {
+                        value.observed_at_epoch_ms <= 0
+                            || now.saturating_sub(value.observed_at_epoch_ms) > 30_000
+                    }),
+                }
+            }
+        });
+    Ok(Json(base::futures::future::join_all(futures).await))
 }
 
 #[derive(Debug, base::serde::Serialize)]
@@ -10702,18 +10868,87 @@ mod tests {
     use super::{
         GbStreamRequest, GuardError, HttpError, OPEN_BUSINESS_OPERATIONS, api_docs_contract_page,
         asyncapi_contract, endpoint_with_playback_token, gb_preview_request,
-        mapping_source_matches_callback_contract, media_startup_timeout_ms,
-        mqtt_action_payload_schemas, mqtt_broker_connected, node_connection_label,
-        node_health_label, node_scheduling_label, open_business_scope, openapi_contract,
-        openapi_operation_parameters, openapi_operation_summary, openapi_request_body,
-        openapi_responses, openapi_success_schema, playback_control_owner_matches,
-        playback_token_from_endpoint, valid_event_mapping_source,
+        group_avai_installations, mapping_source_matches_callback_contract,
+        media_startup_timeout_ms, mqtt_action_payload_schemas, mqtt_broker_connected,
+        node_connection_label, node_health_label, node_scheduling_label, open_business_scope,
+        openapi_contract, openapi_operation_parameters, openapi_operation_summary,
+        openapi_request_body, openapi_responses, openapi_success_schema,
+        playback_control_owner_matches, playback_token_from_endpoint, valid_event_mapping_source,
     };
     use crate::auth::Role;
-    use crate::core::{ConnectionState, HealthState, SchedulingState};
+    use crate::core::{ConnectionState, HealthState, NodeIdentity, NodeKind, SchedulingState};
     use crate::integration::model::{MqttRuntimeApplyState, MqttRuntimeConfig};
-    use crate::store::model::PlaybackTicketRecord;
+    use crate::store::model::{NodeRecord, PlaybackTicketRecord};
     use axum::http::Method;
+
+    fn installation_node(
+        kind: NodeKind,
+        node_id: &str,
+        instance_id: &str,
+        installation_id: &str,
+    ) -> NodeRecord {
+        NodeRecord {
+            identity: NodeIdentity::new(node_id, instance_id, kind),
+            connection: ConnectionState::Connected,
+            health: HealthState::Ready,
+            scheduling: SchedulingState::Enabled,
+            endpoints: Vec::new(),
+            capabilities: Vec::new(),
+            pending_leases: 0,
+            host_metrics: Default::default(),
+            business_metrics: Default::default(),
+            config: if installation_id.is_empty() {
+                Default::default()
+            } else {
+                [("installation_id".to_string(), installation_id.to_string())]
+                    .into_iter()
+                    .collect()
+            },
+            zone: None,
+            last_seen_at_ms: 1,
+            generation: 1,
+            sequence: 1,
+        }
+    }
+
+    #[test]
+    fn avai_installation_grouping_never_infers_unassigned_nodes() {
+        let groups = group_avai_installations(vec![
+            installation_node(NodeKind::Avai, "shared-id", "avai-instance", ""),
+            installation_node(NodeKind::Steward, "shared-id", "steward-instance", ""),
+            installation_node(
+                NodeKind::Avai,
+                "avai-1",
+                "avai-1-instance",
+                "installation-1",
+            ),
+            installation_node(
+                NodeKind::Steward,
+                "steward-1",
+                "steward-1-instance",
+                "installation-1",
+            ),
+            installation_node(
+                NodeKind::Steward,
+                "steward-2",
+                "steward-2-instance",
+                "installation-1",
+            ),
+        ]);
+        assert_eq!(groups.len(), 3);
+        let assigned = groups
+            .iter()
+            .find(|group| group.installation_id == "installation-1")
+            .unwrap();
+        assert_eq!(assigned.avai_nodes.len(), 1);
+        assert_eq!(assigned.steward_nodes.len(), 2);
+        assert!(
+            groups
+                .iter()
+                .filter(|group| group.installation_id.is_empty())
+                .all(|group| group.avai_nodes.len() + group.steward_nodes.len() == 1)
+        );
+    }
 
     #[test]
     fn output_list_documents_optional_subscription_filter() {

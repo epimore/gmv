@@ -60,6 +60,7 @@ fn node_reporter_registers_and_updates_host_metrics_over_grpc() {
                 zone: "test".to_string(),
                 takeover: false,
                 config: Default::default(),
+                installation_id: String::new(),
             };
             let mut config = NodeReporterConfig::new(
                 RpcChannelConfig::new(format!("http://{address}")),
@@ -141,6 +142,7 @@ fn register_consumes_startup_snapshot() {
                     zone: String::new(),
                     takeover: false,
                     config: Default::default(),
+                    installation_id: String::new(),
                 }),
             )
             .await
@@ -196,6 +198,7 @@ fn control_stream_consumes_snapshot_and_event_payloads() {
                     zone: String::new(),
                     takeover: false,
                     config: Default::default(),
+                    installation_id: String::new(),
                 })
                 .await
                 .unwrap();

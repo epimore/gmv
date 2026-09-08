@@ -30,6 +30,7 @@ pub struct AvaiGuardNode {
     pub started_at_epoch_ms: i64,
     pub endpoints: Vec<Endpoint>,
     pub capabilities: Vec<String>,
+    pub installation_id: String,
 }
 
 impl AvaiGuardNode {
@@ -60,6 +61,7 @@ impl AvaiGuardNode {
                 labels: HashMap::new(),
             }],
             capabilities,
+            installation_id: String::new(),
         }
     }
 
@@ -75,6 +77,7 @@ impl AvaiGuardNode {
             zone: String::new(),
             takeover: cfg!(debug_assertions),
             config: self.config_summary(),
+            installation_id: self.installation_id.clone(),
         }
     }
 
@@ -89,6 +92,7 @@ impl AvaiGuardNode {
                 "endpoint_count".to_string(),
                 self.endpoints.len().to_string(),
             ),
+            ("installation_id".to_string(), self.installation_id.clone()),
         ])
     }
 

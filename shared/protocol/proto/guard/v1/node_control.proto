@@ -21,6 +21,7 @@ message RegisterNodeRequest {
   string zone = 9;
   bool takeover = 10;
   map<string, string> config = 11;
+  string installation_id = 12;
 }
 
 message RegisterNodeResponse {
@@ -187,4 +188,27 @@ enum ClockState {
 message ShutdownNotice {
   string reason = 1;
   uint64 grace_period_ms = 2;
+}
+
+message StewardStatusQuery {
+  string installation_id = 1;
+}
+
+message StewardStatusSnapshot {
+  string installation_id = 1;
+  string steward_instance_id = 2;
+  CenterConnectionState center_connection = 3;
+  string current_revision = 4;
+  string desired_revision = 5;
+  string staged_revision = 6;
+  string delivery_state = 7;
+  int64 observed_at_epoch_ms = 8;
+}
+
+enum CenterConnectionState {
+  CENTER_CONNECTION_STATE_UNSPECIFIED = 0;
+  CENTER_CONNECTION_STATE_DISABLED = 1;
+  CENTER_CONNECTION_STATE_CONNECTING = 2;
+  CENTER_CONNECTION_STATE_CONNECTED = 3;
+  CENTER_CONNECTION_STATE_DEGRADED = 4;
 }

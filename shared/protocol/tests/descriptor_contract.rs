@@ -66,6 +66,7 @@ fn descriptor_contains_versioned_packages() {
         "gmv.session.v1",
         "gmv.stream.v1",
         "gmv.avai.v1",
+        "gmv.steward.v1",
     ] {
         assert!(packages.contains(&package), "missing package {package}");
     }
@@ -91,6 +92,37 @@ fn node_identity_contains_instance_id_fencing_token() {
         .unwrap();
 
     assert_eq!(instance_id.number, Some(2));
+}
+
+#[test]
+fn steward_contract_has_stable_identity_and_typed_commands() {
+    let descriptor = descriptor();
+    let guard = descriptor_file(&descriptor, "gmv.guard.v1");
+    let register = descriptor_message(guard, "RegisterNodeRequest");
+    assert_eq!(
+        descriptor_field_number(register, "installation_id"),
+        Some(12)
+    );
+
+    let steward = descriptor_file(&descriptor, "gmv.steward.v1");
+    let center_message = descriptor_message(steward, "CenterToStewardMessage");
+    assert_eq!(
+        descriptor_field_number(center_message, "expected_steward_instance_id"),
+        Some(5)
+    );
+    assert_eq!(
+        descriptor_field_number(center_message, "receipt_ack"),
+        Some(12)
+    );
+    let receipt_ack = descriptor_message(steward, "ReceiptAck");
+    assert_eq!(
+        descriptor_field_number(receipt_ack, "receipt_message_id"),
+        Some(1)
+    );
+    let command = descriptor_message(steward, "TypedCommand");
+    assert_eq!(descriptor_field_number(command, "command_type"), Some(2));
+    assert!(descriptor_field_number(command, "shell").is_none());
+    assert!(descriptor_field_number(command, "command_line").is_none());
 }
 
 #[test]
@@ -141,6 +173,7 @@ fn guard_and_direct_service_rpc_boundaries_exist() {
         "gmv.session.v1.SessionControl",
         "gmv.stream.v1.StreamControl",
         "gmv.avai.v1.AvaiControl",
+        "gmv.steward.v1.StewardGateway",
     ] {
         assert!(
             services.contains(&service.to_string()),

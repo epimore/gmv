@@ -61,6 +61,7 @@ fn validate_media_timeouts(in_wait_timeout: u8, out_idle_timeout: u8) -> Result<
 #[serde(crate = "base::serde")]
 #[conf(prefix = "server", check)]
 pub struct ServerConf {
+    pub installation_id: String,
     #[serde(default = "default_name")]
     pub name: String,
     pub http: HttpServerConf,
@@ -300,6 +301,9 @@ impl ServerConf {
     }
 
     fn validate(&self) -> Result<(), String> {
+        if self.installation_id.trim().is_empty() {
+            return Err("server.installation_id must not be empty".to_string());
+        }
         if self.name.trim().is_empty() {
             return Err("server.name must not be empty".to_string());
         }

@@ -154,6 +154,7 @@ fn open_api_accepts_valid_hmac_and_rejects_nonce_replay() {
                 integration_secrets: Some(IntegrationSecretManager::new(cipher)),
                 integration_nonces: HmacNonceCache::new(300_000, 100).unwrap(),
                 event_forwarder: None,
+                node_control: Default::default(),
                 media_https_http2_verified: false,
             });
             let uri = "/openapi/v1/nodes?zone=edge";
@@ -339,6 +340,7 @@ fn credential_secret_reveal_requires_secondary_authentication() {
                 integration_secrets: Some(IntegrationSecretManager::new(cipher)),
                 integration_nonces: HmacNonceCache::new(300_000, 100).unwrap(),
                 event_forwarder: None,
+                node_control: Default::default(),
                 media_https_http2_verified: false,
             });
             let (cookie, csrf) = login_admin(&app).await;

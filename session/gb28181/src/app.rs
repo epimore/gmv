@@ -109,6 +109,7 @@ impl
     ) -> GlobalResult<()> {
         let http = self.http;
         let node_id = self.session_conf.domain_id.clone();
+        let installation_id = self.session_conf.installation_id.clone();
         let http_endpoint = http
             .public_endpoint()
             .expect("validated session HTTP public URL");
@@ -126,15 +127,18 @@ impl
                 GlobalRuntime::request_shutdown_with_error();
                 return;
             }
-            if let Err(err) =
-                crate::http::image::start_source_uds_service(&service_rt, &http.image_source_uds)
-                    .await
+            if let Err(err) = crate::http::image::start_source_local_service(
+                &service_rt,
+                &http.image_source_local,
+            )
+            .await
             {
                 error!("session image source UDS initialization failed: {err}");
                 GlobalRuntime::request_shutdown_with_error();
                 return;
             }
             let mut node = SessionGuardNode::new(node_id, generate_instance_id(), http_endpoint);
+            node.installation_id = installation_id;
             node.started_at_epoch_ms = started_at_epoch_ms;
             node.endpoints.push(Endpoint {
                 name: "grpc".to_string(),

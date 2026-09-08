@@ -456,6 +456,7 @@ pub struct SessionGuardNode {
     pub started_at_epoch_ms: i64,
     pub endpoints: Vec<Endpoint>,
     pub capabilities: Vec<String>,
+    pub installation_id: String,
 }
 
 impl SessionGuardNode {
@@ -492,6 +493,7 @@ impl SessionGuardNode {
                 "device.ptz".to_string(),
                 "protocol.gb28181".to_string(),
             ],
+            installation_id: String::new(),
         }
     }
 
@@ -507,6 +509,7 @@ impl SessionGuardNode {
             zone: String::new(),
             takeover: false,
             config: self.config_summary(),
+            installation_id: self.installation_id.clone(),
         }
     }
 
@@ -516,6 +519,7 @@ impl SessionGuardNode {
             ("domain_id".to_string(), self.identity.node_id.clone()),
             ("service".to_string(), "session-gb28181".to_string()),
             ("protocol".to_string(), "gb28181".to_string()),
+            ("installation_id".to_string(), self.installation_id.clone()),
             (
                 "display_name".to_string(),
                 format!("GB28181 会话节点 {}", self.identity.node_id),
@@ -2024,9 +2028,14 @@ impl SessionControl for SessionControlRpc {
         )
         .await?;
         let mut endpoints = Vec::with_capacity(2);
-        if let Some(uri) = issued.uds_url.clone() {
+        if let Some(uri) = issued.local_url.clone() {
+            let endpoint_name = if uri.starts_with("pipe://") {
+                "session-image-pipe"
+            } else {
+                "session-image-uds"
+            };
             endpoints.push(DataEndpoint {
-                name: "session-image-uds".to_string(),
+                name: endpoint_name.to_string(),
                 uri,
                 capabilities: Some(TransportCapabilities {
                     reliable: true,
@@ -2035,7 +2044,7 @@ impl SessionControl for SessionControlRpc {
                     encrypted: false,
                     congestion_controlled: true,
                     local_only: true,
-                    max_message_size: issued.uds_max_message_size as u64,
+                    max_message_size: issued.local_max_message_size as u64,
                     mode: TransportMode::Stream as i32,
                 }),
                 labels: HashMap::from([(

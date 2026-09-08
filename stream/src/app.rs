@@ -94,6 +94,7 @@ impl Daemon<StreamBootstrap> for App {
             media_conf,
         } = bootstrap;
         let node_name = self.conf.name.clone();
+        let installation_id = self.conf.installation_id.clone();
         let (http_public_tls, http_public_host, http_public_port) =
             self.conf.http.public_endpoint().map_err(|message| {
                 base::exception::GlobalError::new_biz_error(
@@ -132,6 +133,7 @@ impl Daemon<StreamBootstrap> for App {
                 http_public_tls,
                 receive_endpoint.port,
             );
+            node.installation_id = installation_id;
             node.endpoints.retain(|endpoint| endpoint.name != "rtp");
             node.endpoints.push(receive_endpoint.clone());
             node.started_at_epoch_ms = started_at_epoch_ms;

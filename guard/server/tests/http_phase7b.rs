@@ -63,6 +63,7 @@ fn test_app(store: InMemoryGuardStore) -> axum::Router {
         integration_nonces: gmv_guard_server::integration::hmac::HmacNonceCache::new(300_000, 100)
             .unwrap(),
         event_forwarder: None,
+        node_control: Default::default(),
         media_https_http2_verified: false,
     })
 }
