@@ -31,11 +31,11 @@ pub mod avai {
     }
 }
 
-pub mod steward {
+pub mod gmv_center_agent {
     #[allow(clippy::large_enum_variant)]
     pub mod v1 {
-        tonic::include_proto!("gmv.steward.v1");
+        tonic::include_proto!("gmv.center_agent.v1");
     }
 }
 
-pub mod steward_mqtt;
+pub mod gmv_center_agent_mqtt;

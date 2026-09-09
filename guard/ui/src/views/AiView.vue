@@ -4,16 +4,17 @@
     <MetricCard class="span-3" label="运行任务" :value="runningCount" trend="RUNNING" hint="实时" />
     <MetricCard class="span-3" label="失败任务" :value="failedCount" trend="FAILED" hint="需处理" />
     <MetricCard class="span-3" label="可用流" :value="streamCount" trend="输入" hint="stream" />
-    <GlassPanel class="span-12" title="节点与模型交付" subtitle="Guard 按 installation_id 聚合 AVAI，并向同安装 Steward 查询实时状态">
-      <el-table :data="installations" empty-text="暂无 AVAI 或 Steward 节点">
+    <GlassPanel class="span-12" title="节点与模型交付" subtitle="Guard 按 installation_id + host_id 聚合 AVAI，并向同主机 gmv-center-agent 查询实时状态">
+      <el-table :data="installations" empty-text="暂无 AVAI 或 gmv-center-agent 节点">
         <el-table-column label="安装实例" min-width="170">
           <template #default="{ row }">{{ row.installation_id || '未配置' }}</template>
         </el-table-column>
+        <el-table-column prop="host_id" label="主机" min-width="150" />
         <el-table-column label="AVAI" min-width="190">
           <template #default="{ row }">{{ row.avai_nodes.map((node: AvaiInstallationNode) => node.node_id).join(', ') || '未部署' }}</template>
         </el-table-column>
-        <el-table-column label="Steward" min-width="160">
-          <template #default="{ row }">{{ row.steward_nodes.map((node: AvaiInstallationNode) => node.node_id).join(', ') || '未部署' }}</template>
+        <el-table-column label="gmv-center-agent" min-width="180">
+          <template #default="{ row }">{{ row.gmv_center_agent_nodes.map((node: AvaiInstallationNode) => node.node_id).join(', ') || '未部署' }}</template>
         </el-table-column>
         <el-table-column label="中心连接" width="135">
           <template #default="{ row }"><StatusPill :label="row.center_connection || 'UNAVAILABLE'" :tone="row.status_available && !row.stale ? 'running' : 'failed'" /></template>

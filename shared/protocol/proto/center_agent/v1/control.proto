@@ -1,34 +1,36 @@
 syntax = "proto3";
 
-package gmv.steward.v1;
+package gmv.center_agent.v1;
 
 import "common/v1/types.proto";
 
-message StewardToCenterMessage {
+message GmvCenterAgentToCenterMessage {
   string message_id = 1;
   uint64 sequence = 2;
   int64 sent_at_epoch_ms = 3;
   string installation_id = 4;
-  string steward_instance_id = 5;
+  string gmv_center_agent_instance_id = 5;
   uint32 protocol_version = 6;
+  string host_id = 7;
   oneof payload {
-    StewardHello hello = 10;
-    StewardHeartbeat heartbeat = 11;
+    GmvCenterAgentHello hello = 10;
+    GmvCenterAgentHeartbeat heartbeat = 11;
     InventorySnapshot inventory = 12;
     DeliveryReceipt delivery_receipt = 13;
     CommandReceipt command_receipt = 14;
     UpgradeRequest upgrade_request = 15;
-    StewardPresence presence = 16;
+    GmvCenterAgentPresence presence = 16;
   }
 }
 
-message CenterToStewardMessage {
+message CenterToGmvCenterAgentMessage {
   string message_id = 1;
   uint64 sequence = 2;
   int64 sent_at_epoch_ms = 3;
   string installation_id = 4;
-  string expected_steward_instance_id = 5;
+  string expected_gmv_center_agent_instance_id = 5;
   uint32 protocol_version = 6;
+  string host_id = 7;
   oneof payload {
     DesiredState desired_state = 10;
     TypedCommand command = 11;
@@ -41,7 +43,7 @@ message ReceiptAck {
   string receipt_message_id = 1;
 }
 
-message StewardHello {
+message GmvCenterAgentHello {
   gmv.common.v1.NodeIdentity identity = 1;
   string software_version = 2;
   string manifest_revision = 3;
@@ -49,14 +51,14 @@ message StewardHello {
   string architecture = 5;
 }
 
-message StewardHeartbeat {
+message GmvCenterAgentHeartbeat {
   int64 observed_at_epoch_ms = 1;
   string current_revision = 2;
   string desired_revision = 3;
   string staged_revision = 4;
 }
 
-message StewardPresence {
+message GmvCenterAgentPresence {
   bool online = 1;
   int64 observed_at_epoch_ms = 2;
 }
@@ -93,7 +95,7 @@ message ArtifactManifest {
   ArtifactKind kind = 4;
   string platform = 5;
   string architecture = 6;
-  string required_steward_version = 7;
+  string required_gmv_center_agent_version = 7;
   string gmv_compatibility = 8;
   uint64 content_size = 9;
   string sha256 = 10;
@@ -161,15 +163,15 @@ enum DeliveryState {
 
 message TypedCommand {
   string command_id = 1;
-  StewardCommandType command_type = 2;
+  GmvCenterAgentCommandType command_type = 2;
   int64 deadline_epoch_ms = 3;
   string expected_manifest_revision = 4;
 }
 
-enum StewardCommandType {
-  STEWARD_COMMAND_TYPE_UNSPECIFIED = 0;
-  STEWARD_COMMAND_TYPE_INVENTORY_REFRESH = 1;
-  STEWARD_COMMAND_TYPE_HEALTH_SNAPSHOT = 2;
+enum GmvCenterAgentCommandType {
+  GMV_CENTER_AGENT_COMMAND_TYPE_UNSPECIFIED = 0;
+  GMV_CENTER_AGENT_COMMAND_TYPE_INVENTORY_REFRESH = 1;
+  GMV_CENTER_AGENT_COMMAND_TYPE_HEALTH_SNAPSHOT = 2;
 }
 
 message CommandReceipt {

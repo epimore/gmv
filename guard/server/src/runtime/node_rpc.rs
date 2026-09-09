@@ -17,11 +17,10 @@ use gmv_protocol::guard::v1::guard_node_control_server::{
     GuardNodeControl, GuardNodeControlServer,
 };
 use gmv_protocol::guard::v1::{
-    CommandResult, EventPriority, GuardCommand, GuardToNodeMessage, HostMetrics, NodeHealth,
-    NodeHeartbeat, NodeResourceSnapshot, NodeToGuardMessage,
-    RegisterDecision as ProtoRegisterDecision, RegisterNodeRequest, RegisterNodeResponse,
-    ResourceState, StewardStatusQuery, StewardStatusSnapshot, StreamAck, guard_to_node_message,
-    node_to_guard_message,
+    CommandResult, EventPriority, GmvCenterAgentStatusQuery, GmvCenterAgentStatusSnapshot,
+    GuardCommand, GuardToNodeMessage, HostMetrics, NodeHealth, NodeHeartbeat, NodeResourceSnapshot,
+    NodeToGuardMessage, RegisterDecision as ProtoRegisterDecision, RegisterNodeRequest,
+    RegisterNodeResponse, ResourceState, StreamAck, guard_to_node_message, node_to_guard_message,
 };
 use parking_lot::Mutex;
 use prost::Message;
@@ -89,21 +88,22 @@ pub struct NodeControlHub {
 }
 
 impl NodeControlHub {
-    pub async fn query_steward_status(
+    pub async fn query_gmv_center_agent_status(
         &self,
         node_id: &str,
         expected_instance_id: &str,
         installation_id: &str,
+        host_id: &str,
         timeout: Duration,
-    ) -> Result<StewardStatusSnapshot, String> {
+    ) -> Result<GmvCenterAgentStatusSnapshot, String> {
         let connection = self
             .connections
             .lock()
             .get(node_id)
             .cloned()
-            .ok_or_else(|| "steward control stream is unavailable".to_string())?;
+            .ok_or_else(|| "gmv-center-agent control stream is unavailable".to_string())?;
         if connection.instance_id != expected_instance_id {
-            return Err("steward instance changed".to_string());
+            return Err("gmv-center-agent instance changed".to_string());
         }
 
         let command_id = uuid::Uuid::now_v7().to_string();
@@ -121,26 +121,27 @@ impl NodeControlHub {
             payload: Some(guard_to_node_message::Payload::Command(GuardCommand {
                 command_id: command_id.clone(),
                 expected_instance_id: expected_instance_id.to_string(),
-                command_type: "steward.health.snapshot.v1".to_string(),
+                command_type: "gmv-center-agent.health.snapshot.v1".to_string(),
                 deadline_ms: u64::try_from(now_ms())
                     .unwrap_or(0)
                     .saturating_add(timeout.as_millis().min(u64::MAX as u128) as u64),
-                payload: StewardStatusQuery {
+                payload: GmvCenterAgentStatusQuery {
                     installation_id: installation_id.to_string(),
+                    host_id: host_id.to_string(),
                 }
                 .encode_to_vec(),
             })),
         };
         if connection.sender.send(Ok(message)).await.is_err() {
             self.pending.lock().remove(&command_id);
-            return Err("steward control stream closed".to_string());
+            return Err("gmv-center-agent control stream closed".to_string());
         }
         let result = match base::tokio::time::timeout(timeout, receiver).await {
             Ok(Ok(result)) => result,
-            Ok(Err(_)) => return Err("steward control response was cancelled".to_string()),
+            Ok(Err(_)) => return Err("gmv-center-agent control response was cancelled".to_string()),
             Err(_) => {
                 self.pending.lock().remove(&command_id);
-                return Err("steward control response timed out".to_string());
+                return Err("gmv-center-agent control response timed out".to_string());
             }
         };
         if result.status != gmv_protocol::guard::v1::CommandStatus::Succeeded as i32 {
@@ -148,12 +149,15 @@ impl NodeControlHub {
                 .error
                 .map(|error| error.message)
                 .filter(|message| !message.is_empty())
-                .unwrap_or_else(|| "steward rejected status query".to_string()));
+                .unwrap_or_else(|| "gmv-center-agent rejected status query".to_string()));
         }
-        let snapshot = StewardStatusSnapshot::decode(result.payload.as_slice())
-            .map_err(|error| format!("invalid steward status response: {error}"))?;
+        let snapshot = GmvCenterAgentStatusSnapshot::decode(result.payload.as_slice())
+            .map_err(|error| format!("invalid gmv-center-agent status response: {error}"))?;
         if snapshot.installation_id != installation_id {
-            return Err("steward status installation mismatch".to_string());
+            return Err("gmv-center-agent status installation mismatch".to_string());
+        }
+        if snapshot.host_id != host_id {
+            return Err("gmv-center-agent status host mismatch".to_string());
         }
         Ok(snapshot)
     }
@@ -291,6 +295,9 @@ impl GuardNodeControl for GuardNodeRpc {
         let mut node_config = request.config;
         if !request.installation_id.trim().is_empty() {
             node_config.insert("installation_id".to_string(), request.installation_id);
+        }
+        if !request.host_id.trim().is_empty() {
+            node_config.insert("host_id".to_string(), request.host_id);
         }
         let startup_snapshot = request.startup_snapshot.clone();
         let decision = self
@@ -818,7 +825,7 @@ fn identity(value: Option<ProtoIdentity>) -> Result<NodeIdentity, Status> {
         Some(ProtoNodeKind::Session) => NodeKind::Session,
         Some(ProtoNodeKind::Stream) => NodeKind::Stream,
         Some(ProtoNodeKind::Avai) => NodeKind::Avai,
-        Some(ProtoNodeKind::Steward) => NodeKind::Steward,
+        Some(ProtoNodeKind::GmvCenterAgent) => NodeKind::GmvCenterAgent,
         _ => return Err(Status::invalid_argument("node kind is required")),
     };
     Ok(NodeIdentity::new(value.node_id, value.instance_id, kind))
@@ -877,23 +884,28 @@ mod tests {
 
     fn owner() -> ControlStreamOwner {
         ControlStreamOwner {
-            identity: NodeIdentity::new("steward-1", "instance-1", NodeKind::Steward),
+            identity: NodeIdentity::new(
+                "gmv-center-agent-1",
+                "instance-1",
+                NodeKind::GmvCenterAgent,
+            ),
             generation: 1,
         }
     }
 
     #[tokio::test]
-    async fn steward_query_is_correlated_and_decoded() {
+    async fn gmv_center_agent_query_is_correlated_and_decoded() {
         let hub = NodeControlHub::default();
         let (sender, mut receiver) = mpsc::channel(2);
         hub.attach(&owner(), sender);
         let query_hub = hub.clone();
         let query = base::tokio::spawn(async move {
             query_hub
-                .query_steward_status(
-                    "steward-1",
+                .query_gmv_center_agent_status(
+                    "gmv-center-agent-1",
                     "instance-1",
                     "installation-1",
+                    "host-1",
                     Duration::from_secs(1),
                 )
                 .await
@@ -901,12 +913,13 @@ mod tests {
 
         let outbound = receiver.recv().await.unwrap().unwrap();
         let guard_to_node_message::Payload::Command(command) = outbound.payload.unwrap() else {
-            panic!("expected steward status command");
+            panic!("expected gmv_center_agent status command");
         };
-        let request = StewardStatusQuery::decode(command.payload.as_slice()).unwrap();
+        let request = GmvCenterAgentStatusQuery::decode(command.payload.as_slice()).unwrap();
         assert_eq!(request.installation_id, "installation-1");
+        assert_eq!(request.host_id, "host-1");
         hub.resolve(
-            "steward-2",
+            "gmv-center-agent-2",
             CommandResult {
                 command_id: command.command_id.clone(),
                 status: CommandStatus::Succeeded as i32,
@@ -916,14 +929,15 @@ mod tests {
         base::tokio::task::yield_now().await;
         assert!(!query.is_finished());
         hub.resolve(
-            "steward-1",
+            "gmv-center-agent-1",
             CommandResult {
                 command_id: command.command_id,
                 status: CommandStatus::Succeeded as i32,
-                payload: StewardStatusSnapshot {
+                payload: GmvCenterAgentStatusSnapshot {
                     installation_id: "installation-1".to_string(),
+                    host_id: "host-1".to_string(),
                     center_connection: CenterConnectionState::Connected as i32,
-                    ..StewardStatusSnapshot::default()
+                    ..GmvCenterAgentStatusSnapshot::default()
                 }
                 .encode_to_vec(),
                 ..CommandResult::default()
@@ -940,17 +954,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steward_query_timeout_removes_pending_waiter() {
+    async fn gmv_center_agent_query_timeout_removes_pending_waiter() {
         let hub = NodeControlHub::default();
         let (sender, mut receiver) = mpsc::channel(1);
         hub.attach(&owner(), sender);
         let query_hub = hub.clone();
         let query = base::tokio::spawn(async move {
             query_hub
-                .query_steward_status(
-                    "steward-1",
+                .query_gmv_center_agent_status(
+                    "gmv-center-agent-1",
                     "instance-1",
                     "installation-1",
+                    "host-1",
                     Duration::from_millis(10),
                 )
                 .await
@@ -961,33 +976,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn steward_query_rejects_a_snapshot_for_another_installation() {
+    async fn gmv_center_agent_query_rejects_a_snapshot_for_another_installation() {
         let hub = NodeControlHub::default();
         let (sender, mut receiver) = mpsc::channel(1);
         hub.attach(&owner(), sender);
         let query_hub = hub.clone();
         let query = base::tokio::spawn(async move {
             query_hub
-                .query_steward_status(
-                    "steward-1",
+                .query_gmv_center_agent_status(
+                    "gmv-center-agent-1",
                     "instance-1",
                     "installation-1",
+                    "host-1",
                     Duration::from_secs(1),
                 )
                 .await
         });
         let outbound = receiver.recv().await.unwrap().unwrap();
         let guard_to_node_message::Payload::Command(command) = outbound.payload.unwrap() else {
-            panic!("expected steward status command");
+            panic!("expected gmv_center_agent status command");
         };
         hub.resolve(
-            "steward-1",
+            "gmv-center-agent-1",
             CommandResult {
                 command_id: command.command_id,
                 status: CommandStatus::Succeeded as i32,
-                payload: StewardStatusSnapshot {
+                payload: GmvCenterAgentStatusSnapshot {
                     installation_id: "installation-2".to_string(),
-                    ..StewardStatusSnapshot::default()
+                    host_id: "host-1".to_string(),
+                    ..GmvCenterAgentStatusSnapshot::default()
                 }
                 .encode_to_vec(),
                 ..CommandResult::default()

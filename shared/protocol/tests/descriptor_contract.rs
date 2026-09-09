@@ -66,7 +66,7 @@ fn descriptor_contains_versioned_packages() {
         "gmv.session.v1",
         "gmv.stream.v1",
         "gmv.avai.v1",
-        "gmv.steward.v1",
+        "gmv.center_agent.v1",
     ] {
         assert!(packages.contains(&package), "missing package {package}");
     }
@@ -95,7 +95,7 @@ fn node_identity_contains_instance_id_fencing_token() {
 }
 
 #[test]
-fn steward_contract_has_stable_identity_and_typed_commands() {
+fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
     let descriptor = descriptor();
     let guard = descriptor_file(&descriptor, "gmv.guard.v1");
     let register = descriptor_message(guard, "RegisterNodeRequest");
@@ -103,13 +103,15 @@ fn steward_contract_has_stable_identity_and_typed_commands() {
         descriptor_field_number(register, "installation_id"),
         Some(12)
     );
+    assert_eq!(descriptor_field_number(register, "host_id"), Some(13));
 
-    let steward = descriptor_file(&descriptor, "gmv.steward.v1");
-    let center_message = descriptor_message(steward, "CenterToStewardMessage");
+    let gmv_center_agent = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    let center_message = descriptor_message(gmv_center_agent, "CenterToGmvCenterAgentMessage");
     assert_eq!(
-        descriptor_field_number(center_message, "expected_steward_instance_id"),
+        descriptor_field_number(center_message, "expected_gmv_center_agent_instance_id"),
         Some(5)
     );
+    assert_eq!(descriptor_field_number(center_message, "host_id"), Some(7));
     assert_eq!(
         descriptor_field_number(center_message, "receipt_ack"),
         Some(12)
@@ -118,21 +120,26 @@ fn steward_contract_has_stable_identity_and_typed_commands() {
         descriptor_field_number(center_message, "upgrade_decision"),
         Some(13)
     );
-    let steward_message = descriptor_message(steward, "StewardToCenterMessage");
+    let gmv_center_agent_message =
+        descriptor_message(gmv_center_agent, "GmvCenterAgentToCenterMessage");
     assert_eq!(
-        descriptor_field_number(steward_message, "upgrade_request"),
+        descriptor_field_number(gmv_center_agent_message, "upgrade_request"),
         Some(15)
     );
     assert_eq!(
-        descriptor_field_number(steward_message, "presence"),
+        descriptor_field_number(gmv_center_agent_message, "presence"),
         Some(16)
     );
-    let receipt_ack = descriptor_message(steward, "ReceiptAck");
+    assert_eq!(
+        descriptor_field_number(gmv_center_agent_message, "host_id"),
+        Some(7)
+    );
+    let receipt_ack = descriptor_message(gmv_center_agent, "ReceiptAck");
     assert_eq!(
         descriptor_field_number(receipt_ack, "receipt_message_id"),
         Some(1)
     );
-    let command = descriptor_message(steward, "TypedCommand");
+    let command = descriptor_message(gmv_center_agent, "TypedCommand");
     assert_eq!(descriptor_field_number(command, "command_type"), Some(2));
     assert!(descriptor_field_number(command, "shell").is_none());
     assert!(descriptor_field_number(command, "command_line").is_none());
@@ -193,8 +200,8 @@ fn guard_and_direct_service_rpc_boundaries_exist() {
         );
     }
     assert!(
-        !services.contains(&"gmv.steward.v1.StewardGateway".to_string()),
-        "Steward/GMVC transport is MQTT, not a protobuf RPC service"
+        !services.contains(&"gmv.center_agent.v1.GmvCenterAgentGateway".to_string()),
+        "GmvCenterAgent/GMVC transport is MQTT, not a protobuf RPC service"
     );
 }
 

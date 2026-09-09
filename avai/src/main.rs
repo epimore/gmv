@@ -25,6 +25,7 @@ struct GuardConf {
 #[conf(prefix = "server")]
 struct ServerConf {
     installation_id: String,
+    host_id: String,
     #[serde(default = "default_node_id")]
     node_id: String,
     #[serde(default = "default_host")]
@@ -138,6 +139,9 @@ async fn run_service(
     if server.installation_id.trim().is_empty() {
         return Err("server.installation_id must not be empty".into());
     }
+    if server.host_id.trim().is_empty() {
+        return Err("server.host_id must not be empty".into());
+    }
     let capabilities = server.capabilities.clone();
     let task_database_path = std::path::PathBuf::from(&server.task_database_path);
     let object_root = std::path::PathBuf::from(&server.object_root);
@@ -150,6 +154,7 @@ async fn run_service(
         capabilities.clone(),
     );
     node.installation_id = server.installation_id;
+    node.host_id = server.host_id;
     node.started_at_epoch_ms = now_epoch_ms();
     let manager = TaskManager::open(
         node.identity.clone(),

@@ -78,7 +78,7 @@ export interface MediaOperationSummary<T = unknown> {
 export interface MediaTransportCapability { scheme: 'http' | 'https'; http_version: 'http/1.1' | 'h2'; multi_view_limit: number }
 export interface AiTaskSummary { task_id: string; model: string; stream_id: string; node_id: string; state: 'running' | 'cancelled' | 'failed' }
 export interface AvaiInstallationNode { node_id: string; instance_id: string; connection: string; health: string; last_seen_at_ms: number }
-export interface AvaiInstallationInfo { installation_id: string; avai_nodes: AvaiInstallationNode[]; steward_nodes: AvaiInstallationNode[]; status_available: boolean; status_error: string | null; center_connection: string | null; current_revision: string | null; desired_revision: string | null; staged_revision: string | null; delivery_state: string | null; observed_at_epoch_ms: number | null; stale: boolean }
+export interface AvaiInstallationInfo { installation_id: string; host_id: string; avai_nodes: AvaiInstallationNode[]; gmv_center_agent_nodes: AvaiInstallationNode[]; status_available: boolean; status_error: string | null; center_connection: string | null; current_revision: string | null; desired_revision: string | null; staged_revision: string | null; delivery_state: string | null; observed_at_epoch_ms: number | null; stale: boolean }
 export interface CreateUserPayload { username: string; role: Role; nickname: string; password: string; enabled: boolean; expires_at_ms: number | null }
 export interface UpdateUserPayload { role: Role; nickname?: string; password?: string | null; enabled: boolean; expires_at_ms: number | null }
 export interface UpdateProfilePayload { nickname?: string; password?: string }

@@ -4031,7 +4031,7 @@ fn proto_identity(identity: &NodeIdentity) -> ProtoIdentity {
             NodeKind::Session => ProtoNodeKind::Session,
             NodeKind::Stream => ProtoNodeKind::Stream,
             NodeKind::Avai => ProtoNodeKind::Avai,
-            NodeKind::Steward => ProtoNodeKind::Steward,
+            NodeKind::GmvCenterAgent => ProtoNodeKind::GmvCenterAgent,
         } as i32,
     }
 }
@@ -4045,7 +4045,7 @@ fn node_kind_name(kind: NodeKind) -> &'static str {
         NodeKind::Session => "session",
         NodeKind::Stream => "stream",
         NodeKind::Avai => "avai",
-        NodeKind::Steward => "steward",
+        NodeKind::GmvCenterAgent => "gmv-center-agent",
     }
 }
 

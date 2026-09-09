@@ -15,7 +15,7 @@ guard:
   endpoint: http://127.0.0.1:18080 # guard内部gRPC地址，stream向guard注册、上报事件
 
 server:
-  installation_id: local-installation #一套独立安装/升级边界的稳定ID，与同机Steward/Avai保持一致
+  installation_id: local-installation #一套独立安装/升级边界的稳定ID，与同机gmv-center-agent/Avai保持一致
   name: s1 #服务标识身份,流媒体集群唯一标识，guard注册时节点ID
   http:
     listen_addr: 0.0.0.0:28570 #本机HTTP实际监听地址

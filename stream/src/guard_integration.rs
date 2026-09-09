@@ -270,6 +270,7 @@ impl StreamGuardNode {
             takeover: cfg!(debug_assertions),
             config: self.config_summary(),
             installation_id: self.installation_id.clone(),
+            host_id: String::new(),
         }
     }
 

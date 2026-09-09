@@ -4475,8 +4475,9 @@ async fn nodes(
 #[serde(crate = "base::serde")]
 struct AvaiInstallationResponse {
     installation_id: String,
+    host_id: String,
     avai_nodes: Vec<AvaiInstallationNode>,
-    steward_nodes: Vec<AvaiInstallationNode>,
+    gmv_center_agent_nodes: Vec<AvaiInstallationNode>,
     status_available: bool,
     status_error: Option<String>,
     center_connection: Option<String>,
@@ -4513,8 +4514,9 @@ impl From<&NodeRecord> for AvaiInstallationNode {
 #[derive(Default)]
 struct AvaiInstallationGroup {
     installation_id: String,
+    host_id: String,
     avai_nodes: Vec<NodeRecord>,
-    steward_nodes: Vec<NodeRecord>,
+    gmv_center_agent_nodes: Vec<NodeRecord>,
 }
 
 fn group_avai_installations(nodes: Vec<NodeRecord>) -> Vec<AvaiInstallationGroup> {
@@ -4522,7 +4524,7 @@ fn group_avai_installations(nodes: Vec<NodeRecord>) -> Vec<AvaiInstallationGroup
     for node in nodes {
         if !matches!(
             node.identity.kind,
-            crate::core::NodeKind::Avai | crate::core::NodeKind::Steward
+            crate::core::NodeKind::Avai | crate::core::NodeKind::GmvCenterAgent
         ) {
             continue;
         }
@@ -4532,19 +4534,26 @@ fn group_avai_installations(nodes: Vec<NodeRecord>) -> Vec<AvaiInstallationGroup
             .map(|value| value.trim())
             .unwrap_or_default()
             .to_string();
-        let key = if installation_id.is_empty() {
+        let host_id = node
+            .config
+            .get("host_id")
+            .map(|value| value.trim())
+            .unwrap_or_default()
+            .to_string();
+        let key = if installation_id.is_empty() || host_id.is_empty() {
             format!(
                 "unassigned/{:?}/{}/{}",
                 node.identity.kind, node.identity.node_id, node.identity.instance_id
             )
         } else {
-            installation_id.clone()
+            format!("{installation_id}/{host_id}")
         };
         let group = groups.entry(key).or_default();
         group.installation_id = installation_id;
+        group.host_id = host_id;
         match node.identity.kind {
             crate::core::NodeKind::Avai => group.avai_nodes.push(node),
-            crate::core::NodeKind::Steward => group.steward_nodes.push(node),
+            crate::core::NodeKind::GmvCenterAgent => group.gmv_center_agent_nodes.push(node),
             crate::core::NodeKind::Session | crate::core::NodeKind::Stream => unreachable!(),
         }
     }
@@ -4553,7 +4562,7 @@ fn group_avai_installations(nodes: Vec<NodeRecord>) -> Vec<AvaiInstallationGroup
             .avai_nodes
             .sort_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id));
         group
-            .steward_nodes
+            .gmv_center_agent_nodes
             .sort_by(|left, right| left.identity.node_id.cmp(&right.identity.node_id));
     }
     groups.into_values().collect()
@@ -4574,18 +4583,21 @@ async fn avai_installations(
             async move {
                 let query = if group.installation_id.is_empty() {
                     Err("installation_id is not configured".to_string())
-                } else if group.steward_nodes.len() > 1 {
-                    Err("multiple Stewards are registered for this installation".to_string())
-                } else if let Some(steward) = group.steward_nodes.first() {
-                    hub.query_steward_status(
-                        &steward.identity.node_id,
-                        &steward.identity.instance_id,
+                } else if group.host_id.is_empty() {
+                    Err("host_id is not configured".to_string())
+                } else if group.gmv_center_agent_nodes.len() > 1 {
+                    Err("multiple gmv-center-agent nodes are registered for this host".to_string())
+                } else if let Some(gmv_center_agent) = group.gmv_center_agent_nodes.first() {
+                    hub.query_gmv_center_agent_status(
+                        &gmv_center_agent.identity.node_id,
+                        &gmv_center_agent.identity.instance_id,
                         &group.installation_id,
+                        &group.host_id,
                         Duration::from_secs(2),
                     )
                     .await
                 } else {
-                    Err("no Steward is registered for this installation".to_string())
+                    Err("no gmv-center-agent is registered for this host".to_string())
                 };
                 let (status_available, status_error, snapshot) = match query {
                     Ok(snapshot) => (true, None, Some(snapshot)),
@@ -4593,13 +4605,14 @@ async fn avai_installations(
                 };
                 AvaiInstallationResponse {
                     installation_id: group.installation_id,
+                    host_id: group.host_id,
                     avai_nodes: group
                         .avai_nodes
                         .iter()
                         .map(AvaiInstallationNode::from)
                         .collect(),
-                    steward_nodes: group
-                        .steward_nodes
+                    gmv_center_agent_nodes: group
+                        .gmv_center_agent_nodes
                         .iter()
                         .map(AvaiInstallationNode::from)
                         .collect(),
@@ -10900,9 +10913,12 @@ mod tests {
             config: if installation_id.is_empty() {
                 Default::default()
             } else {
-                [("installation_id".to_string(), installation_id.to_string())]
-                    .into_iter()
-                    .collect()
+                [
+                    ("installation_id".to_string(), installation_id.to_string()),
+                    ("host_id".to_string(), "host-1".to_string()),
+                ]
+                .into_iter()
+                .collect()
             },
             zone: None,
             last_seen_at_ms: 1,
@@ -10915,7 +10931,12 @@ mod tests {
     fn avai_installation_grouping_never_infers_unassigned_nodes() {
         let groups = group_avai_installations(vec![
             installation_node(NodeKind::Avai, "shared-id", "avai-instance", ""),
-            installation_node(NodeKind::Steward, "shared-id", "steward-instance", ""),
+            installation_node(
+                NodeKind::GmvCenterAgent,
+                "shared-id",
+                "gmv_center_agent-instance",
+                "",
+            ),
             installation_node(
                 NodeKind::Avai,
                 "avai-1",
@@ -10923,15 +10944,15 @@ mod tests {
                 "installation-1",
             ),
             installation_node(
-                NodeKind::Steward,
-                "steward-1",
-                "steward-1-instance",
+                NodeKind::GmvCenterAgent,
+                "gmv_center_agent-1",
+                "gmv_center_agent-1-instance",
                 "installation-1",
             ),
             installation_node(
-                NodeKind::Steward,
-                "steward-2",
-                "steward-2-instance",
+                NodeKind::GmvCenterAgent,
+                "gmv_center_agent-2",
+                "gmv_center_agent-2-instance",
                 "installation-1",
             ),
         ]);
@@ -10941,12 +10962,12 @@ mod tests {
             .find(|group| group.installation_id == "installation-1")
             .unwrap();
         assert_eq!(assigned.avai_nodes.len(), 1);
-        assert_eq!(assigned.steward_nodes.len(), 2);
+        assert_eq!(assigned.gmv_center_agent_nodes.len(), 2);
         assert!(
             groups
                 .iter()
                 .filter(|group| group.installation_id.is_empty())
-                .all(|group| group.avai_nodes.len() + group.steward_nodes.len() == 1)
+                .all(|group| group.avai_nodes.len() + group.gmv_center_agent_nodes.len() == 1)
         );
     }
 

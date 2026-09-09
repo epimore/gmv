@@ -10,7 +10,6 @@ members = [
     "shared/nodec",
     "stream",
     "avai",
-    "steward",
 ]
 
 [workspace.package]

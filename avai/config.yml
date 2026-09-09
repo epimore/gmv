@@ -12,6 +12,7 @@ guard:
 
 server:
   installation_id: local-installation
+  host_id: local-host
   node_id: avai-node-1
   host: 127.0.0.1
   grpc_port: 19080

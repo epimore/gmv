@@ -1557,24 +1557,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gmv-steward"
-version = "2.2.0-release"
-dependencies = [
- "base",
- "base_db",
- "base_mqtt",
- "base_rpc",
- "ed25519-dalek",
- "gmv-nodec",
- "gmv-protocol",
- "prost",
- "tokio",
- "tonic",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "gmv-stream"
 version = "2.2.0-release"
 dependencies = [

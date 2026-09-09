@@ -22,6 +22,7 @@ message RegisterNodeRequest {
   bool takeover = 10;
   map<string, string> config = 11;
   string installation_id = 12;
+  string host_id = 13;
 }
 
 message RegisterNodeResponse {
@@ -190,19 +191,21 @@ message ShutdownNotice {
   uint64 grace_period_ms = 2;
 }
 
-message StewardStatusQuery {
+message GmvCenterAgentStatusQuery {
   string installation_id = 1;
+  string host_id = 2;
 }
 
-message StewardStatusSnapshot {
+message GmvCenterAgentStatusSnapshot {
   string installation_id = 1;
-  string steward_instance_id = 2;
+  string gmv_center_agent_instance_id = 2;
   CenterConnectionState center_connection = 3;
   string current_revision = 4;
   string desired_revision = 5;
   string staged_revision = 6;
   string delivery_state = 7;
   int64 observed_at_epoch_ms = 8;
+  string host_id = 9;
 }
 
 enum CenterConnectionState {

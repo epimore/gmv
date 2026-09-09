@@ -744,7 +744,7 @@ fn proto_identity(identity: &NodeIdentity) -> ProtoIdentity {
             NodeKind::Session => ProtoNodeKind::Session,
             NodeKind::Stream => ProtoNodeKind::Stream,
             NodeKind::Avai => ProtoNodeKind::Avai,
-            NodeKind::Steward => ProtoNodeKind::Steward,
+            NodeKind::GmvCenterAgent => ProtoNodeKind::GmvCenterAgent,
         } as i32,
     }
 }

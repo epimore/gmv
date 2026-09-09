@@ -12,7 +12,7 @@ fn main() -> io::Result<()> {
         proto_root.join("session/v1/control.proto"),
         proto_root.join("stream/v1/control.proto"),
         proto_root.join("avai/v1/control.proto"),
-        proto_root.join("steward/v1/control.proto"),
+        proto_root.join("center_agent/v1/control.proto"),
     ];
 
     println!("cargo:rerun-if-changed=build.rs");

@@ -510,6 +510,7 @@ impl SessionGuardNode {
             takeover: false,
             config: self.config_summary(),
             installation_id: self.installation_id.clone(),
+            host_id: String::new(),
         }
     }
 

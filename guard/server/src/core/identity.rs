@@ -7,7 +7,7 @@ pub enum NodeKind {
     Session,
     Stream,
     Avai,
-    Steward,
+    GmvCenterAgent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
