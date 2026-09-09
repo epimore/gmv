@@ -2,7 +2,9 @@ use std::io;
 use std::path::PathBuf;
 
 fn main() -> io::Result<()> {
-    let proto_root = PathBuf::from("proto");
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    let proto_root = manifest_dir.join("proto");
     let protos = [
         proto_root.join("common/v1/types.proto"),
         proto_root.join("guard/v1/node_control.proto"),

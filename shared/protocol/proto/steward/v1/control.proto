@@ -4,10 +4,6 @@ package gmv.steward.v1;
 
 import "common/v1/types.proto";
 
-service StewardGateway {
-  rpc OpenControlStream(stream StewardToCenterMessage) returns (stream CenterToStewardMessage);
-}
-
 message StewardToCenterMessage {
   string message_id = 1;
   uint64 sequence = 2;
@@ -21,6 +17,8 @@ message StewardToCenterMessage {
     InventorySnapshot inventory = 12;
     DeliveryReceipt delivery_receipt = 13;
     CommandReceipt command_receipt = 14;
+    UpgradeRequest upgrade_request = 15;
+    StewardPresence presence = 16;
   }
 }
 
@@ -35,6 +33,7 @@ message CenterToStewardMessage {
     DesiredState desired_state = 10;
     TypedCommand command = 11;
     ReceiptAck receipt_ack = 12;
+    UpgradeDecision upgrade_decision = 13;
   }
 }
 
@@ -55,6 +54,11 @@ message StewardHeartbeat {
   string current_revision = 2;
   string desired_revision = 3;
   string staged_revision = 4;
+}
+
+message StewardPresence {
+  bool online = 1;
+  int64 observed_at_epoch_ms = 2;
 }
 
 message InventorySnapshot {
@@ -116,6 +120,21 @@ message DesiredState {
   string channel = 2;
   ArtifactManifest artifact = 3;
   int64 deadline_epoch_ms = 4;
+}
+
+message UpgradeRequest {
+  string request_id = 1;
+  ArtifactKind artifact_kind = 2;
+  string channel = 3;
+  string current_revision = 4;
+  string target_revision = 5;
+}
+
+message UpgradeDecision {
+  string request_id = 1;
+  bool accepted = 2;
+  string stable_reason = 3;
+  DesiredState desired_state = 4;
 }
 
 message DeliveryReceipt {

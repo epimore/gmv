@@ -13,10 +13,16 @@ trusted_signing_keys:
 guard_endpoint: http://127.0.0.1:18080
 # gmvc is optional. When omitted, Steward stays local and does not contact a center.
 # gmvc:
-#   endpoint: https://gmvc.example.com:19443
+#   host: mqtt.example.com
+#   port: 8883
+#   username: steward-edge-installation-1
+#   password: replace-me
+#   keep_alive_secs: 30
+#   request_capacity: 64
+#   session_expiry_secs: 86400
+#   topic_prefix: gmvc/v1
 #   allow_plaintext: false
 #   tls:
 #     ca_certificate_path: ./certs/gmvc-ca.pem
 #     client_certificate_path: ./certs/steward.pem
 #     client_private_key_path: ./certs/steward-key.pem
-#     domain_name: gmvc.example.com

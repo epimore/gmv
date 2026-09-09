@@ -37,3 +37,5 @@ pub mod steward {
         tonic::include_proto!("gmv.steward.v1");
     }
 }
+
+pub mod steward_mqtt;

@@ -4,9 +4,6 @@ use std::sync::Arc;
 
 use base_rpc::RetryPolicy;
 use parking_lot::RwLock;
-use rumqttc::v5::AsyncClient as AsyncClientV5;
-use rumqttc::v5::mqttbytes::QoS as QoSV5;
-use rumqttc::{AsyncClient, QoS};
 
 use crate::core::{GuardError, GuardResult};
 use crate::outbox::OutboxDelivery;
@@ -14,18 +11,12 @@ use crate::store::model::{OutboxDestinationKind, OutboxRecord};
 
 #[derive(Clone)]
 pub struct MqttPublisher {
-    client: Arc<RwLock<Option<MqttPublishClient>>>,
+    client: Arc<RwLock<Option<base_mqtt::MqttPublisher>>>,
     retry: RetryPolicy,
 }
 
-#[derive(Clone)]
-pub enum MqttPublishClient {
-    V3(AsyncClient),
-    V5(AsyncClientV5),
-}
-
 impl MqttPublisher {
-    pub fn new(client: MqttPublishClient, retry: RetryPolicy) -> Self {
+    pub fn new(client: base_mqtt::MqttPublisher, retry: RetryPolicy) -> Self {
         Self {
             client: Arc::new(RwLock::new(Some(client))),
             retry,
@@ -66,16 +57,10 @@ impl MqttPublisher {
             .read()
             .clone()
             .ok_or_else(|| GuardError::Conflict("MQTT runtime is not connected".to_string()))?;
-        match client {
-            MqttPublishClient::V3(client) => client
-                .publish(topic, QoS::AtLeastOnce, false, payload)
-                .await
-                .map_err(|error| GuardError::Conflict(format!("MQTT v3 publish failed: {error}"))),
-            MqttPublishClient::V5(client) => client
-                .publish(topic, QoSV5::AtLeastOnce, false, payload.to_vec())
-                .await
-                .map_err(|error| GuardError::Conflict(format!("MQTT v5 publish failed: {error}"))),
-        }
+        client
+            .publish(topic, payload, base_mqtt::MqttQos::AtLeastOnce, false)
+            .await
+            .map_err(|error| GuardError::Conflict(format!("MQTT publish failed: {error}")))
     }
 }
 

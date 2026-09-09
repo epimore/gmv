@@ -396,6 +396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "base_mqtt"
+version = "0.1.0"
+dependencies = [
+ "base",
+ "rumqttc",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "base_rpc"
 version = "0.1.0"
 dependencies = [
@@ -1459,6 +1468,7 @@ dependencies = [
  "axum-server",
  "base",
  "base_db",
+ "base_mqtt",
  "base_rpc",
  "gmv-nodec",
  "gmv-protocol",
@@ -1468,7 +1478,6 @@ dependencies = [
  "parking_lot",
  "prost",
  "reqwest 0.11.27",
- "rumqttc",
  "rust-embed",
  "sha2 0.10.9",
  "sqlx",
@@ -1553,13 +1562,13 @@ version = "2.2.0-release"
 dependencies = [
  "base",
  "base_db",
+ "base_mqtt",
  "base_rpc",
  "ed25519-dalek",
  "gmv-nodec",
  "gmv-protocol",
  "prost",
  "tokio",
- "tokio-stream",
  "tonic",
  "url",
  "uuid",

@@ -1,18 +1,13 @@
 use std::time::Duration;
 
+use base::tokio::sync::mpsc;
 use base::tokio_util::sync::CancellationToken;
 use base_rpc::RetryPolicy;
-use rumqttc::v5::mqttbytes::QoS as QoSV5;
-use rumqttc::v5::{
-    AsyncClient as AsyncClientV5, Event as EventV5, EventLoop as EventLoopV5,
-    MqttOptions as MqttOptionsV5,
-};
-use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS, Transport};
 
 use crate::auth::Secret;
 use crate::core::{GuardError, GuardResult};
 use crate::mqttc::executor::MqttCommandExecutor;
-use crate::mqttc::publisher::{MqttPublishClient, MqttPublisher};
+use crate::mqttc::publisher::MqttPublisher;
 use crate::mqttc::subscriber::{CommandIdRepository, MqttCommandPolicy};
 use crate::store::persistent::IntegrationRepository;
 
@@ -74,74 +69,65 @@ impl MqttClientConfig {
         }
         Ok(())
     }
-}
 
-enum MqttClient {
-    V3(AsyncClient),
-    V5(AsyncClientV5),
-}
-
-enum MqttEventLoop {
-    V3(Box<EventLoop>),
-    V5(Box<EventLoopV5>),
+    fn common(&self) -> base_mqtt::MqttClientConfig {
+        base_mqtt::MqttClientConfig {
+            protocol_version: match self.protocol_version {
+                MqttProtocolVersion::V3 => base_mqtt::MqttProtocolVersion::V3,
+                MqttProtocolVersion::V5 => base_mqtt::MqttProtocolVersion::V5,
+            },
+            client_id: self.client_id.clone(),
+            host: self.host.clone(),
+            port: self.port,
+            username: self.username.clone(),
+            password: self
+                .password
+                .as_ref()
+                .map(|password| password.expose().to_string()),
+            keep_alive: self.keep_alive,
+            request_capacity: self.request_capacity,
+            clean_start: true,
+            session_expiry: None,
+            tls: self.tls.then_some(base_mqtt::MqttTlsConfig {
+                ca_certificate_path: None,
+                client_certificate_path: None,
+                client_private_key_path: None,
+            }),
+            last_will: None,
+            reconnect: base_mqtt::MqttReconnectPolicy {
+                initial_delay: self.retry.initial_delay,
+                max_delay: self.retry.max_delay,
+                multiplier: self.retry.multiplier,
+                jitter_ratio: self.retry.jitter_ratio,
+                max_attempts: self.retry.max_attempts,
+            },
+        }
+    }
 }
 
 pub struct MqttRuntime {
+    runtime: Option<base_mqtt::MqttRuntime>,
     pub publisher: MqttPublisher,
-    client: MqttClient,
-    event_loop: MqttEventLoop,
 }
 
 impl MqttRuntime {
     pub fn new(config: MqttClientConfig) -> GuardResult<Self> {
         config.validate()?;
-        let (client, event_loop, publish_client) = match config.protocol_version {
-            MqttProtocolVersion::V3 => {
-                let mut options = MqttOptions::new(&config.client_id, &config.host, config.port);
-                options.set_keep_alive(config.keep_alive);
-                if config.tls {
-                    options.set_transport(Transport::tls_with_default_config());
-                }
-                if let (Some(username), Some(password)) = (&config.username, &config.password) {
-                    options.set_credentials(username, password.expose());
-                }
-                let (client, event_loop) = AsyncClient::new(options, config.request_capacity);
-                (
-                    MqttClient::V3(client.clone()),
-                    MqttEventLoop::V3(Box::new(event_loop)),
-                    MqttPublishClient::V3(client),
-                )
-            }
-            MqttProtocolVersion::V5 => {
-                let mut options = MqttOptionsV5::new(&config.client_id, &config.host, config.port);
-                options.set_keep_alive(config.keep_alive);
-                if config.tls {
-                    options.set_transport(Transport::tls_with_default_config());
-                }
-                if let (Some(username), Some(password)) = (&config.username, &config.password) {
-                    options.set_credentials(username, password.expose());
-                }
-                let (client, event_loop) = AsyncClientV5::new(options, config.request_capacity);
-                (
-                    MqttClient::V5(client.clone()),
-                    MqttEventLoop::V5(Box::new(event_loop)),
-                    MqttPublishClient::V5(client),
-                )
-            }
-        };
+        let runtime = base_mqtt::MqttRuntime::new(config.common(), Vec::new())
+            .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
+        let publisher = MqttPublisher::new(runtime.publisher(), config.retry);
         Ok(Self {
-            publisher: MqttPublisher::new(publish_client, config.retry),
-            client,
-            event_loop,
+            runtime: Some(runtime),
+            publisher,
         })
     }
 
-    pub async fn run(mut self, cancel: CancellationToken) -> GuardResult<()> {
+    pub async fn run(self, cancel: CancellationToken) -> GuardResult<()> {
         self.run_loop(cancel, None, None).await
     }
 
     pub async fn run_with_ready(
-        mut self,
+        self,
         cancel: CancellationToken,
         ready: base::tokio::sync::oneshot::Sender<()>,
     ) -> GuardResult<()> {
@@ -186,26 +172,18 @@ impl MqttRuntime {
                     .to_string(),
             ));
         }
-        for topic in &topics {
-            match &self.client {
-                MqttClient::V3(client) => {
-                    client
-                        .subscribe(topic, QoS::AtLeastOnce)
-                        .await
-                        .map_err(|error| {
-                            GuardError::Conflict(format!(
-                                "MQTT v3 subscribe {topic} failed: {error}"
-                            ))
-                        })?
-                }
-                MqttClient::V5(client) => client
-                    .subscribe(topic, QoSV5::AtLeastOnce)
-                    .await
-                    .map_err(|error| {
-                        GuardError::Conflict(format!("MQTT v5 subscribe {topic} failed: {error}"))
-                    })?,
-            }
-        }
+        let subscriptions = topics
+            .into_iter()
+            .map(|topic_filter| base_mqtt::MqttSubscription {
+                topic_filter,
+                qos: base_mqtt::MqttQos::AtLeastOnce,
+            })
+            .collect();
+        self.runtime
+            .as_mut()
+            .expect("Guard MQTT runtime is initialized")
+            .set_subscriptions(subscriptions)
+            .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
         self.run_loop(
             cancel,
             Some(CommandRuntime {
@@ -220,91 +198,51 @@ impl MqttRuntime {
     }
 
     async fn run_loop(
-        &mut self,
+        mut self,
         cancel: CancellationToken,
         mut commands: Option<CommandRuntime>,
         mut ready: Option<base::tokio::sync::oneshot::Sender<()>>,
     ) -> GuardResult<()> {
-        let mut attempt = 0;
+        let runtime = self
+            .runtime
+            .take()
+            .expect("Guard MQTT runtime is initialized");
+        let (events_tx, mut events_rx) = mpsc::channel(256);
+        let driver_cancel = cancel.child_token();
+        let driver = base::tokio::spawn(runtime.run(driver_cancel.clone(), events_tx));
         loop {
             base::tokio::select! {
-                _ = cancel.cancelled() => return Ok(()),
-                event = poll_event(&mut self.event_loop) => match event {
-                    Ok(event) => {
-                        attempt = 0;
-                        if event.is_connected()
-                            && let Some(ready) = ready.take()
-                        {
+                _ = cancel.cancelled() => break,
+                event = events_rx.recv() => match event {
+                    Some(base_mqtt::MqttEvent::Connected) => {
+                        if let Some(ready) = ready.take() {
                             let _ = ready.send(());
                         }
-                        if let (Some(commands), Some((topic, payload))) = (commands.as_mut(), event.publish())
-                            && let Err(error) = commands.handle(topic, payload).await
+                    }
+                    Some(base_mqtt::MqttEvent::Disconnected(reason)) => {
+                        base::log::warn!("MQTT runtime disconnected: {reason}");
+                    }
+                    Some(base_mqtt::MqttEvent::Publish { topic, payload, .. }) => {
+                        if let Some(commands) = commands.as_mut()
+                            && let Err(error) = commands.handle(&topic, &payload).await
                         {
                             base::log::warn!("MQTT command rejected: topic={topic}, reason={error}");
                         }
                     }
-                    Err(error) => {
-                        attempt += 1;
-                        if !self.publisher.retry_policy().permits(attempt) {
-                            return Err(GuardError::Conflict(format!("MQTT event loop failed: {error}")));
-                        }
-                        let delay = self.publisher.retry_policy().delay(attempt);
-                        base::tokio::select! {
-                            _ = cancel.cancelled() => return Ok(()),
-                            _ = base::tokio::time::sleep(delay) => {}
-                        }
-                    }
+                    None => break,
                 }
             }
         }
-    }
-}
-
-enum IncomingEvent {
-    V3(Event),
-    V5(Box<EventV5>),
-}
-
-impl IncomingEvent {
-    fn is_connected(&self) -> bool {
-        match self {
-            Self::V3(Event::Incoming(Packet::ConnAck(_))) => true,
-            Self::V5(event) => matches!(
-                event.as_ref(),
-                EventV5::Incoming(rumqttc::v5::mqttbytes::v5::Packet::ConnAck(_))
-            ),
-            _ => false,
+        driver_cancel.cancel();
+        match driver.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(error)) => Err(GuardError::Conflict(format!(
+                "MQTT event loop failed: {error}"
+            ))),
+            Err(error) => Err(GuardError::Conflict(format!(
+                "MQTT event loop join failed: {error}"
+            ))),
         }
-    }
-
-    fn publish(&self) -> Option<(&str, &[u8])> {
-        match self {
-            Self::V3(Event::Incoming(Packet::Publish(publish))) => {
-                Some((&publish.topic, &publish.payload))
-            }
-            Self::V5(event) => match event.as_ref() {
-                EventV5::Incoming(rumqttc::v5::mqttbytes::v5::Packet::Publish(publish)) => {
-                    Some((std::str::from_utf8(&publish.topic).ok()?, &publish.payload))
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-}
-
-async fn poll_event(event_loop: &mut MqttEventLoop) -> Result<IncomingEvent, String> {
-    match event_loop {
-        MqttEventLoop::V3(event_loop) => event_loop
-            .poll()
-            .await
-            .map(IncomingEvent::V3)
-            .map_err(|error| error.to_string()),
-        MqttEventLoop::V5(event_loop) => event_loop
-            .poll()
-            .await
-            .map(|event| IncomingEvent::V5(Box::new(event)))
-            .map_err(|error| error.to_string()),
     }
 }
 

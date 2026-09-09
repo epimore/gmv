@@ -114,6 +114,19 @@ fn steward_contract_has_stable_identity_and_typed_commands() {
         descriptor_field_number(center_message, "receipt_ack"),
         Some(12)
     );
+    assert_eq!(
+        descriptor_field_number(center_message, "upgrade_decision"),
+        Some(13)
+    );
+    let steward_message = descriptor_message(steward, "StewardToCenterMessage");
+    assert_eq!(
+        descriptor_field_number(steward_message, "upgrade_request"),
+        Some(15)
+    );
+    assert_eq!(
+        descriptor_field_number(steward_message, "presence"),
+        Some(16)
+    );
     let receipt_ack = descriptor_message(steward, "ReceiptAck");
     assert_eq!(
         descriptor_field_number(receipt_ack, "receipt_message_id"),
@@ -173,13 +186,16 @@ fn guard_and_direct_service_rpc_boundaries_exist() {
         "gmv.session.v1.SessionControl",
         "gmv.stream.v1.StreamControl",
         "gmv.avai.v1.AvaiControl",
-        "gmv.steward.v1.StewardGateway",
     ] {
         assert!(
             services.contains(&service.to_string()),
             "missing service {service}"
         );
     }
+    assert!(
+        !services.contains(&"gmv.steward.v1.StewardGateway".to_string()),
+        "Steward/GMVC transport is MQTT, not a protobuf RPC service"
+    );
 }
 
 #[test]

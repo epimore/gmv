@@ -1,7 +1,7 @@
 use base::serde::Deserialize;
 use std::{collections::HashSet, path::PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct StewardConfig {
     pub installation_id: String,
@@ -23,10 +23,23 @@ pub struct StewardConfig {
     pub gmvc: Option<CenterConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct CenterConfig {
-    pub endpoint: String,
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default = "default_mqtt_keep_alive_secs")]
+    pub keep_alive_secs: u64,
+    #[serde(default = "default_mqtt_request_capacity")]
+    pub request_capacity: usize,
+    #[serde(default = "default_mqtt_session_expiry_secs")]
+    pub session_expiry_secs: u64,
+    #[serde(default = "default_mqtt_topic_prefix")]
+    pub topic_prefix: String,
     #[serde(default)]
     pub allow_plaintext: bool,
     #[serde(default)]
@@ -37,10 +50,10 @@ pub struct CenterConfig {
 #[serde(crate = "base::serde")]
 pub struct CenterTlsConfig {
     pub ca_certificate_path: PathBuf,
-    pub client_certificate_path: PathBuf,
-    pub client_private_key_path: PathBuf,
     #[serde(default)]
-    pub domain_name: Option<String>,
+    pub client_certificate_path: Option<PathBuf>,
+    #[serde(default)]
+    pub client_private_key_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -87,18 +100,37 @@ impl StewardConfig {
             return Err("manifest_path, database_path and staging_root are required".to_string());
         }
         if let Some(center) = &self.gmvc {
-            let url = url::Url::parse(&center.endpoint)
-                .map_err(|_| "gmvc.endpoint must be a valid URL".to_string())?;
-            if url.scheme() != "https" && !(center.allow_plaintext && url.scheme() == "http") {
+            if center.host.trim().is_empty() || center.port == 0 {
+                return Err("gmvc.host and gmvc.port are required".to_string());
+            }
+            if center.keep_alive_secs == 0
+                || center.request_capacity == 0
+                || center.session_expiry_secs == 0
+            {
+                return Err("gmvc MQTT timing and capacity values must be positive".to_string());
+            }
+            if center.username.is_some() != center.password.is_some() {
                 return Err(
-                    "gmvc.endpoint requires TLS unless allow_plaintext is explicit".to_string(),
+                    "gmvc.username and gmvc.password must be configured together".to_string(),
                 );
             }
-            if url.scheme() == "https" && center.tls.is_none() {
-                return Err("gmvc.tls is required for mutual TLS".to_string());
+            gmv_protocol::steward_mqtt::center_upstream_filter(&center.topic_prefix)
+                .map_err(str::to_string)?;
+            if center.tls.is_none() && !(center.allow_plaintext && is_loopback_host(&center.host)) {
+                return Err(
+                    "gmvc MQTT requires TLS unless loopback plaintext is explicit".to_string(),
+                );
             }
-            if url.scheme() == "http" && center.tls.is_some() {
-                return Err("gmvc.tls cannot be used with a plaintext endpoint".to_string());
+            if let Some(tls) = &center.tls {
+                if tls.ca_certificate_path.as_os_str().is_empty() {
+                    return Err("gmvc.tls.ca_certificate_path is required".to_string());
+                }
+                if tls.client_certificate_path.is_some() != tls.client_private_key_path.is_some() {
+                    return Err(
+                        "gmvc MQTT client certificate and private key must be configured together"
+                            .to_string(),
+                    );
+                }
             }
             if self.max_artifact_bytes == 0
                 || self.artifact_timeout_secs == 0
@@ -134,6 +166,29 @@ fn default_max_artifact_bytes() -> u64 {
 
 fn default_artifact_timeout_secs() -> u64 {
     600
+}
+
+fn default_mqtt_keep_alive_secs() -> u64 {
+    30
+}
+
+fn default_mqtt_request_capacity() -> usize {
+    64
+}
+
+fn default_mqtt_session_expiry_secs() -> u64 {
+    24 * 60 * 60
+}
+
+fn default_mqtt_topic_prefix() -> String {
+    gmv_protocol::steward_mqtt::DEFAULT_TOPIC_PREFIX.to_string()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl InstallManifest {
