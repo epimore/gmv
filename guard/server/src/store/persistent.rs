@@ -587,7 +587,9 @@ fn apply_mysql_attributes(
     attrs: &MysqlAttrsConfig,
 ) -> MySqlConnectOptions {
     if let Some(level) = &attrs.log_global_sql_level {
-        options = options.log_statements(base::logger::level_filter(level));
+        options = options.log_statements(
+            base::logger::level_filter(level).expect("database log level was validated"),
+        );
     }
     if let Some(timeout_sec) = attrs.log_slow_sql_timeout_sec {
         options = options.log_slow_statements(

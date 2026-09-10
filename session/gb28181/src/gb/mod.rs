@@ -69,7 +69,7 @@ impl CheckFromConf for SessionConf {
 }
 impl SessionConf {
     pub fn get_session_by_conf() -> Self {
-        SessionConf::conf()
+        SessionConf::try_conf().expect("session configuration was validated during startup")
     }
 
     pub fn media_receiver_id(&self) -> &str {

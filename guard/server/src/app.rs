@@ -44,7 +44,8 @@ impl Daemon<GuardListeners> for AppInfo {
         Self: Sized,
     {
         logger::Logger::init()?;
-        let config = GuardAppConfig::current();
+        let config = GuardAppConfig::current()
+            .map_err(|error| GlobalError::from_external_error(error, |_| {}))?;
         config
             .validate()
             .map_err(|error| global_error(format!("guard config invalid: {error}")))?;

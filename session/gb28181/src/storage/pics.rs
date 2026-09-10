@@ -41,7 +41,7 @@ serde_default!(default_access_ticket_ttl_secs, u64, 300);
 
 impl Pics {
     pub fn get_pics_by_conf() -> Self {
-        Self::conf()
+        Self::try_conf().expect("session picture configuration was validated during startup")
     }
 }
 

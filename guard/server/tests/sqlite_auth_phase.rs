@@ -125,7 +125,7 @@ guard:
             )
             .unwrap();
 
-            let config = GuardAppConfig::load(config_path.to_string_lossy().into_owned());
+            let config = GuardAppConfig::load(config_path.to_string_lossy().into_owned()).unwrap();
             let persistent = PersistentStore::connect(&config).await.unwrap();
             persistent.initialize(&config).await.unwrap();
             let users = persistent.load_users().await.unwrap();

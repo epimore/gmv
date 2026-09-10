@@ -27,13 +27,15 @@ pub struct GuardAppConfig {
 }
 
 impl GuardAppConfig {
-    pub fn load(path: impl Into<String>) -> Self {
-        base::cfg_lib::conf::init_cfg(path.into());
-        Self::conf()
+    pub fn load(
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<Self, base::cfg_lib::conf::ConfigError> {
+        base::cfg_lib::conf::try_init_cfg(path)?;
+        Self::try_conf()
     }
 
-    pub fn current() -> Self {
-        Self::conf()
+    pub fn current() -> Result<Self, base::cfg_lib::conf::ConfigError> {
+        Self::try_conf()
     }
 
     pub fn validate(&self) -> GuardResult<()> {

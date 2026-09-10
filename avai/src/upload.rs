@@ -46,6 +46,14 @@ pub struct UploadError {
     pub message: String,
 }
 
+impl std::fmt::Display for UploadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for UploadError {}
+
 impl UploadError {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {

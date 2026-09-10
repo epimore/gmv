@@ -72,7 +72,7 @@ impl CheckFromConf for SessionGrpcConf {
 
 impl SessionGrpcConf {
     pub fn get() -> Self {
-        Self::conf()
+        Self::try_conf().expect("session gRPC configuration was validated during startup")
     }
 
     pub fn endpoint(&self) -> String {
@@ -157,11 +157,11 @@ impl Default for GuardConf {
 
 impl GuardConf {
     pub fn get() -> Self {
-        Self::conf()
+        Self::try_conf().expect("session Guard configuration was validated during startup")
     }
 
     pub fn get_or_default() -> Self {
-        std::panic::catch_unwind(Self::conf).unwrap_or_default()
+        Self::try_conf().unwrap_or_default()
     }
 }
 
@@ -178,7 +178,9 @@ static ALARM_CONF: OnceLock<AlarmConf> = OnceLock::new();
 
 impl AlarmConf {
     pub fn get_alarm_conf() -> &'static Self {
-        ALARM_CONF.get_or_init(|| AlarmConf::conf())
+        ALARM_CONF.get_or_init(|| {
+            AlarmConf::try_conf().expect("session alarm configuration was validated during startup")
+        })
     }
 }
 
@@ -261,18 +263,17 @@ serde_default!(default_access_ticket_idle_ttl_secs, u64, 300);
 serde_default!(default_access_ticket_max_ttl_secs, u64, 21_600);
 impl CheckFromConf for DownloadConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
-        let dc = DownloadConf::conf();
-        fs::create_dir_all(&dc.storage_path).map_err(|e| {
+        fs::create_dir_all(&self.storage_path).map_err(|e| {
             FieldCheckError::BizError(format!("create download dir failed: {}", e.to_string()))
         })?;
-        if dc.access_ticket_idle_ttl_secs == 0
-            || dc.access_ticket_max_ttl_secs < dc.access_ticket_idle_ttl_secs
+        if self.access_ticket_idle_ttl_secs == 0
+            || self.access_ticket_max_ttl_secs < self.access_ticket_idle_ttl_secs
         {
             return Err(FieldCheckError::BizError(
                 "server.download access ticket TTL 配置无效".to_string(),
             ));
         }
-        let public_base_url = dc.public_base_url.trim();
+        let public_base_url = self.public_base_url.trim();
         if !public_base_url.is_empty()
             && !(public_base_url.starts_with("http://") || public_base_url.starts_with("https://"))
         {
@@ -286,7 +287,8 @@ impl CheckFromConf for DownloadConf {
 
 impl DownloadConf {
     pub fn get_download_conf() -> Self {
-        DownloadConf::conf()
+        DownloadConf::try_conf()
+            .expect("session download configuration was validated during startup")
     }
 }
 

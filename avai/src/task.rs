@@ -58,6 +58,14 @@ pub struct TaskError {
     pub message: String,
 }
 
+impl std::fmt::Display for TaskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for TaskError {}
+
 impl TaskError {
     fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {

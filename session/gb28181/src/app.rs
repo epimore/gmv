@@ -51,8 +51,12 @@ impl
         Self: Sized,
     {
         let app_info = AppInfo {
-            session_conf: SessionConf::get_session_by_conf(),
-            http: Http::get_http_by_conf(),
+            session_conf: SessionConf::try_conf().map_err(|error| {
+                base::exception::GlobalError::from_external_error(error, |_| {})
+            })?,
+            http: Http::try_conf().map_err(|error| {
+                base::exception::GlobalError::from_external_error(error, |_| {})
+            })?,
         };
         logger::Logger::init()?;
         match db::backend() {
@@ -75,7 +79,8 @@ impl
         }
         let http_listener = app_info.http.listen_http_server()?;
         let tu = app_info.session_conf.listen_gb_server()?;
-        let grpc = crate::state::SessionGrpcConf::get();
+        let grpc = crate::state::SessionGrpcConf::try_conf()
+            .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
         let grpc_listener = TcpListener::bind(grpc.listen_addr).map_err(|error| {
             base::exception::GlobalError::new_sys_error(
                 &format!("bind session grpc {} failed: {error}", grpc.listen_addr),

@@ -22,7 +22,7 @@ const MIN_OUT_IDLE_TIMEOUT: u8 = 12;
 const MAX_OUT_IDLE_TIMEOUT: u8 = 120;
 impl StreamConf {
     pub fn init_by_conf() -> Self {
-        StreamConf::conf()
+        StreamConf::try_conf().expect("stream configuration was validated during startup")
     }
 
     pub fn resolve_media_timeouts(
@@ -285,15 +285,15 @@ fn validate_advertised_host(host: &str) -> Result<(), String> {
 }
 
 impl ServerConf {
-    pub fn init_by_conf() -> Self {
-        let mut server_conf = ServerConf::conf();
+    pub fn try_init_by_conf() -> Result<Self, base::cfg_lib::conf::ConfigError> {
+        let mut server_conf = ServerConf::try_conf()?;
         server_conf.http.public_url = server_conf
             .http
             .public_url
             .trim_end_matches('/')
             .to_string();
         server_conf.media.normalize();
-        server_conf
+        Ok(server_conf)
     }
 
     pub fn media_listener_conf(&self) -> Result<MediaListenerConf, String> {
@@ -394,8 +394,8 @@ serde_default!(
     env_string("GMV_GUARD_ENDPOINT", "http://127.0.0.1:18080")
 );
 impl GuardConf {
-    pub fn init_by_conf() -> Self {
-        GuardConf::conf()
+    pub fn try_init_by_conf() -> Result<Self, base::cfg_lib::conf::ConfigError> {
+        GuardConf::try_conf()
     }
 }
 impl CheckFromConf for GuardConf {
@@ -416,9 +416,10 @@ fn env_string(name: &str, default: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::general::cfg::{MediaListenerMode, MediaPortRange, ServerConf, StreamConf};
-    use base::cfg_lib::conf::init_cfg;
+    use base::cfg_lib::conf::try_init_cfg;
 
     const SINGLE_SERVER_YAML: &str = r#"
+installation_id: test-installation
 name: stream-test
 http:
   listen_addr: 0.0.0.0:28570
@@ -434,6 +435,7 @@ media:
 "#;
 
     const MULTI_SERVER_YAML: &str = r#"
+installation_id: test-installation
 name: stream-test
 http:
   listen_addr: 0.0.0.0:28570
@@ -458,8 +460,8 @@ media:
     //   hls 与 flv: 都为false时，触发panic
     #[test]
     fn test_check_init_conf() {
-        init_cfg("config.yml".to_string());
-        let cf: ServerConf = ServerConf::init_by_conf();
+        try_init_cfg("config.yml").unwrap();
+        let cf: ServerConf = ServerConf::try_init_by_conf().unwrap();
         println!("{:?}", cf);
     }
 

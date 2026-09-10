@@ -160,7 +160,7 @@ impl CheckFromConf for Http {
 
 impl Http {
     pub fn get_http_by_conf() -> Self {
-        Http::conf()
+        Http::try_conf().expect("session HTTP configuration was validated during startup")
     }
 
     pub fn listen_http_server(&self) -> GlobalResult<std::net::TcpListener> {

@@ -44,7 +44,9 @@ impl Daemon<StreamBootstrap> for App {
         Self: Sized,
     {
         let app = App {
-            conf: ServerConf::init_by_conf(),
+            conf: ServerConf::try_init_by_conf().map_err(|error| {
+                base::exception::GlobalError::from_external_error(error, |_| {})
+            })?,
         };
         logger::Logger::init()?;
         let http_addr = app.conf.http.listen_addr;
@@ -112,7 +114,8 @@ impl Daemon<StreamBootstrap> for App {
                     |msg| error!("{msg}"),
                 )
             })?;
-        let guard = GuardConf::init_by_conf();
+        let guard = GuardConf::try_init_by_conf()
+            .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
