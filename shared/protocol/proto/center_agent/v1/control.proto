@@ -166,20 +166,102 @@ message TypedCommand {
   GmvCenterAgentCommandType command_type = 2;
   int64 deadline_epoch_ms = 3;
   string expected_manifest_revision = 4;
+  string operation_id = 5;
+  string installation_id = 6;
+  string host_id = 7;
+  string component_id = 8;
+  oneof request {
+    InventoryRefreshRequest inventory_refresh = 10;
+    HealthSnapshotRequest health_snapshot = 11;
+    ServiceStartRequest service_start = 12;
+    ServiceStopRequest service_stop = 13;
+    ServiceRestartRequest service_restart = 14;
+    LogQueryRequest log_query = 15;
+    DiagnosticCollectRequest diagnostic_collect = 16;
+  }
 }
 
 enum GmvCenterAgentCommandType {
   GMV_CENTER_AGENT_COMMAND_TYPE_UNSPECIFIED = 0;
   GMV_CENTER_AGENT_COMMAND_TYPE_INVENTORY_REFRESH = 1;
   GMV_CENTER_AGENT_COMMAND_TYPE_HEALTH_SNAPSHOT = 2;
+  GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_START = 3;
+  GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_STOP = 4;
+  GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_RESTART = 5;
+  GMV_CENTER_AGENT_COMMAND_TYPE_LOG_QUERY = 6;
+  GMV_CENTER_AGENT_COMMAND_TYPE_DIAGNOSTIC_COLLECT = 7;
+}
+
+message InventoryRefreshRequest {}
+
+message HealthSnapshotRequest {}
+
+message ServiceStartRequest {}
+
+message ServiceStopRequest {}
+
+message ServiceRestartRequest {}
+
+message LogQueryRequest {
+  int64 since_epoch_ms = 1;
+  int64 until_epoch_ms = 2;
+  uint32 tail_lines = 3;
+  string level = 4;
+  string keyword = 5;
+  uint32 max_lines = 6;
+  uint64 max_bytes = 7;
+}
+
+message DiagnosticCollectRequest {}
+
+enum CommandFailureReason {
+  COMMAND_FAILURE_REASON_UNSPECIFIED = 0;
+  COMMAND_FAILURE_REASON_DEADLINE_EXPIRED = 1;
+  COMMAND_FAILURE_REASON_UNKNOWN_COMPONENT = 2;
+  COMMAND_FAILURE_REASON_UNSUPPORTED_CAPABILITY = 3;
+  COMMAND_FAILURE_REASON_MANIFEST_MISMATCH = 4;
+  COMMAND_FAILURE_REASON_ALREADY_TERMINAL = 5;
+  COMMAND_FAILURE_REASON_BUSY_CONFLICT = 6;
+}
+
+enum CommandStepState {
+  COMMAND_STEP_STATE_UNSPECIFIED = 0;
+  COMMAND_STEP_STATE_RUNNING = 1;
+  COMMAND_STEP_STATE_SUCCEEDED = 2;
+  COMMAND_STEP_STATE_FAILED = 3;
+  COMMAND_STEP_STATE_SKIPPED = 4;
+}
+
+message CommandStepResult {
+  string step_name = 1;
+  CommandStepState state = 2;
+  int64 started_at_epoch_ms = 3;
+  int64 completed_at_epoch_ms = 4;
+  CommandFailureReason failure_reason = 5;
+  string stable_error_code = 6;
+  string result_summary = 7;
+}
+
+message CommandResultArtifactRef {
+  string artifact_id = 1;
+  string media_type = 2;
+  uint64 content_size = 3;
+  string sha256 = 4;
 }
 
 message CommandReceipt {
   string command_id = 1;
   CommandState state = 2;
   string stable_error_code = 3;
-  bytes result = 4;
+  bytes result = 4 [deprecated = true];
   int64 completed_at_epoch_ms = 5;
+  string operation_id = 6;
+  string component_id = 7;
+  int64 started_at_epoch_ms = 8;
+  repeated CommandStepResult steps = 9;
+  string result_summary = 10;
+  CommandResultArtifactRef result_artifact = 11;
+  CommandFailureReason failure_reason = 12;
 }
 
 enum CommandState {
