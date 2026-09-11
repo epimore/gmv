@@ -18,6 +18,32 @@ struct LegacyStartReceiveRequest {
     preferred_endpoints: Vec<gmv_protocol::common::v1::Endpoint>,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct LegacyTypedCommand {
+    #[prost(string, tag = "1")]
+    command_id: String,
+    #[prost(int32, tag = "2")]
+    command_type: i32,
+    #[prost(int64, tag = "3")]
+    deadline_epoch_ms: i64,
+    #[prost(string, tag = "4")]
+    expected_manifest_revision: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct LegacyCommandReceipt {
+    #[prost(string, tag = "1")]
+    command_id: String,
+    #[prost(int32, tag = "2")]
+    state: i32,
+    #[prost(string, tag = "3")]
+    stable_error_code: String,
+    #[prost(bytes = "vec", tag = "4")]
+    result: Vec<u8>,
+    #[prost(int64, tag = "5")]
+    completed_at_epoch_ms: i64,
+}
+
 fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
 }
@@ -49,6 +75,20 @@ fn descriptor_field_number(message: &prost_types::DescriptorProto, name: &str) -
         .iter()
         .find(|field| field.name.as_deref() == Some(name))
         .and_then(|field| field.number)
+}
+
+fn descriptor_enum_value_number(
+    file: &prost_types::FileDescriptorProto,
+    enum_name: &str,
+    value_name: &str,
+) -> Option<i32> {
+    file.enum_type
+        .iter()
+        .find(|item| item.name.as_deref() == Some(enum_name))?
+        .value
+        .iter()
+        .find(|value| value.name.as_deref() == Some(value_name))?
+        .number
 }
 
 #[test]
@@ -140,9 +180,277 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
         Some(1)
     );
     let command = descriptor_message(gmv_center_agent, "TypedCommand");
-    assert_eq!(descriptor_field_number(command, "command_type"), Some(2));
+    for (field, number) in [
+        ("command_id", 1),
+        ("command_type", 2),
+        ("deadline_epoch_ms", 3),
+        ("expected_manifest_revision", 4),
+        ("operation_id", 5),
+        ("installation_id", 6),
+        ("host_id", 7),
+        ("component_id", 8),
+        ("inventory_refresh", 10),
+        ("health_snapshot", 11),
+        ("service_start", 12),
+        ("service_stop", 13),
+        ("service_restart", 14),
+        ("log_query", 15),
+        ("diagnostic_collect", 16),
+    ] {
+        assert_eq!(descriptor_field_number(command, field), Some(number));
+    }
     assert!(descriptor_field_number(command, "shell").is_none());
     assert!(descriptor_field_number(command, "command_line").is_none());
+    assert!(descriptor_field_number(command, "argv").is_none());
+
+    let receipt = descriptor_message(gmv_center_agent, "CommandReceipt");
+    for (field, number) in [
+        ("command_id", 1),
+        ("state", 2),
+        ("stable_error_code", 3),
+        ("result", 4),
+        ("completed_at_epoch_ms", 5),
+        ("operation_id", 6),
+        ("component_id", 7),
+        ("started_at_epoch_ms", 8),
+        ("steps", 9),
+        ("result_summary", 10),
+        ("result_artifact", 11),
+        ("failure_reason", 12),
+    ] {
+        assert_eq!(descriptor_field_number(receipt, field), Some(number));
+    }
+
+    for (value, number) in [
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_UNSPECIFIED", 0),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_INVENTORY_REFRESH", 1),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_HEALTH_SNAPSHOT", 2),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_START", 3),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_STOP", 4),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_SERVICE_RESTART", 5),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_LOG_QUERY", 6),
+        ("GMV_CENTER_AGENT_COMMAND_TYPE_DIAGNOSTIC_COLLECT", 7),
+    ] {
+        assert_eq!(
+            descriptor_enum_value_number(gmv_center_agent, "GmvCenterAgentCommandType", value),
+            Some(number)
+        );
+    }
+    for (value, number) in [
+        ("COMMAND_FAILURE_REASON_UNSPECIFIED", 0),
+        ("COMMAND_FAILURE_REASON_DEADLINE_EXPIRED", 1),
+        ("COMMAND_FAILURE_REASON_UNKNOWN_COMPONENT", 2),
+        ("COMMAND_FAILURE_REASON_UNSUPPORTED_CAPABILITY", 3),
+        ("COMMAND_FAILURE_REASON_MANIFEST_MISMATCH", 4),
+        ("COMMAND_FAILURE_REASON_ALREADY_TERMINAL", 5),
+        ("COMMAND_FAILURE_REASON_BUSY_CONFLICT", 6),
+    ] {
+        assert_eq!(
+            descriptor_enum_value_number(gmv_center_agent, "CommandFailureReason", value),
+            Some(number)
+        );
+    }
+
+    for message_name in [
+        "InventoryRefreshRequest",
+        "HealthSnapshotRequest",
+        "ServiceStartRequest",
+        "ServiceStopRequest",
+        "ServiceRestartRequest",
+        "LogQueryRequest",
+        "DiagnosticCollectRequest",
+    ] {
+        let request = descriptor_message(gmv_center_agent, message_name);
+        for field in &request.field {
+            assert!(
+                !["shell", "command_line", "argv", "unit", "path", "url"]
+                    .contains(&field.name.as_deref().unwrap_or_default()),
+                "{message_name} exposes an unsafe execution field"
+            );
+        }
+    }
+}
+
+#[test]
+fn gmv_center_agent_typed_command_payloads_roundtrip() {
+    use gmv_protocol::gmv_center_agent::v1::{
+        DiagnosticCollectRequest, GmvCenterAgentCommandType, HealthSnapshotRequest,
+        InventoryRefreshRequest, LogQueryRequest, ServiceRestartRequest, ServiceStartRequest,
+        ServiceStopRequest, TypedCommand, typed_command,
+    };
+
+    let requests = [
+        (
+            GmvCenterAgentCommandType::InventoryRefresh,
+            typed_command::Request::InventoryRefresh(InventoryRefreshRequest {}),
+        ),
+        (
+            GmvCenterAgentCommandType::HealthSnapshot,
+            typed_command::Request::HealthSnapshot(HealthSnapshotRequest {}),
+        ),
+        (
+            GmvCenterAgentCommandType::ServiceStart,
+            typed_command::Request::ServiceStart(ServiceStartRequest {}),
+        ),
+        (
+            GmvCenterAgentCommandType::ServiceStop,
+            typed_command::Request::ServiceStop(ServiceStopRequest {}),
+        ),
+        (
+            GmvCenterAgentCommandType::ServiceRestart,
+            typed_command::Request::ServiceRestart(ServiceRestartRequest {}),
+        ),
+        (
+            GmvCenterAgentCommandType::LogQuery,
+            typed_command::Request::LogQuery(LogQueryRequest {
+                since_epoch_ms: 1_000,
+                until_epoch_ms: 2_000,
+                tail_lines: 100,
+                level: "WARN".to_string(),
+                keyword: "action=restart".to_string(),
+                max_lines: 500,
+                max_bytes: 1_048_576,
+            }),
+        ),
+        (
+            GmvCenterAgentCommandType::DiagnosticCollect,
+            typed_command::Request::DiagnosticCollect(DiagnosticCollectRequest {}),
+        ),
+    ];
+
+    for (command_type, request) in requests {
+        let command = TypedCommand {
+            command_id: "command-1".to_string(),
+            command_type: command_type as i32,
+            deadline_epoch_ms: 2_000,
+            expected_manifest_revision: "manifest-7".to_string(),
+            operation_id: "operation-1".to_string(),
+            installation_id: "installation-1".to_string(),
+            host_id: "host-1".to_string(),
+            component_id: "stream".to_string(),
+            request: Some(request),
+        };
+        let encoded = command.encode_to_vec();
+        assert_eq!(TypedCommand::decode(encoded.as_slice()).unwrap(), command);
+    }
+}
+
+#[test]
+#[allow(deprecated)]
+fn gmv_center_agent_command_extension_is_wire_compatible() {
+    use gmv_protocol::gmv_center_agent::v1::{
+        CommandFailureReason, CommandReceipt, CommandResultArtifactRef, CommandState,
+        CommandStepResult, CommandStepState, GmvCenterAgentCommandType, ServiceStopRequest,
+        TypedCommand, typed_command,
+    };
+
+    let legacy_command = LegacyTypedCommand {
+        command_id: "legacy-command".to_string(),
+        command_type: GmvCenterAgentCommandType::HealthSnapshot as i32,
+        deadline_epoch_ms: 1_000,
+        expected_manifest_revision: "manifest-1".to_string(),
+    };
+    let decoded = TypedCommand::decode(legacy_command.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.command_id, legacy_command.command_id);
+    assert_eq!(decoded.command_type, legacy_command.command_type);
+    assert_eq!(decoded.deadline_epoch_ms, legacy_command.deadline_epoch_ms);
+    assert_eq!(
+        decoded.expected_manifest_revision,
+        legacy_command.expected_manifest_revision
+    );
+    assert!(decoded.operation_id.is_empty());
+    assert!(decoded.component_id.is_empty());
+    assert!(decoded.request.is_none());
+
+    let legacy_receipt = LegacyCommandReceipt {
+        command_id: "legacy-command".to_string(),
+        state: CommandState::Succeeded as i32,
+        stable_error_code: String::new(),
+        result: b"legacy-result".to_vec(),
+        completed_at_epoch_ms: 1_100,
+    };
+    let decoded = CommandReceipt::decode(legacy_receipt.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.command_id, legacy_receipt.command_id);
+    assert_eq!(decoded.state, legacy_receipt.state);
+    assert_eq!(decoded.result, legacy_receipt.result);
+    assert!(decoded.operation_id.is_empty());
+    assert!(decoded.steps.is_empty());
+    assert!(decoded.result_artifact.is_none());
+
+    let current_command = TypedCommand {
+        command_id: "current-command".to_string(),
+        command_type: GmvCenterAgentCommandType::ServiceStop as i32,
+        deadline_epoch_ms: 2_000,
+        expected_manifest_revision: "manifest-2".to_string(),
+        operation_id: "operation-2".to_string(),
+        installation_id: "installation-1".to_string(),
+        host_id: "host-1".to_string(),
+        component_id: "guard".to_string(),
+        request: Some(typed_command::Request::ServiceStop(ServiceStopRequest {})),
+    };
+    let legacy_decoded =
+        LegacyTypedCommand::decode(current_command.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy_decoded.command_id, current_command.command_id);
+    assert_eq!(legacy_decoded.command_type, current_command.command_type);
+    assert_eq!(
+        legacy_decoded.expected_manifest_revision,
+        current_command.expected_manifest_revision
+    );
+
+    let current_receipt = CommandReceipt {
+        command_id: "current-command".to_string(),
+        state: CommandState::Rejected as i32,
+        stable_error_code: "manifest_mismatch".to_string(),
+        result: Vec::new(),
+        completed_at_epoch_ms: 2_100,
+        operation_id: "operation-2".to_string(),
+        component_id: "guard".to_string(),
+        started_at_epoch_ms: 2_000,
+        steps: vec![CommandStepResult {
+            step_name: "validate_manifest".to_string(),
+            state: CommandStepState::Failed as i32,
+            started_at_epoch_ms: 2_000,
+            completed_at_epoch_ms: 2_100,
+            failure_reason: CommandFailureReason::ManifestMismatch as i32,
+            stable_error_code: "manifest_mismatch".to_string(),
+            result_summary: "manifest revision changed".to_string(),
+        }],
+        result_summary: "command rejected before execution".to_string(),
+        result_artifact: Some(CommandResultArtifactRef {
+            artifact_id: "diagnostic-operation-2".to_string(),
+            media_type: "application/zstd".to_string(),
+            content_size: 4_096,
+            sha256: "0123456789abcdef".to_string(),
+        }),
+        failure_reason: CommandFailureReason::ManifestMismatch as i32,
+    };
+    let legacy_receipt_view =
+        LegacyCommandReceipt::decode(current_receipt.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy_receipt_view.command_id, current_receipt.command_id);
+    assert_eq!(legacy_receipt_view.state, current_receipt.state);
+    assert_eq!(
+        legacy_receipt_view.completed_at_epoch_ms,
+        current_receipt.completed_at_epoch_ms
+    );
+}
+
+#[test]
+fn gmv_center_agent_unknown_command_enum_value_is_preserved() {
+    use gmv_protocol::gmv_center_agent::v1::TypedCommand;
+
+    let command = TypedCommand {
+        command_id: "future-command".to_string(),
+        command_type: 99_999,
+        deadline_epoch_ms: 1_000,
+        expected_manifest_revision: String::new(),
+        operation_id: String::new(),
+        installation_id: String::new(),
+        host_id: String::new(),
+        component_id: String::new(),
+        request: None,
+    };
+    let decoded = TypedCommand::decode(command.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.command_type, 99_999);
 }
 
 #[test]
