@@ -209,6 +209,7 @@ dependencies = [
  "base",
  "base_db",
  "base_rpc",
+ "ed25519-dalek",
  "gmv-domain",
  "gmv-nodec",
  "gmv-protocol",
