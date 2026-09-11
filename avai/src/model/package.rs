@@ -150,6 +150,24 @@ pub struct VerifiedModelPackage {
     pub manifest: ModelPackageManifest,
     pub selected_variant: RuntimeVariant,
     pub manifest_sha256: String,
+    policy: PackagePolicy,
+}
+
+impl VerifiedModelPackage {
+    pub(crate) fn verify_staged_copy(&self, root: &Path) -> ModelResult<()> {
+        let staged = verify_package(root, &self.policy)?;
+        if staged.manifest.metadata != self.manifest.metadata
+            || staged.manifest_sha256 != self.manifest_sha256
+            || staged.selected_variant.runtime != self.selected_variant.runtime
+            || staged.selected_variant.artifact != self.selected_variant.artifact
+        {
+            return Err(ModelError::new(
+                "model_package_changed",
+                "model package changed after verification",
+            ));
+        }
+        Ok(())
+    }
 }
 
 pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<VerifiedModelPackage> {
@@ -266,6 +284,7 @@ pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<Verifi
         manifest,
         selected_variant,
         manifest_sha256: format!("{:x}", Sha256::digest(manifest_bytes)),
+        policy: policy.clone(),
     })
 }
 

@@ -53,6 +53,15 @@ pub struct InstalledModel {
     pub active_generation: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PersistedCapabilitySlot {
+    pub capability: String,
+    pub active_identity: ModelIdentity,
+    pub active_generation: u64,
+    pub previous_identity: Option<ModelIdentity>,
+    pub previous_generation: Option<u64>,
+}
+
 #[derive(Clone)]
 pub struct ModelRepository {
     pool: SqlitePool,
@@ -104,6 +113,22 @@ impl ModelRepository {
         .execute(&pool)
         .await
         .map_err(|error| ModelError::io("initialize model schema", error))?;
+        base_db::sqlx::query(
+            "CREATE TABLE IF NOT EXISTS avai_model_capability_slot (\
+             capability TEXT NOT NULL PRIMARY KEY,\
+             active_model_id TEXT NOT NULL,\
+             active_version TEXT NOT NULL,\
+             active_revision TEXT NOT NULL,\
+             active_generation INTEGER NOT NULL,\
+             previous_model_id TEXT NULL,\
+             previous_version TEXT NULL,\
+             previous_revision TEXT NULL,\
+             previous_generation INTEGER NULL\
+             )",
+        )
+        .execute(&pool)
+        .await
+        .map_err(|error| ModelError::io("initialize model slot schema", error))?;
         Ok(Self {
             pool,
             packages_root: Arc::new(packages_root),
@@ -162,6 +187,7 @@ impl ModelRepository {
                 let relative = safe_relative_path(&file.path)?;
                 copy_confined_file(&package.root, &relative, &staging.join(&relative))?;
             }
+            package.verify_staged_copy(&staging)?;
             if let Some(parent) = destination.parent() {
                 create_directory(parent)?;
             }
@@ -245,7 +271,10 @@ impl ModelRepository {
 
     pub(crate) async fn max_generation(&self) -> ModelResult<u64> {
         let value: i64 = base_db::sqlx::query_scalar(
-            "SELECT COALESCE(MAX(active_generation), 0) FROM avai_model_revision",
+            "SELECT COALESCE(MAX(generation), 0) FROM (\
+             SELECT active_generation AS generation FROM avai_model_capability_slot \
+             UNION ALL SELECT previous_generation FROM avai_model_capability_slot\
+             )",
         )
         .fetch_one(&self.pool)
         .await
@@ -291,6 +320,8 @@ impl ModelRepository {
         &self,
         identity: &ModelIdentity,
         no_longer_active: &[ModelIdentity],
+        failed_models: &[ModelIdentity],
+        slots: &[PersistedCapabilitySlot],
         generation: u64,
         now_epoch_ms: i64,
     ) -> ModelResult<()> {
@@ -313,6 +344,19 @@ impl ModelRepository {
             .await
             .map_err(|error| ModelError::io("persist previous model state", error))?;
         }
+        for failed in failed_models {
+            base_db::sqlx::query(
+                "UPDATE avai_model_revision SET state=?,active_generation=NULL,last_error=? WHERE model_id=? AND version=? AND revision=?",
+            )
+            .bind(ModelState::Failed as i32)
+            .bind("active health check failed")
+            .bind(&failed.model_id)
+            .bind(&failed.version)
+            .bind(&failed.revision)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| ModelError::io("persist failed active model state", error))?;
+        }
         let updated = base_db::sqlx::query(
             "UPDATE avai_model_revision SET state=?, active_generation=?, activated_at_ms=?, last_error=NULL WHERE model_id=? AND version=? AND revision=?",
         )
@@ -331,10 +375,97 @@ impl ModelRepository {
                 "installed model does not exist",
             ));
         }
+        for slot in slots {
+            let active_generation = i64::try_from(slot.active_generation).map_err(|_| {
+                ModelError::new("model_generation_invalid", "generation is too large")
+            })?;
+            let previous_generation = slot
+                .previous_generation
+                .map(i64::try_from)
+                .transpose()
+                .map_err(|_| {
+                    ModelError::new("model_generation_invalid", "generation is too large")
+                })?;
+            base_db::sqlx::query(
+                "INSERT INTO avai_model_capability_slot(\
+                 capability,active_model_id,active_version,active_revision,active_generation,\
+                 previous_model_id,previous_version,previous_revision,previous_generation\
+                 ) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(capability) DO UPDATE SET \
+                 active_model_id=excluded.active_model_id,active_version=excluded.active_version,\
+                 active_revision=excluded.active_revision,active_generation=excluded.active_generation,\
+                 previous_model_id=excluded.previous_model_id,previous_version=excluded.previous_version,\
+                 previous_revision=excluded.previous_revision,previous_generation=excluded.previous_generation",
+            )
+            .bind(&slot.capability)
+            .bind(&slot.active_identity.model_id)
+            .bind(&slot.active_identity.version)
+            .bind(&slot.active_identity.revision)
+            .bind(active_generation)
+            .bind(
+                slot.previous_identity
+                    .as_ref()
+                    .map(|identity| &identity.model_id),
+            )
+            .bind(
+                slot.previous_identity
+                    .as_ref()
+                    .map(|identity| &identity.version),
+            )
+            .bind(
+                slot.previous_identity
+                    .as_ref()
+                    .map(|identity| &identity.revision),
+            )
+            .bind(previous_generation)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| ModelError::io("persist model capability slot", error))?;
+        }
         transaction
             .commit()
             .await
             .map_err(|error| ModelError::io("commit model activation", error))
+    }
+
+    pub(crate) async fn list_slots(&self) -> ModelResult<Vec<PersistedCapabilitySlot>> {
+        let rows = base_db::sqlx::query(
+            "SELECT capability,active_model_id,active_version,active_revision,active_generation,\
+             previous_model_id,previous_version,previous_revision,previous_generation \
+             FROM avai_model_capability_slot ORDER BY capability",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| ModelError::io("list model capability slots", error))?;
+        rows.into_iter().map(decode_slot).collect()
+    }
+
+    pub(crate) async fn clear_previous(&self, capability: &str) -> ModelResult<()> {
+        base_db::sqlx::query(
+            "UPDATE avai_model_capability_slot SET previous_model_id=NULL,previous_version=NULL,\
+             previous_revision=NULL,previous_generation=NULL WHERE capability=?",
+        )
+        .bind(capability)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| ModelError::io("retire previous model slot", error))?;
+        Ok(())
+    }
+
+    pub(crate) async fn reconcile_unreferenced_ready(&self) -> ModelResult<()> {
+        base_db::sqlx::query(
+            "UPDATE avai_model_revision SET state=?,active_generation=NULL WHERE state=? AND NOT EXISTS (\
+             SELECT 1 FROM avai_model_capability_slot slot WHERE \
+             slot.previous_model_id=avai_model_revision.model_id AND \
+             slot.previous_version=avai_model_revision.version AND \
+             slot.previous_revision=avai_model_revision.revision\
+             )",
+        )
+        .bind(ModelState::Installed as i32)
+        .bind(ModelState::Ready as i32)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| ModelError::io("reconcile ready model state", error))?;
+        Ok(())
     }
 
     pub async fn remove(&self, identity: &ModelIdentity) -> ModelResult<()> {
@@ -438,6 +569,52 @@ fn decode_model(row: base_db::sqlx::sqlite::SqliteRow) -> ModelResult<InstalledM
             .map_err(|error| ModelError::io("parse model self-tests", error))?,
         state: ModelState::try_from(row.try_get::<i32, _>("state").map_err(decode_error)?)?,
         active_generation: active_generation
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| ModelError::new("model_generation_invalid", "negative generation"))?,
+    })
+}
+
+fn decode_slot(row: base_db::sqlx::sqlite::SqliteRow) -> ModelResult<PersistedCapabilitySlot> {
+    let active_generation: i64 = row.try_get("active_generation").map_err(decode_error)?;
+    let previous_model_id: Option<String> =
+        row.try_get("previous_model_id").map_err(decode_error)?;
+    let previous_version: Option<String> = row.try_get("previous_version").map_err(decode_error)?;
+    let previous_revision: Option<String> =
+        row.try_get("previous_revision").map_err(decode_error)?;
+    let previous_generation: Option<i64> =
+        row.try_get("previous_generation").map_err(decode_error)?;
+    let previous_identity = match (previous_model_id, previous_version, previous_revision) {
+        (Some(model_id), Some(version), Some(revision)) => Some(ModelIdentity {
+            model_id,
+            version,
+            revision,
+        }),
+        (None, None, None) => None,
+        _ => {
+            return Err(ModelError::new(
+                "model_slot_invalid",
+                "persisted previous model identity is incomplete",
+            ));
+        }
+    };
+    if previous_identity.is_some() != previous_generation.is_some() {
+        return Err(ModelError::new(
+            "model_slot_invalid",
+            "persisted previous model generation is incomplete",
+        ));
+    }
+    Ok(PersistedCapabilitySlot {
+        capability: row.try_get("capability").map_err(decode_error)?,
+        active_identity: ModelIdentity {
+            model_id: row.try_get("active_model_id").map_err(decode_error)?,
+            version: row.try_get("active_version").map_err(decode_error)?,
+            revision: row.try_get("active_revision").map_err(decode_error)?,
+        },
+        active_generation: u64::try_from(active_generation)
+            .map_err(|_| ModelError::new("model_generation_invalid", "negative generation"))?,
+        previous_identity,
+        previous_generation: previous_generation
             .map(u64::try_from)
             .transpose()
             .map_err(|_| ModelError::new("model_generation_invalid", "negative generation"))?,

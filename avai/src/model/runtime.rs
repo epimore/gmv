@@ -1,9 +1,10 @@
 use std::{
+    collections::{HashMap, HashSet},
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex, RwLock,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
@@ -62,6 +63,11 @@ pub struct FakeRuntimeProvider {
     behavior: FakeRuntimeBehavior,
     started: Arc<AtomicUsize>,
     release: Arc<Notify>,
+    unhealthy_models: Arc<RwLock<HashSet<String>>>,
+    pause_health: Arc<AtomicBool>,
+    health_started: Arc<AtomicUsize>,
+    health_release: Arc<Notify>,
+    dropped: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl FakeRuntimeProvider {
@@ -74,6 +80,11 @@ impl FakeRuntimeProvider {
             behavior,
             started: Arc::new(AtomicUsize::new(0)),
             release: Arc::new(Notify::new()),
+            unhealthy_models: Arc::new(RwLock::new(HashSet::new())),
+            pause_health: Arc::new(AtomicBool::new(false)),
+            health_started: Arc::new(AtomicUsize::new(0)),
+            health_release: Arc::new(Notify::new()),
+            dropped: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -83,6 +94,40 @@ impl FakeRuntimeProvider {
 
     pub fn release_inferences(&self) {
         self.release.notify_waiters();
+    }
+
+    pub fn set_model_unhealthy(&self, model_id: &str, unhealthy: bool) {
+        let mut models = self
+            .unhealthy_models
+            .write()
+            .expect("health state poisoned");
+        if unhealthy {
+            models.insert(model_id.to_string());
+        } else {
+            models.remove(model_id);
+        }
+    }
+
+    pub fn pause_health_checks(&self) {
+        self.pause_health.store(true, Ordering::Release);
+    }
+
+    pub fn started_health_checks(&self) -> usize {
+        self.health_started.load(Ordering::Acquire)
+    }
+
+    pub fn release_health_checks(&self) {
+        self.pause_health.store(false, Ordering::Release);
+        self.health_release.notify_waiters();
+    }
+
+    pub fn dropped_instances(&self, model_id: &str) -> usize {
+        self.dropped
+            .lock()
+            .expect("drop state poisoned")
+            .get(model_id)
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -115,6 +160,11 @@ impl RuntimeProvider for FakeRuntimeProvider {
                 behavior: self.behavior.clone(),
                 started: self.started.clone(),
                 release: self.release.clone(),
+                unhealthy_models: self.unhealthy_models.clone(),
+                pause_health: self.pause_health.clone(),
+                health_started: self.health_started.clone(),
+                health_release: self.health_release.clone(),
+                dropped: self.dropped.clone(),
             }) as Arc<dyn ModelInstance>)
         })
     }
@@ -127,6 +177,18 @@ struct FakeModelInstance {
     behavior: FakeRuntimeBehavior,
     started: Arc<AtomicUsize>,
     release: Arc<Notify>,
+    unhealthy_models: Arc<RwLock<HashSet<String>>>,
+    pause_health: Arc<AtomicBool>,
+    health_started: Arc<AtomicUsize>,
+    health_release: Arc<Notify>,
+    dropped: Arc<Mutex<HashMap<String, usize>>>,
+}
+
+impl Drop for FakeModelInstance {
+    fn drop(&mut self) {
+        let mut dropped = self.dropped.lock().expect("drop state poisoned");
+        *dropped.entry(self.identity.model_id.clone()).or_default() += 1;
+    }
 }
 
 impl ModelInstance for FakeModelInstance {
@@ -163,7 +225,18 @@ impl ModelInstance for FakeModelInstance {
 
     fn health<'a>(&'a self) -> RuntimeFuture<'a, ()> {
         Box::pin(async move {
-            if self.behavior.fail_health {
+            let released = self.health_release.notified();
+            self.health_started.fetch_add(1, Ordering::AcqRel);
+            if self.pause_health.load(Ordering::Acquire) {
+                released.await;
+            }
+            if self.behavior.fail_health
+                || self
+                    .unhealthy_models
+                    .read()
+                    .expect("health state poisoned")
+                    .contains(&self.identity.model_id)
+            {
                 Err(ModelError::new(
                     "model_health_failed",
                     "fake runtime health failure",

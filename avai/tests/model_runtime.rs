@@ -8,9 +8,9 @@ use std::{
 };
 
 use avai::model::{
-    FakeRuntimeBehavior, FakeRuntimeProvider, ModelIdentity, ModelManager, ModelManagerConfig,
-    ModelPackageManifest, ModelRepository, ModelState, PackagePolicy, RuntimeProvider,
-    model_package_signing_payload, verify_package,
+    FakeRuntimeBehavior, FakeRuntimeProvider, HealthReconcile, ModelIdentity, ModelManager,
+    ModelManagerConfig, ModelPackageManifest, ModelRepository, ModelState, PackagePolicy,
+    RuntimeProvider, model_package_signing_payload, verify_package,
 };
 use base::{
     base64::Engine,
@@ -257,6 +257,29 @@ async fn repository_installs_immutable_revision_and_persists_state() {
 }
 
 #[tokio::test]
+async fn install_rejects_package_mutated_after_verification() {
+    let root = TestRoot::new("install-toctou");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    write_package(&source, "model-a", "1", "rev-a");
+    let package = verify_package(&source, &policy()).unwrap();
+    std::fs::write(source.join("model/model.bin"), b"fake-modex").unwrap();
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+
+    assert_eq!(
+        repository.install(&package, 1).await.unwrap_err().code,
+        "model_file_hash_mismatch"
+    );
+    assert!(repository.get(&model_a).await.unwrap().is_none());
+    assert!(!root.path().join("models/packages/model-a/1/rev-a").exists());
+    repository.close().await;
+}
+
+#[tokio::test]
 async fn atomic_switch_keeps_in_flight_tasks_on_captured_generation() {
     let root = TestRoot::new("atomic-switch");
     let repository = repository_with_models(&root).await;
@@ -295,23 +318,272 @@ async fn atomic_switch_keeps_in_flight_tasks_on_captured_generation() {
     assert!(generation_b > generation_a);
     let new_task = manager.capture(CAPABILITY).await.unwrap();
     assert_eq!(new_task.identity(), &model_b);
+    assert_eq!(
+        manager
+            .retire_previous(CAPABILITY, 14)
+            .await
+            .unwrap_err()
+            .code,
+        "model_in_use"
+    );
+    assert_eq!(fake.dropped_instances("model-a"), 0);
     fake.release_inferences();
     for task in tasks {
         let result = task.await.unwrap();
         assert_eq!(result.actual_model.model_id, "model-a");
     }
     drop(new_task);
+    assert_eq!(fake.dropped_instances("model-a"), 0);
     assert_eq!(
-        manager.retire_previous(CAPABILITY, 14).await.unwrap(),
+        manager.retire_previous(CAPABILITY, 15).await.unwrap(),
         Some(model_a.clone())
     );
-    manager.unload(&model_a, 15).await.unwrap();
+    manager.unload(&model_a, 16).await.unwrap();
+    assert_eq!(fake.dropped_instances("model-a"), 1);
+    manager.unload(&model_a, 17).await.unwrap();
+    assert_eq!(fake.dropped_instances("model-a"), 1);
     assert!(
         manager
             .status()
             .await
             .iter()
             .all(|status| status.identity != model_a)
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn activate_and_unload_share_one_lifecycle_boundary() {
+    let root = TestRoot::new("activate-unload-race");
+    let repository = repository_with_models(&root).await;
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    manager.preload(&model_a, 10).await.unwrap();
+    manager.preload(&model_b, 11).await.unwrap();
+    manager.activate(&model_a, 12).await.unwrap();
+
+    let health_before = fake.started_health_checks();
+    fake.pause_health_checks();
+    let activate_manager = manager.clone();
+    let activate_model = model_b.clone();
+    let activate =
+        tokio::spawn(async move { activate_manager.activate(&activate_model, 13).await });
+    while fake.started_health_checks() == health_before {
+        tokio::task::yield_now().await;
+    }
+    let unload_manager = manager.clone();
+    let unload_model = model_b.clone();
+    let unload = tokio::spawn(async move { unload_manager.unload(&unload_model, 14).await });
+    tokio::task::yield_now().await;
+    assert!(!unload.is_finished());
+    fake.release_health_checks();
+
+    assert!(activate.await.unwrap().is_ok());
+    assert_eq!(unload.await.unwrap().unwrap_err().code, "model_in_use");
+    assert_eq!(
+        manager.capture(CAPABILITY).await.unwrap().identity(),
+        &model_b
+    );
+    assert_eq!(
+        repository.get(&model_b).await.unwrap().unwrap().state,
+        ModelState::Active
+    );
+    assert!(
+        manager
+            .status()
+            .await
+            .iter()
+            .any(|status| status.identity == model_b)
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn restart_reconciles_ready_and_restores_previous_for_rollback() {
+    let root = TestRoot::new("restart-slots");
+    let repository = repository_with_models(&root).await;
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+
+    let ready_manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    ready_manager.preload(&model_a, 20).await.unwrap();
+    drop(ready_manager);
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert!(restarted.status().await.is_empty());
+    assert_eq!(
+        repository.get(&model_a).await.unwrap().unwrap().state,
+        ModelState::Installed
+    );
+
+    restarted.preload(&model_a, 21).await.unwrap();
+    restarted.preload(&model_b, 22).await.unwrap();
+    restarted.activate(&model_a, 23).await.unwrap();
+    restarted.activate(&model_b, 24).await.unwrap();
+    drop(restarted);
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_b
+    );
+    restarted.rollback(CAPABILITY, 25).await.unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn transient_lifecycle_states_are_never_durably_exposed() {
+    let root = TestRoot::new("stable-states-only");
+    let repository = repository_with_models(&root).await;
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+
+    let health_before = fake.started_health_checks();
+    fake.pause_health_checks();
+    let preload_manager = manager.clone();
+    let preload_model = model_a.clone();
+    let preload = tokio::spawn(async move { preload_manager.preload(&preload_model, 30).await });
+    while fake.started_health_checks() == health_before {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(
+        repository.get(&model_a).await.unwrap().unwrap().state,
+        ModelState::Installed
+    );
+    fake.release_health_checks();
+    preload.await.unwrap().unwrap();
+
+    manager.preload(&model_b, 31).await.unwrap();
+    manager.activate(&model_a, 32).await.unwrap();
+    let held = manager.capture(CAPABILITY).await.unwrap();
+    manager.activate(&model_b, 33).await.unwrap();
+    assert_eq!(
+        manager
+            .retire_previous(CAPABILITY, 34)
+            .await
+            .unwrap_err()
+            .code,
+        "model_in_use"
+    );
+    drop(held);
+    drop(manager);
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    restarted.rollback(CAPABILITY, 35).await.unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
+    let root = TestRoot::new("health-rollback");
+    let repository = repository_with_models(&root).await;
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    manager.preload(&model_a, 40).await.unwrap();
+    manager.preload(&model_b, 41).await.unwrap();
+    manager.activate(&model_a, 42).await.unwrap();
+    manager.activate(&model_b, 43).await.unwrap();
+    fake.set_model_unhealthy("model-b", true);
+
+    let result = manager
+        .reconcile_active_health(CAPABILITY, 44)
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        HealthReconcile::RolledBack {
+            failed,
+            restored,
+            ..
+        } if failed == model_b && restored == model_a
+    ));
+    assert_eq!(
+        manager.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    assert_eq!(
+        repository.get(&model_b).await.unwrap().unwrap().state,
+        ModelState::Failed
+    );
+    drop(manager);
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
     );
     repository.close().await;
 }
