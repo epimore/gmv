@@ -20,6 +20,7 @@ use ed25519_dalek::{Signer, SigningKey};
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(1);
 const CAPABILITY: &str = "vehicle.detect";
+const SECOND_CAPABILITY: &str = "vision.object.detect";
 
 struct TestRoot(PathBuf);
 
@@ -46,6 +47,16 @@ impl Drop for TestRoot {
 }
 
 fn write_package(root: &Path, model_id: &str, version: &str, revision: &str) {
+    write_package_with_capabilities(root, model_id, version, revision, &[CAPABILITY]);
+}
+
+fn write_package_with_capabilities(
+    root: &Path,
+    model_id: &str,
+    version: &str,
+    revision: &str,
+    capabilities: &[&str],
+) {
     let files = [
         ("model/model.bin", b"fake-model".as_slice()),
         (
@@ -71,8 +82,13 @@ fn write_package(root: &Path, model_id: &str, version: &str, revision: &str) {
         })
         .collect::<Vec<_>>()
         .join("\n");
+    let capabilities_yaml = capabilities
+        .iter()
+        .map(|capability| format!("  - {capability}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let unsigned_manifest = format!(
-        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n  - {CAPABILITY}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
+        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n{capabilities_yaml}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
         std::env::consts::ARCH
     );
     let manifest = sign_manifest(&unsigned_manifest);
@@ -139,6 +155,21 @@ async fn repository_with_models(root: &TestRoot) -> ModelRepository {
         repository.install(&package, 1).await.unwrap();
     }
     repository
+}
+
+async fn install_test_model(
+    repository: &ModelRepository,
+    root: &TestRoot,
+    model_id: &str,
+    version: &str,
+    revision: &str,
+    capabilities: &[&str],
+) {
+    let package_root = root.path().join(format!("source-{revision}"));
+    std::fs::create_dir_all(&package_root).unwrap();
+    write_package_with_capabilities(&package_root, model_id, version, revision, capabilities);
+    let package = verify_package(&package_root, &policy()).unwrap();
+    repository.install(&package, 1).await.unwrap();
 }
 
 #[test]
@@ -276,6 +307,67 @@ async fn install_rejects_package_mutated_after_verification() {
     );
     assert!(repository.get(&model_a).await.unwrap().is_none());
     assert!(!root.path().join("models/packages/model-a/1/rev-a").exists());
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn install_recovers_crash_after_rename_before_database_commit() {
+    let root = TestRoot::new("install-rename-crash");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    write_package(&source, "model-a", "1", "rev-a");
+    let package = verify_package(&source, &policy()).unwrap();
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    let destination = root.path().join("models/packages/model-a/1/rev-a");
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+
+    std::fs::rename(&source, &destination).unwrap();
+    assert!(
+        repository
+            .get(&identity("model-a", "1", "rev-a"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let installed = repository.install(&package, 2).await.unwrap();
+    assert_eq!(installed.installed_path, destination);
+    assert_eq!(repository.list().await.unwrap().len(), 1);
+    assert!(installed.installed_path.join("model/model.bin").is_file());
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn install_rebuilds_unverified_orphan_instead_of_accepting_it() {
+    let root = TestRoot::new("install-invalid-orphan");
+    let source = root.path().join("source");
+    std::fs::create_dir_all(&source).unwrap();
+    write_package(&source, "model-a", "1", "rev-a");
+    let package = verify_package(&source, &policy()).unwrap();
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    let destination = root.path().join("models/packages/model-a/1/rev-a");
+    std::fs::create_dir_all(&destination).unwrap();
+    write_package(&destination, "model-a", "1", "rev-a");
+    std::fs::write(destination.join("model/model.bin"), b"unverified").unwrap();
+
+    let installed = repository.install(&package, 2).await.unwrap();
+    assert_eq!(
+        std::fs::read(installed.installed_path.join("model/model.bin")).unwrap(),
+        b"fake-model"
+    );
+    assert_eq!(repository.list().await.unwrap().len(), 1);
+    assert_eq!(
+        std::fs::read_dir(root.path().join("models/quarantine"))
+            .unwrap()
+            .count(),
+        0
+    );
     repository.close().await;
 }
 
@@ -555,12 +647,15 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
         .await
         .unwrap();
     assert!(matches!(
-        result,
+        &result,
         HealthReconcile::RolledBack {
             failed,
             restored,
-            ..
-        } if failed == model_b && restored == model_a
+            cleared_capabilities,
+        } if failed == &model_b
+            && restored.len() == 1
+            && restored[0].identity == model_a
+            && cleared_capabilities.is_empty()
     ));
     assert_eq!(
         manager.capture(CAPABILITY).await.unwrap().identity(),
@@ -570,6 +665,7 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
         repository.get(&model_b).await.unwrap().unwrap().state,
         ModelState::Failed
     );
+    assert!(!manager.active_identities().await.contains(&model_b));
     drop(manager);
     let restarted = ModelManager::open(
         repository.clone(),
@@ -584,6 +680,223 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
     assert_eq!(
         restarted.capture(CAPABILITY).await.unwrap().identity(),
         &model_a
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
+    let root = TestRoot::new("multi-capability-health-rollback");
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    install_test_model(&repository, &root, "model-a", "1", "rev-a", &[CAPABILITY]).await;
+    install_test_model(
+        &repository,
+        &root,
+        "model-c",
+        "1",
+        "rev-c",
+        &[SECOND_CAPABILITY],
+    )
+    .await;
+    install_test_model(
+        &repository,
+        &root,
+        "model-b",
+        "2",
+        "rev-b",
+        &[CAPABILITY, SECOND_CAPABILITY],
+    )
+    .await;
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    let model_c = identity("model-c", "1", "rev-c");
+    for model in [&model_a, &model_c, &model_b] {
+        manager.preload(model, 50).await.unwrap();
+    }
+    manager.activate(&model_a, 51).await.unwrap();
+    manager.activate(&model_c, 52).await.unwrap();
+    manager.activate(&model_b, 53).await.unwrap();
+    fake.set_model_unhealthy("model-b", true);
+
+    let result = manager
+        .reconcile_active_health(CAPABILITY, 54)
+        .await
+        .unwrap();
+    let HealthReconcile::RolledBack {
+        failed,
+        restored,
+        cleared_capabilities,
+    } = result
+    else {
+        panic!("expected model rollback");
+    };
+    assert_eq!(failed, model_b);
+    assert!(cleared_capabilities.is_empty());
+    assert_eq!(restored.len(), 2);
+    assert!(
+        restored
+            .iter()
+            .any(|recovery| { recovery.capability == CAPABILITY && recovery.identity == model_a })
+    );
+    assert!(restored.iter().any(|recovery| {
+        recovery.capability == SECOND_CAPABILITY && recovery.identity == model_c
+    }));
+    assert_eq!(
+        manager.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    assert_eq!(
+        manager.capture(SECOND_CAPABILITY).await.unwrap().identity(),
+        &model_c
+    );
+    assert_eq!(
+        repository.get(&model_b).await.unwrap().unwrap().state,
+        ModelState::Failed
+    );
+    assert_eq!(
+        manager.active_identities().await,
+        HashSet::from([model_a.clone(), model_c.clone()])
+    );
+    drop(manager);
+
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    assert_eq!(
+        restarted
+            .capture(SECOND_CAPABILITY)
+            .await
+            .unwrap()
+            .identity(),
+        &model_c
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn restart_falls_back_when_persisted_active_is_unhealthy() {
+    let root = TestRoot::new("startup-health-fallback");
+    let repository = repository_with_models(&root).await;
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    manager.preload(&model_a, 60).await.unwrap();
+    manager.preload(&model_b, 61).await.unwrap();
+    manager.activate(&model_a, 62).await.unwrap();
+    manager.activate(&model_b, 63).await.unwrap();
+    fake.set_model_unhealthy("model-b", true);
+    drop(manager);
+
+    let restarted = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake)],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    assert_eq!(
+        repository.get(&model_a).await.unwrap().unwrap().state,
+        ModelState::Active
+    );
+    assert_eq!(
+        repository.get(&model_b).await.unwrap().unwrap().state,
+        ModelState::Failed
+    );
+    repository.close().await;
+}
+
+#[tokio::test]
+async fn restart_reports_stable_error_when_active_and_previous_both_fail() {
+    let root = TestRoot::new("startup-recovery-failure");
+    let repository = repository_with_models(&root).await;
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    manager.preload(&model_a, 70).await.unwrap();
+    manager.preload(&model_b, 71).await.unwrap();
+    manager.activate(&model_a, 72).await.unwrap();
+    manager.activate(&model_b, 73).await.unwrap();
+    drop(manager);
+
+    let error = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior {
+                fail_preload: true,
+                ..FakeRuntimeBehavior::default()
+            },
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .err()
+    .unwrap();
+    assert_eq!(error.code, "model_startup_recovery_failed");
+    assert_eq!(
+        repository.get(&model_b).await.unwrap().unwrap().state,
+        ModelState::Active
+    );
+    assert_eq!(
+        repository.get(&model_a).await.unwrap().unwrap().state,
+        ModelState::Ready
+    );
+
+    let retried = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        retried.capture(CAPABILITY).await.unwrap().identity(),
+        &model_b
     );
     repository.close().await;
 }

@@ -62,6 +62,13 @@ pub(crate) struct PersistedCapabilitySlot {
     pub previous_generation: Option<u64>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct CapabilityRecovery {
+    pub capability: String,
+    pub expected_active_generation: u64,
+    pub replacement: Option<(ModelIdentity, u64)>,
+}
+
 #[derive(Clone)]
 pub struct ModelRepository {
     pool: SqlitePool,
@@ -156,11 +163,29 @@ impl ModelRepository {
             .join(&identity.model_id)
             .join(&identity.version)
             .join(&identity.revision);
+        let mut quarantined_orphan = None;
         if destination.exists() {
-            return Err(ModelError::new(
-                "model_revision_conflict",
-                "model revision directory already exists without matching metadata",
+            if package.verify_staged_copy(&destination).is_ok() {
+                return self
+                    .persist_installed(package, &destination, now_epoch_ms)
+                    .await;
+            }
+            let quarantine = self.quarantine_root.join(format!(
+                ".{}-{}-{}.orphan-{}-{now_epoch_ms}",
+                identity.model_id,
+                identity.version,
+                identity.revision,
+                std::process::id()
             ));
+            if quarantine.exists() {
+                return Err(ModelError::new(
+                    "model_install_in_progress",
+                    "model orphan quarantine path already exists",
+                ));
+            }
+            std::fs::rename(&destination, &quarantine)
+                .map_err(|error| ModelError::io("quarantine orphan model revision", error))?;
+            quarantined_orphan = Some(quarantine);
         }
         let staging = destination
             .parent()
@@ -199,11 +224,35 @@ impl ModelRepository {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(error);
         }
+        let installed = self
+            .persist_installed(package, &destination, now_epoch_ms)
+            .await;
+        let installed = match installed {
+            Ok(installed) => installed,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&destination);
+                return Err(error);
+            }
+        };
+        if let Some(quarantine) = quarantined_orphan {
+            std::fs::remove_dir_all(&quarantine)
+                .map_err(|error| ModelError::io("remove quarantined orphan revision", error))?;
+        }
+        Ok(installed)
+    }
+
+    async fn persist_installed(
+        &self,
+        package: &VerifiedModelPackage,
+        destination: &Path,
+        now_epoch_ms: i64,
+    ) -> ModelResult<InstalledModel> {
+        let identity = &package.manifest.metadata;
         let capabilities_json = base::serde_json::to_string(&package.manifest.capabilities)
             .map_err(|error| ModelError::io("encode model capabilities", error))?;
         let self_tests_json = base::serde_json::to_string(&package.manifest.self_test)
             .map_err(|error| ModelError::io("encode model self-tests", error))?;
-        let result = base_db::sqlx::query(
+        base_db::sqlx::query(
             "INSERT INTO avai_model_revision(\
              model_id,version,revision,capabilities_json,runtime,installed_path,manifest_sha256,\
              memory_mb,vram_mb,max_batch,self_tests_json,state,installed_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -236,11 +285,8 @@ impl ModelRepository {
         .bind(ModelState::Installed as i32)
         .bind(now_epoch_ms)
         .execute(&self.pool)
-        .await;
-        if let Err(error) = result {
-            let _ = std::fs::remove_dir_all(&destination);
-            return Err(ModelError::io("persist installed model", error));
-        }
+        .await
+        .map_err(|error| ModelError::io("persist installed model", error))?;
         self.get(identity).await?.ok_or_else(|| {
             ModelError::new(
                 "model_install_failed",
@@ -320,7 +366,6 @@ impl ModelRepository {
         &self,
         identity: &ModelIdentity,
         no_longer_active: &[ModelIdentity],
-        failed_models: &[ModelIdentity],
         slots: &[PersistedCapabilitySlot],
         generation: u64,
         now_epoch_ms: i64,
@@ -343,19 +388,6 @@ impl ModelRepository {
             .execute(&mut *transaction)
             .await
             .map_err(|error| ModelError::io("persist previous model state", error))?;
-        }
-        for failed in failed_models {
-            base_db::sqlx::query(
-                "UPDATE avai_model_revision SET state=?,active_generation=NULL,last_error=? WHERE model_id=? AND version=? AND revision=?",
-            )
-            .bind(ModelState::Failed as i32)
-            .bind("active health check failed")
-            .bind(&failed.model_id)
-            .bind(&failed.version)
-            .bind(&failed.revision)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| ModelError::io("persist failed active model state", error))?;
         }
         let updated = base_db::sqlx::query(
             "UPDATE avai_model_revision SET state=?, active_generation=?, activated_at_ms=?, last_error=NULL WHERE model_id=? AND version=? AND revision=?",
@@ -449,6 +481,137 @@ impl ModelRepository {
         .await
         .map_err(|error| ModelError::io("retire previous model slot", error))?;
         Ok(())
+    }
+
+    pub(crate) async fn recover_failed_active(
+        &self,
+        failed: &ModelIdentity,
+        recoveries: &[CapabilityRecovery],
+        now_epoch_ms: i64,
+        reason: &str,
+    ) -> ModelResult<()> {
+        if recoveries.is_empty() {
+            return Err(ModelError::new(
+                "model_recovery_invalid",
+                "failed model has no active capability slots to recover",
+            ));
+        }
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| ModelError::io("begin failed model recovery", error))?;
+        for recovery in recoveries {
+            let expected_generation =
+                i64::try_from(recovery.expected_active_generation).map_err(|_| {
+                    ModelError::new("model_generation_invalid", "generation is too large")
+                })?;
+            let changed = if let Some((replacement, generation)) = &recovery.replacement {
+                let generation = i64::try_from(*generation).map_err(|_| {
+                    ModelError::new("model_generation_invalid", "generation is too large")
+                })?;
+                let changed = base_db::sqlx::query(
+                    "UPDATE avai_model_capability_slot SET \
+                     active_model_id=?,active_version=?,active_revision=?,active_generation=?,\
+                     previous_model_id=NULL,previous_version=NULL,previous_revision=NULL,previous_generation=NULL \
+                     WHERE capability=? AND active_model_id=? AND active_version=? AND active_revision=? AND active_generation=?",
+                )
+                .bind(&replacement.model_id)
+                .bind(&replacement.version)
+                .bind(&replacement.revision)
+                .bind(generation)
+                .bind(&recovery.capability)
+                .bind(&failed.model_id)
+                .bind(&failed.version)
+                .bind(&failed.revision)
+                .bind(expected_generation)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| ModelError::io("promote recovery model slot", error))?;
+                base_db::sqlx::query(
+                    "UPDATE avai_model_revision SET state=?,active_generation=?,activated_at_ms=?,last_error=NULL \
+                     WHERE model_id=? AND version=? AND revision=?",
+                )
+                .bind(ModelState::Active as i32)
+                .bind(generation)
+                .bind(now_epoch_ms)
+                .bind(&replacement.model_id)
+                .bind(&replacement.version)
+                .bind(&replacement.revision)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| ModelError::io("persist recovery model state", error))?;
+                changed
+            } else {
+                base_db::sqlx::query(
+                    "DELETE FROM avai_model_capability_slot WHERE capability=? AND \
+                     active_model_id=? AND active_version=? AND active_revision=? AND active_generation=?",
+                )
+                .bind(&recovery.capability)
+                .bind(&failed.model_id)
+                .bind(&failed.version)
+                .bind(&failed.revision)
+                .bind(expected_generation)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| ModelError::io("clear failed model slot", error))?
+            };
+            if changed.rows_affected() != 1 {
+                return Err(ModelError::new(
+                    "model_recovery_conflict",
+                    "persisted capability slot changed during recovery",
+                ));
+            }
+        }
+        base_db::sqlx::query(
+            "UPDATE avai_model_capability_slot SET previous_model_id=NULL,previous_version=NULL,\
+             previous_revision=NULL,previous_generation=NULL WHERE previous_model_id=? AND \
+             previous_version=? AND previous_revision=?",
+        )
+        .bind(&failed.model_id)
+        .bind(&failed.version)
+        .bind(&failed.revision)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| ModelError::io("clear failed previous model references", error))?;
+        let remaining: i64 = base_db::sqlx::query_scalar(
+            "SELECT COUNT(*) FROM avai_model_capability_slot WHERE active_model_id=? AND \
+             active_version=? AND active_revision=?",
+        )
+        .bind(&failed.model_id)
+        .bind(&failed.version)
+        .bind(&failed.revision)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| ModelError::io("verify failed model slot recovery", error))?;
+        if remaining != 0 {
+            return Err(ModelError::new(
+                "model_recovery_conflict",
+                "not every active capability of the failed model was recovered",
+            ));
+        }
+        let updated = base_db::sqlx::query(
+            "UPDATE avai_model_revision SET state=?,active_generation=NULL,last_error=? WHERE \
+             model_id=? AND version=? AND revision=?",
+        )
+        .bind(ModelState::Failed as i32)
+        .bind(reason)
+        .bind(&failed.model_id)
+        .bind(&failed.version)
+        .bind(&failed.revision)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| ModelError::io("persist failed recovered model", error))?;
+        if updated.rows_affected() != 1 {
+            return Err(ModelError::new(
+                "model_not_found",
+                "failed model revision does not exist",
+            ));
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| ModelError::io("commit failed model recovery", error))
     }
 
     pub(crate) async fn reconcile_unreferenced_ready(&self) -> ModelResult<()> {

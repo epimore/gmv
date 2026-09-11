@@ -3,7 +3,10 @@ mod package;
 mod repository;
 mod runtime;
 
-pub use manager::{ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelStatus};
+pub use manager::{
+    ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelStatus,
+    RecoveredCapability,
+};
 pub use package::{
     LicenseSpec, ModelFile, ModelIdentity, ModelPackageManifest, PackagePolicy, ResourceHints,
     ResultSchema, RuntimeVariant, SelfTestCase, SigningSpec, VerifiedModelPackage,
