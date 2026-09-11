@@ -44,6 +44,38 @@ struct LegacyCommandReceipt {
     completed_at_epoch_ms: i64,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct LegacyArtifactManifest {
+    #[prost(string, tag = "1")]
+    artifact_id: String,
+    #[prost(string, tag = "2")]
+    version: String,
+    #[prost(string, tag = "3")]
+    revision: String,
+    #[prost(int32, tag = "4")]
+    kind: i32,
+    #[prost(string, tag = "5")]
+    platform: String,
+    #[prost(string, tag = "6")]
+    architecture: String,
+    #[prost(uint64, tag = "9")]
+    content_size: u64,
+    #[prost(string, tag = "13")]
+    package_layout_version: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct LegacyDesiredState {
+    #[prost(string, tag = "1")]
+    assignment_id: String,
+    #[prost(string, tag = "2")]
+    channel: String,
+    #[prost(message, optional, tag = "3")]
+    artifact: Option<LegacyArtifactManifest>,
+    #[prost(int64, tag = "4")]
+    deadline_epoch_ms: i64,
+}
+
 fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
 }
@@ -269,6 +301,202 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
             );
         }
     }
+}
+
+#[test]
+fn artifact_compatibility_contract_is_additive_typed_and_safe() {
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    let manifest = descriptor_message(file, "ArtifactManifest");
+    for (field, number) in [
+        ("artifact_id", 1),
+        ("version", 2),
+        ("revision", 3),
+        ("kind", 4),
+        ("platform", 5),
+        ("architecture", 6),
+        ("required_gmv_center_agent_version", 7),
+        ("gmv_compatibility", 8),
+        ("content_size", 9),
+        ("package_layout_version", 13),
+        ("download_url", 19),
+        ("download_expires_at_epoch_ms", 20),
+        ("target_platform", 21),
+        ("target_architecture", 22),
+        ("compatible_component_ids", 23),
+        ("compatible_service_types", 24),
+        ("unpacked_size", 25),
+        ("min_gmv_center_agent_version", 26),
+        ("max_gmv_center_agent_version", 27),
+        ("min_component_version", 28),
+        ("max_component_version", 29),
+        ("package_layout", 30),
+        ("readiness_contract_version", 31),
+        ("config_compatibility", 32),
+    ] {
+        assert_eq!(descriptor_field_number(manifest, field), Some(number));
+    }
+    let desired = descriptor_message(file, "DesiredState");
+    assert_eq!(
+        descriptor_field_number(desired, "target_component_id"),
+        Some(5)
+    );
+
+    for (enum_name, values) in [
+        (
+            "ArtifactKind",
+            &[
+                ("ARTIFACT_KIND_UNSPECIFIED", 0),
+                ("ARTIFACT_KIND_GMV_BUNDLE", 1),
+                ("ARTIFACT_KIND_AI_MODEL", 2),
+                ("ARTIFACT_KIND_COMPONENT_SOFTWARE", 3),
+            ][..],
+        ),
+        (
+            "ArtifactPlatform",
+            &[
+                ("ARTIFACT_PLATFORM_UNSPECIFIED", 0),
+                ("ARTIFACT_PLATFORM_LINUX", 1),
+                ("ARTIFACT_PLATFORM_WINDOWS", 2),
+            ][..],
+        ),
+        (
+            "ArtifactArchitecture",
+            &[
+                ("ARTIFACT_ARCHITECTURE_UNSPECIFIED", 0),
+                ("ARTIFACT_ARCHITECTURE_X86_64", 1),
+                ("ARTIFACT_ARCHITECTURE_AARCH64", 2),
+                ("ARTIFACT_ARCHITECTURE_ARMV7", 3),
+            ][..],
+        ),
+        (
+            "ArtifactPackageLayout",
+            &[
+                ("ARTIFACT_PACKAGE_LAYOUT_UNSPECIFIED", 0),
+                ("ARTIFACT_PACKAGE_LAYOUT_VERSION_1", 1),
+            ][..],
+        ),
+        (
+            "ArtifactConfigCompatibility",
+            &[
+                ("ARTIFACT_CONFIG_COMPATIBILITY_UNSPECIFIED", 0),
+                ("ARTIFACT_CONFIG_COMPATIBILITY_UNCHANGED", 1),
+                (
+                    "ARTIFACT_CONFIG_COMPATIBILITY_DECLARATIVE_MIGRATION_REQUIRED",
+                    2,
+                ),
+            ][..],
+        ),
+    ] {
+        for (value, number) in values {
+            assert_eq!(
+                descriptor_enum_value_number(file, enum_name, value),
+                Some(*number)
+            );
+        }
+    }
+
+    for field in &manifest.field {
+        assert!(
+            ![
+                "shell",
+                "script",
+                "argv",
+                "command",
+                "command_line",
+                "service",
+                "unit",
+                "systemd_unit",
+                "install_path",
+                "absolute_path",
+                "local_path",
+                "release_root",
+                "executable",
+                "destination",
+                "pre_install_script",
+                "post_install_script",
+                "hook",
+            ]
+            .contains(&field.name.as_deref().unwrap_or_default()),
+            "ArtifactManifest exposes an unsafe execution field"
+        );
+    }
+}
+
+#[test]
+fn artifact_compatibility_extension_is_wire_compatible() {
+    use gmv_protocol::gmv_center_agent::v1::{
+        ArtifactArchitecture, ArtifactConfigCompatibility, ArtifactKind, ArtifactManifest,
+        ArtifactPackageLayout, ArtifactPlatform, DesiredState,
+    };
+
+    let legacy = LegacyDesiredState {
+        assignment_id: "assignment-legacy".to_string(),
+        channel: "stable".to_string(),
+        artifact: Some(LegacyArtifactManifest {
+            artifact_id: "gmv".to_string(),
+            version: "1.0.0".to_string(),
+            revision: "revision-1".to_string(),
+            kind: ArtifactKind::GmvBundle as i32,
+            platform: "linux".to_string(),
+            architecture: "x86_64".to_string(),
+            content_size: 1024,
+            package_layout_version: "v1".to_string(),
+        }),
+        deadline_epoch_ms: 10_000,
+    };
+    let current = DesiredState::decode(legacy.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(current.assignment_id, "assignment-legacy");
+    assert!(current.target_component_id.is_empty());
+    let current_manifest = current.artifact.unwrap();
+    assert_eq!(current_manifest.kind, ArtifactKind::GmvBundle as i32);
+    assert_eq!(current_manifest.target_platform, 0);
+    assert!(current_manifest.compatible_component_ids.is_empty());
+
+    let current = DesiredState {
+        assignment_id: "assignment-current".to_string(),
+        channel: "stable".to_string(),
+        artifact: Some(ArtifactManifest {
+            artifact_id: "stream-linux-amd64".to_string(),
+            version: "2.10.0".to_string(),
+            revision: "sha256-immutable".to_string(),
+            kind: ArtifactKind::ComponentSoftware as i32,
+            target_platform: ArtifactPlatform::Linux as i32,
+            target_architecture: ArtifactArchitecture::X8664 as i32,
+            compatible_component_ids: vec!["stream".to_string()],
+            compatible_service_types: vec!["stream".to_string()],
+            unpacked_size: 2048,
+            min_gmv_center_agent_version: "0.1.0".to_string(),
+            max_gmv_center_agent_version: "0.2.0".to_string(),
+            min_component_version: "2.9.0".to_string(),
+            max_component_version: "3.0.0".to_string(),
+            package_layout: ArtifactPackageLayout::Version1 as i32,
+            readiness_contract_version: 1,
+            config_compatibility: ArtifactConfigCompatibility::Unchanged as i32,
+            ..ArtifactManifest::default()
+        }),
+        deadline_epoch_ms: 20_000,
+        target_component_id: "stream".to_string(),
+    };
+    let legacy_view = LegacyDesiredState::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy_view.assignment_id, "assignment-current");
+    assert_eq!(legacy_view.deadline_epoch_ms, 20_000);
+    assert_eq!(legacy_view.artifact.unwrap().version, "2.10.0");
+
+    let unknown = ArtifactManifest {
+        kind: 99_999,
+        target_platform: 99_998,
+        target_architecture: 99_997,
+        package_layout: 99_996,
+        config_compatibility: 99_995,
+        ..ArtifactManifest::default()
+    };
+    let decoded = ArtifactManifest::decode(unknown.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.kind, 99_999);
+    assert_eq!(decoded.target_platform, 99_998);
+    assert_eq!(decoded.target_architecture, 99_997);
+    assert_eq!(decoded.package_layout, 99_996);
+    assert_eq!(decoded.config_compatibility, 99_995);
 }
 
 #[test]
