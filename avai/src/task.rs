@@ -94,6 +94,7 @@ pub struct TaskManager {
     event_sender: Arc<RwLock<Option<NodeEventSender>>>,
     running: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
+    accepting: Arc<AtomicBool>,
 }
 
 impl TaskManager {
@@ -156,6 +157,7 @@ impl TaskManager {
             event_sender,
             running,
             closed: Arc::new(AtomicBool::new(false)),
+            accepting: Arc::new(AtomicBool::new(true)),
         };
         if !pending.is_empty() {
             let recovery_queue = manager.queue.clone();
@@ -190,6 +192,14 @@ impl TaskManager {
         self.running.load(Ordering::Acquire)
     }
 
+    pub fn close_upgrade_admission(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+
+    pub async fn is_upgrade_drained(&self) -> Result<bool, TaskError> {
+        Ok(self.repository.nonterminal_task_count().await? == 0)
+    }
+
     pub async fn create_task(
         &self,
         request: CreateTaskRequest,
@@ -210,10 +220,18 @@ impl TaskManager {
         request: CreateTaskRequest,
         now_epoch_ms: i64,
     ) -> Result<TaskRecord, TaskError> {
-        if self.closed.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
             return Err(TaskError::new(
-                "executor_unavailable",
-                "Avai task manager is stopping",
+                if self.closed.load(Ordering::Acquire) {
+                    "executor_unavailable"
+                } else {
+                    "component_draining"
+                },
+                if self.closed.load(Ordering::Acquire) {
+                    "Avai task manager is stopping"
+                } else {
+                    "Avai is draining for upgrade"
+                },
             ));
         }
         validate_request(&request, &self.identity, &self.capabilities, now_epoch_ms)?;
@@ -788,6 +806,17 @@ impl TaskRepository {
                     .map_err(|error| TaskError::internal("decode_pending", error))
             })
             .collect()
+    }
+
+    async fn nonterminal_task_count(&self) -> Result<usize, TaskError> {
+        let count: i64 =
+            base_db::sqlx::query_scalar("SELECT COUNT(*) FROM avai_task WHERE state IN (?, ?)")
+                .bind(AiTaskState::Pending as i32)
+                .bind(AiTaskState::Running as i32)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|error| TaskError::internal("count_nonterminal", error))?;
+        usize::try_from(count).map_err(|error| TaskError::internal("decode_nonterminal", error))
     }
 
     async fn insert_or_get(
@@ -1394,6 +1423,20 @@ mod tests {
             vec!["task-recovery".to_string()]
         );
         reopened.pool.close().await;
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn upgrade_admission_rejects_new_tasks_without_closing_workers() {
+        let (manager, root) = test_manager().await;
+        manager.close_upgrade_admission();
+        let response = manager
+            .create_task(test_request("task-after-drain"), now_epoch_ms())
+            .await;
+        assert_eq!(response.state, AiTaskState::Failed as i32);
+        assert_eq!(response.error.unwrap().code, "component_draining");
+        assert!(manager.is_upgrade_drained().await.unwrap());
+        manager.close_and_wait().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
 

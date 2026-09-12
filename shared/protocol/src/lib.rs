@@ -39,3 +39,9 @@ pub mod gmv_center_agent {
 }
 
 pub mod gmv_center_agent_mqtt;
+
+pub mod component_management {
+    pub mod v1 {
+        tonic::include_proto!("gmv.component_management.v1");
+    }
+}

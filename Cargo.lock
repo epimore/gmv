@@ -1501,6 +1501,7 @@ dependencies = [
  "base_rpc",
  "gmv-protocol",
  "sys_metrics",
+ "tokio",
  "tokio-stream",
  "tonic",
  "uuid",

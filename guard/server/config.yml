@@ -15,6 +15,8 @@ log:
       level: warn #日志等级
 
 guard:
+  management_component_id: guard
+  management_socket: /run/gmv/guard-management.sock
   http:
     bind_addr: 0.0.0.0:8080
     origins:

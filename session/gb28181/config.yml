@@ -65,6 +65,8 @@ guard:
 
 server:
     grpc:
+        management_component_id: session
+        management_socket: /run/gmv/session-management.sock
         listen_addr: 127.0.0.1:19081 #本机control gRPC实际监听地址
         advertised_url: http://127.0.0.1:19081 #注册给guard和Stream回调使用的完整可达地址；scheme独立于本机TLS
         tls:

@@ -24,6 +24,10 @@ pub struct GuardAppConfig {
     pub database: DatabaseConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
+    #[serde(default)]
+    pub management_socket: Option<PathBuf>,
+    #[serde(default = "default_management_component_id")]
+    pub management_component_id: String,
 }
 
 impl GuardAppConfig {
@@ -43,8 +47,31 @@ impl GuardAppConfig {
         self.grpc.validate()?;
         self.registry.validate()?;
         self.database.validate()?;
-        self.bootstrap.validate()
+        self.bootstrap.validate()?;
+        if self.management_component_id.trim().is_empty() {
+            return Err(GuardError::InvalidConfig(
+                "guard.management_component_id must not be empty".to_string(),
+            ));
+        }
+        if let Some(socket) = &self.management_socket
+            && (!socket.is_absolute()
+                || socket.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                }))
+        {
+            return Err(GuardError::InvalidConfig(
+                "guard.management_socket must be an absolute normalized path".to_string(),
+            ));
+        }
+        Ok(())
     }
+}
+
+fn default_management_component_id() -> String {
+    "guard".to_string()
 }
 
 impl CheckFromConf for GuardAppConfig {

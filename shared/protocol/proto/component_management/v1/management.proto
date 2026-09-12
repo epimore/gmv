@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+package gmv.component_management.v1;
+
+service ComponentManagement {
+  rpc PrepareForUpgrade(PrepareForUpgradeRequest) returns (ComponentDrainResponse);
+  rpc Drain(DrainRequest) returns (ComponentDrainResponse);
+}
+
+message PrepareForUpgradeRequest {
+  string operation_id = 1;
+  string component_id = 2;
+  int64 deadline_epoch_ms = 3;
+}
+
+message DrainRequest {
+  string operation_id = 1;
+  string component_id = 2;
+  int64 deadline_epoch_ms = 3;
+}
+
+message ComponentDrainResponse {
+  string operation_id = 1;
+  string component_id = 2;
+  ComponentOwnerState owner_state = 3;
+  ComponentDrainOutcome outcome = 4;
+  string stable_error_code = 5;
+  int64 observed_at_epoch_ms = 6;
+}
+
+enum ComponentOwnerState {
+  COMPONENT_OWNER_STATE_UNSPECIFIED = 0;
+  COMPONENT_OWNER_STATE_ACCEPTING = 1;
+  COMPONENT_OWNER_STATE_DRAINING = 2;
+  COMPONENT_OWNER_STATE_DRAINED = 3;
+  COMPONENT_OWNER_STATE_BLOCKED = 4;
+}
+
+enum ComponentDrainOutcome {
+  COMPONENT_DRAIN_OUTCOME_UNSPECIFIED = 0;
+  COMPONENT_DRAIN_OUTCOME_ACCEPTED = 1;
+  COMPONENT_DRAIN_OUTCOME_ALREADY_DRAINING = 2;
+  COMPONENT_DRAIN_OUTCOME_DRAINED = 3;
+  COMPONENT_DRAIN_OUTCOME_ALREADY_DRAINED = 4;
+  COMPONENT_DRAIN_OUTCOME_UNSUPPORTED = 5;
+  COMPONENT_DRAIN_OUTCOME_BUSY = 6;
+  COMPONENT_DRAIN_OUTCOME_DEADLINE_EXCEEDED = 7;
+  COMPONENT_DRAIN_OUTCOME_OPERATION_CONFLICT = 8;
+  COMPONENT_DRAIN_OUTCOME_INTERNAL_FAILURE = 9;
+}
