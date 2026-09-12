@@ -54,6 +54,22 @@ impl GmvCenterAgentTopics {
         self.downstream("desired")
     }
 
+    pub fn component_desired(&self, component_id: &str) -> Result<String, &'static str> {
+        if !valid_topic_part(component_id, false) {
+            return Err("invalid component_id for MQTT topic");
+        }
+        Ok(self.downstream(&format!("components/{component_id}/desired")))
+    }
+
+    pub fn component_id_from_desired_topic<'a>(&self, topic: &'a str) -> Option<&'a str> {
+        let prefix = format!(
+            "{}/installations/{}/hosts/{}/down/components/",
+            self.prefix, self.installation_id, self.host_id
+        );
+        let component_id = topic.strip_prefix(&prefix)?.strip_suffix("/desired")?;
+        valid_topic_part(component_id, false).then_some(component_id)
+    }
+
     pub fn command(&self) -> String {
         self.downstream("command")
     }
@@ -147,6 +163,20 @@ mod tests {
             "gmvc/v1/installations/site-01/hosts/host-01/down/desired"
         );
         assert_eq!(
+            topics.component_desired("guard").unwrap(),
+            "gmvc/v1/installations/site-01/hosts/host-01/down/components/guard/desired"
+        );
+        assert_eq!(
+            topics.component_desired("stream").unwrap(),
+            "gmvc/v1/installations/site-01/hosts/host-01/down/components/stream/desired"
+        );
+        assert_eq!(
+            topics.component_id_from_desired_topic(
+                "gmvc/v1/installations/site-01/hosts/host-01/down/components/guard/desired"
+            ),
+            Some("guard")
+        );
+        assert_eq!(
             topics.downstream_filter(),
             "gmvc/v1/installations/site-01/hosts/host-01/down/#"
         );
@@ -164,5 +194,14 @@ mod tests {
         assert!(GmvCenterAgentTopics::new("gmvc/+", "site-01", "host-01").is_err());
         assert!(GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site/#", "host-01").is_err());
         assert!(GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site-01", "host/#").is_err());
+        let topics = GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site-01", "host-01").unwrap();
+        assert!(topics.component_desired("stream/#").is_err());
+        assert!(
+            topics
+                .component_id_from_desired_topic(
+                    "gmvc/v1/installations/site-01/hosts/host-01/down/components/guard/other"
+                )
+                .is_none()
+        );
     }
 }
