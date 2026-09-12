@@ -1,4 +1,8 @@
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use base::tokio_util::sync::CancellationToken;
 use gmv_protocol::component_management::v1::{
@@ -23,8 +27,101 @@ pub trait ComponentDrainOwner: Send + Sync + 'static {
 pub trait ComponentDrainBehavior: Send + Sync + 'static {
     fn supported(&self) -> bool;
     fn close_admission(&self);
+    fn in_flight_admissions(&self) -> usize;
+    async fn wait_for_admissions(&self);
     async fn is_drained(&self) -> bool;
     async fn drain_owned_resources(&self) -> Result<(), &'static str>;
+}
+
+#[derive(Default)]
+struct AdmissionState {
+    accepting: bool,
+    in_flight: usize,
+}
+
+struct AdmissionInner {
+    state: Mutex<AdmissionState>,
+    zero: base::tokio::sync::Notify,
+}
+
+#[derive(Clone)]
+pub struct AdmissionBarrier {
+    inner: Arc<AdmissionInner>,
+}
+
+impl Default for AdmissionBarrier {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(AdmissionInner {
+                state: Mutex::new(AdmissionState {
+                    accepting: true,
+                    in_flight: 0,
+                }),
+                zero: base::tokio::sync::Notify::new(),
+            }),
+        }
+    }
+}
+
+impl AdmissionBarrier {
+    pub fn acquire(&self) -> Option<AdmissionPermit> {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !state.accepting {
+            return None;
+        }
+        state.in_flight += 1;
+        Some(AdmissionPermit {
+            inner: self.inner.clone(),
+        })
+    }
+
+    pub fn close(&self) {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accepting = false;
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .in_flight
+    }
+
+    pub async fn wait_for_zero(&self) {
+        loop {
+            let notified = self.inner.zero.notified();
+            if self.in_flight() == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+pub struct AdmissionPermit {
+    inner: Arc<AdmissionInner>,
+}
+
+impl Drop for AdmissionPermit {
+    fn drop(&mut self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.in_flight -= 1;
+        if state.in_flight == 0 {
+            self.inner.zero.notify_waiters();
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +243,7 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
             );
         }
         self.behavior.close_admission();
-        let drained = self.behavior.is_drained().await;
+        let drained = self.behavior.in_flight_admissions() == 0 && self.behavior.is_drained().await;
         *generation = Some(Generation {
             operation_id: request.operation_id.clone(),
             drained,
@@ -157,8 +254,9 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
             let generation = self.generation.clone();
             let operation_id = request.operation_id.clone();
             base::tokio::spawn(async move {
+                behavior.wait_for_admissions().await;
                 let result = behavior.drain_owned_resources().await;
-                let drained = behavior.is_drained().await;
+                let drained = behavior.in_flight_admissions() == 0 && behavior.is_drained().await;
                 let mut generation = generation.lock().await;
                 if let Some(current) = generation.as_mut()
                     && current.operation_id == operation_id
@@ -386,11 +484,11 @@ pub async fn serve_uds<O: ComponentDrainOwner>(
         std::fs::create_dir_all(parent)
             .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
     }
-    let listener = base::tokio::net::UnixListener::bind(socket)
-        .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
+    let listener = bind_uds_listener(socket).await?;
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
         .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
+    let owned_socket = socket_identity(socket)?;
     let incoming = stream::unfold(listener, |listener| async move {
         Some((listener.accept().await.map(|(stream, _)| stream), listener))
     });
@@ -400,26 +498,88 @@ pub async fn serve_uds<O: ComponentDrainOwner>(
         )))
         .serve_with_incoming_shutdown(incoming, async move { cancel.cancelled().await })
         .await;
-    match std::fs::remove_file(socket) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(base::exception::GlobalError::from_external_error(
-                error,
-                |_| {},
-            ));
-        }
-    }
+    remove_owned_socket(socket, owned_socket)?;
     result.map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))
+}
+
+#[cfg(unix)]
+async fn bind_uds_listener(
+    socket: &Path,
+) -> base::exception::GlobalResult<base::tokio::net::UnixListener> {
+    match base::tokio::net::UnixListener::bind(socket) {
+        Ok(listener) => Ok(listener),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let stale_identity = socket_identity(socket)?;
+            match base::tokio::net::UnixStream::connect(socket).await {
+                Ok(_) => Err(io_error(std::io::Error::new(
+                    std::io::ErrorKind::AddrInUse,
+                    "component management socket is active",
+                ))),
+                Err(connect_error)
+                    if connect_error.kind() == std::io::ErrorKind::ConnectionRefused =>
+                {
+                    if socket_identity(socket)? != stale_identity {
+                        return Err(io_error(std::io::Error::new(
+                            std::io::ErrorKind::AddrInUse,
+                            "component management socket changed during stale recovery",
+                        )));
+                    }
+                    std::fs::remove_file(socket).map_err(io_error)?;
+                    base::tokio::net::UnixListener::bind(socket).map_err(io_error)
+                }
+                Err(connect_error) => Err(io_error(connect_error)),
+            }
+        }
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+#[cfg(unix)]
+fn socket_identity(socket: &Path) -> base::exception::GlobalResult<(u64, u64)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+    let metadata = std::fs::symlink_metadata(socket).map_err(io_error)?;
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_socket() {
+        return Err(io_error(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "component management path is not a socket",
+        )));
+    }
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(unix)]
+fn remove_owned_socket(
+    socket: &Path,
+    owned_identity: (u64, u64),
+) -> base::exception::GlobalResult<()> {
+    match std::fs::symlink_metadata(socket) {
+        Ok(_) if socket_identity(socket)? == owned_identity => {
+            std::fs::remove_file(socket).map_err(io_error)
+        }
+        Ok(_) => Err(io_error(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "component management socket ownership changed before cleanup",
+        ))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(io_error(error)),
+    }
+}
+
+#[cfg(unix)]
+fn io_error(error: std::io::Error) -> base::exception::GlobalError {
+    base::exception::GlobalError::from_external_error(error, |_| {})
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+
+    static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
 
     struct TestBehavior {
-        accepting: AtomicBool,
+        admission: AdmissionBarrier,
         drained: AtomicBool,
         release: Option<Arc<base::tokio::sync::Notify>>,
         drain_calls: AtomicUsize,
@@ -431,7 +591,13 @@ mod tests {
             true
         }
         fn close_admission(&self) {
-            self.accepting.store(false, Ordering::Release);
+            self.admission.close();
+        }
+        fn in_flight_admissions(&self) -> usize {
+            self.admission.in_flight()
+        }
+        async fn wait_for_admissions(&self) {
+            self.admission.wait_for_zero().await;
         }
         async fn is_drained(&self) -> bool {
             self.drained.load(Ordering::Acquire)
@@ -454,7 +620,7 @@ mod tests {
     async fn replay_keeps_generation_and_conflicting_operation_is_rejected() {
         let release = Arc::new(base::tokio::sync::Notify::new());
         let behavior = Arc::new(TestBehavior {
-            accepting: AtomicBool::new(true),
+            admission: AdmissionBarrier::default(),
             drained: AtomicBool::new(false),
             release: Some(release.clone()),
             drain_calls: AtomicUsize::new(0),
@@ -505,7 +671,7 @@ mod tests {
             cross_target.outcome,
             ComponentDrainOutcome::OperationConflict as i32
         );
-        assert!(!behavior.accepting.load(Ordering::Acquire));
+        assert!(behavior.admission.acquire().is_none());
         release.notify_one();
         let first_drain = owner
             .drain(DrainRequest {
@@ -535,7 +701,7 @@ mod tests {
     #[tokio::test]
     async fn deadline_does_not_reopen_admission() {
         let behavior = Arc::new(TestBehavior {
-            accepting: AtomicBool::new(true),
+            admission: AdmissionBarrier::default(),
             drained: AtomicBool::new(false),
             release: Some(Arc::new(base::tokio::sync::Notify::new())),
             drain_calls: AtomicUsize::new(0),
@@ -560,7 +726,7 @@ mod tests {
             response.outcome,
             ComponentDrainOutcome::DeadlineExceeded as i32
         );
-        assert!(!behavior.accepting.load(Ordering::Acquire));
+        assert!(behavior.admission.acquire().is_none());
     }
 
     #[tokio::test]
@@ -591,7 +757,7 @@ mod tests {
         let owner = ManagedDrainOwner::new(
             "stream",
             Arc::new(TestBehavior {
-                accepting: AtomicBool::new(true),
+                admission: AdmissionBarrier::default(),
                 drained: AtomicBool::new(false),
                 release: None,
                 drain_calls: AtomicUsize::new(0),
@@ -606,5 +772,195 @@ mod tests {
             .await;
         assert_eq!(busy.owner_state, ComponentOwnerState::Accepting as i32);
         assert_eq!(busy.outcome, ComponentDrainOutcome::Busy as i32);
+    }
+
+    #[tokio::test]
+    async fn admitted_request_blocks_terminal_drain_until_permit_drops() {
+        let behavior = Arc::new(TestBehavior {
+            admission: AdmissionBarrier::default(),
+            drained: AtomicBool::new(true),
+            release: None,
+            drain_calls: AtomicUsize::new(0),
+        });
+        let permit = behavior.admission.acquire().unwrap();
+        let owner = Arc::new(ManagedDrainOwner::new("stream", behavior.clone()));
+        let prepared = owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-permit".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(prepared.owner_state, ComponentOwnerState::Draining as i32);
+        assert_eq!(prepared.outcome, ComponentDrainOutcome::Accepted as i32);
+        assert!(behavior.admission.acquire().is_none());
+
+        drop(permit);
+        let drained = owner
+            .drain(DrainRequest {
+                operation_id: "op-permit".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(drained.owner_state, ComponentOwnerState::Drained as i32);
+        assert_eq!(behavior.admission.in_flight(), 0);
+        assert!(behavior.admission.acquire().is_none());
+    }
+
+    #[cfg(unix)]
+    fn socket_test_root(name: &str) -> std::path::PathBuf {
+        let id = NEXT_TEST_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "gmv-component-management-{name}-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_path(path: &Path) {
+        for _ in 0..100 {
+            if path.exists() {
+                return;
+            }
+            base::tokio::task::yield_now().await;
+        }
+        panic!("socket path was not created: {}", path.display());
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_socket(path: &Path) {
+        for _ in 0..100 {
+            if base::tokio::net::UnixStream::connect(path).await.is_ok() {
+                return;
+            }
+            base::tokio::task::yield_now().await;
+        }
+        panic!("socket did not accept connections: {}", path.display());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_clean_bind_and_normal_shutdown_remove_owned_socket() {
+        let root = socket_test_root("clean");
+        let socket = root.join("management.sock");
+        let cancel = CancellationToken::new();
+        let server_socket = socket.clone();
+        let server_cancel = cancel.clone();
+        let server = base::tokio::spawn(async move {
+            serve_uds(
+                &server_socket,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                server_cancel,
+            )
+            .await
+        });
+        wait_for_socket(&socket).await;
+        cancel.cancel();
+        server.await.unwrap().unwrap();
+        assert!(!socket.exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_recovers_only_a_stale_socket() {
+        let root = socket_test_root("stale");
+        let socket = root.join("management.sock");
+        let stale = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        drop(stale);
+        let cancel = CancellationToken::new();
+        let server_socket = socket.clone();
+        let server_cancel = cancel.clone();
+        let server = base::tokio::spawn(async move {
+            serve_uds(
+                &server_socket,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                server_cancel,
+            )
+            .await
+        });
+        wait_for_socket(&socket).await;
+        cancel.cancel();
+        server.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_active_socket_is_not_replaced() {
+        let root = socket_test_root("active");
+        let socket = root.join("management.sock");
+        let first_cancel = CancellationToken::new();
+        let first_socket = socket.clone();
+        let first_server_cancel = first_cancel.clone();
+        let first = base::tokio::spawn(async move {
+            serve_uds(
+                &first_socket,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                first_server_cancel,
+            )
+            .await
+        });
+        wait_for_path(&socket).await;
+        let identity = socket_identity(&socket).unwrap();
+        assert!(
+            serve_uds(
+                &socket,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(socket_identity(&socket).unwrap(), identity);
+        assert!(base::tokio::net::UnixStream::connect(&socket).await.is_ok());
+        first_cancel.cancel();
+        first.await.unwrap().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn uds_regular_file_and_symlink_fail_closed() {
+        use std::os::unix::fs::symlink;
+
+        let root = socket_test_root("non-socket");
+        let regular = root.join("regular");
+        std::fs::write(&regular, b"keep").unwrap();
+        assert!(
+            serve_uds(
+                &regular,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&regular).unwrap(), b"keep");
+
+        let target = root.join("target");
+        std::fs::write(&target, b"target").unwrap();
+        let link = root.join("link");
+        symlink(&target, &link).unwrap();
+        assert!(
+            serve_uds(
+                &link,
+                Arc::new(UnsupportedDrainOwner::new("guard")),
+                CancellationToken::new(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read(&target).unwrap(), b"target");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

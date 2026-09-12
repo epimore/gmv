@@ -18,7 +18,10 @@ use base_db::{
     dbx::{DatabasePoolConfig, sqlitex::SqliteConnectionConfig},
     sqlx::{Row, SqlitePool},
 };
-use gmv_nodec::NodeEventSender;
+use gmv_nodec::{
+    NodeEventSender,
+    component_management::{AdmissionBarrier, ComponentDrainBehavior},
+};
 use gmv_protocol::{
     avai::v1::{
         AiTaskResult, AiTaskState, CancelTaskRequest, CancelTaskResponse, CreateTaskRequest,
@@ -94,7 +97,16 @@ pub struct TaskManager {
     event_sender: Arc<RwLock<Option<NodeEventSender>>>,
     running: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
-    accepting: Arc<AtomicBool>,
+    admission: AdmissionBarrier,
+    #[cfg(test)]
+    admission_pause: Arc<std::sync::Mutex<Option<AdmissionPause>>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct AdmissionPause {
+    entered: Arc<base::tokio::sync::Semaphore>,
+    release: Arc<base::tokio::sync::Semaphore>,
 }
 
 impl TaskManager {
@@ -157,7 +169,9 @@ impl TaskManager {
             event_sender,
             running,
             closed: Arc::new(AtomicBool::new(false)),
-            accepting: Arc::new(AtomicBool::new(true)),
+            admission: AdmissionBarrier::default(),
+            #[cfg(test)]
+            admission_pause: Arc::new(std::sync::Mutex::new(None)),
         };
         if !pending.is_empty() {
             let recovery_queue = manager.queue.clone();
@@ -193,11 +207,19 @@ impl TaskManager {
     }
 
     pub fn close_upgrade_admission(&self) {
-        self.accepting.store(false, Ordering::Release);
+        self.admission.close();
+    }
+
+    pub fn in_flight_upgrade_admissions(&self) -> usize {
+        self.admission.in_flight()
+    }
+
+    pub async fn wait_for_upgrade_admissions(&self) {
+        self.admission.wait_for_zero().await;
     }
 
     pub async fn is_upgrade_drained(&self) -> Result<bool, TaskError> {
-        Ok(self.repository.nonterminal_task_count().await? == 0)
+        Ok(self.admission.in_flight() == 0 && self.repository.nonterminal_task_count().await? == 0)
     }
 
     pub async fn create_task(
@@ -220,20 +242,26 @@ impl TaskManager {
         request: CreateTaskRequest,
         now_epoch_ms: i64,
     ) -> Result<TaskRecord, TaskError> {
-        if self.closed.load(Ordering::Acquire) || !self.accepting.load(Ordering::Acquire) {
+        if self.closed.load(Ordering::Acquire) {
             return Err(TaskError::new(
-                if self.closed.load(Ordering::Acquire) {
-                    "executor_unavailable"
-                } else {
-                    "component_draining"
-                },
-                if self.closed.load(Ordering::Acquire) {
-                    "Avai task manager is stopping"
-                } else {
-                    "Avai is draining for upgrade"
-                },
+                "executor_unavailable",
+                "Avai task manager is stopping",
             ));
         }
+        let Some(_permit) = self.admission.acquire() else {
+            return Err(TaskError::new(
+                "component_draining",
+                "Avai is draining for upgrade",
+            ));
+        };
+        if self.closed.load(Ordering::Acquire) {
+            return Err(TaskError::new(
+                "executor_unavailable",
+                "Avai task manager is stopping",
+            ));
+        }
+        #[cfg(test)]
+        self.pause_after_admission().await;
         validate_request(&request, &self.identity, &self.capabilities, now_epoch_ms)?;
         let request_hash = request_hash(&request);
         let task_id = request.task_id.clone();
@@ -360,6 +388,7 @@ impl TaskManager {
 
     pub async fn close_and_wait(&self) -> Result<(), TaskError> {
         let already_closed = self.closed.swap(true, Ordering::AcqRel);
+        self.admission.close();
         self.cancel.cancel();
         if already_closed {
             return Ok(());
@@ -372,6 +401,54 @@ impl TaskManager {
         }
         self.repository.close().await;
         Ok(())
+    }
+
+    #[cfg(test)]
+    async fn pause_after_admission(&self) {
+        let pause = self
+            .admission_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(pause) = pause {
+            pause.entered.add_permits(1);
+            pause.release.acquire().await.unwrap().forget();
+        }
+    }
+}
+
+pub struct AvaiDrainBehavior(pub TaskManager);
+
+#[tonic::async_trait]
+impl ComponentDrainBehavior for AvaiDrainBehavior {
+    fn supported(&self) -> bool {
+        true
+    }
+
+    fn close_admission(&self) {
+        self.0.close_upgrade_admission();
+    }
+
+    fn in_flight_admissions(&self) -> usize {
+        self.0.in_flight_upgrade_admissions()
+    }
+
+    async fn wait_for_admissions(&self) {
+        self.0.wait_for_upgrade_admissions().await;
+    }
+
+    async fn is_drained(&self) -> bool {
+        self.0.is_upgrade_drained().await.unwrap_or(false)
+    }
+
+    async fn drain_owned_resources(&self) -> Result<(), &'static str> {
+        loop {
+            match self.0.is_upgrade_drained().await {
+                Ok(true) => return Ok(()),
+                Ok(false) => base::tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+                Err(_) => return Err("avai_drain_state_unavailable"),
+            }
+        }
     }
 }
 
@@ -1191,6 +1268,7 @@ mod tests {
         transport::MessageTransport,
         uds::{ManagedUnixStreamListener, UnixTransportConfig},
     };
+    use gmv_nodec::component_management::{ComponentDrainOwner, ManagedDrainOwner};
     #[cfg(unix)]
     use gmv_protocol::session::v1::{ReadGrantedImageRequest, ReadGrantedImageResponse};
     use gmv_protocol::{
@@ -1198,6 +1276,9 @@ mod tests {
         common::v1::{
             AccessGrant, DataEndpoint, NodeKind, OperationRef, ResourceRef, TransportCapabilities,
             TransportMode,
+        },
+        component_management::v1::{
+            ComponentDrainOutcome, ComponentOwnerState, DrainRequest, PrepareForUpgradeRequest,
         },
     };
     use std::{io::Write, time::Duration};
@@ -1436,6 +1517,70 @@ mod tests {
         assert_eq!(response.state, AiTaskState::Failed as i32);
         assert_eq!(response.error.unwrap().code, "component_draining");
         assert!(manager.is_upgrade_drained().await.unwrap());
+        manager.close_and_wait().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn admitted_create_cannot_cross_terminal_upgrade_drain() {
+        let (manager, root) = test_manager().await;
+        let entered = Arc::new(base::tokio::sync::Semaphore::new(0));
+        let release = Arc::new(base::tokio::sync::Semaphore::new(0));
+        *manager
+            .admission_pause
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(AdmissionPause {
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let create_manager = manager.clone();
+        let create = base::tokio::spawn(async move {
+            create_manager
+                .create_task(test_request("task-admitted-before-drain"), now_epoch_ms())
+                .await
+        });
+        entered.acquire().await.unwrap().forget();
+        assert_eq!(manager.in_flight_upgrade_admissions(), 1);
+
+        let owner = ManagedDrainOwner::new("avai", Arc::new(AvaiDrainBehavior(manager.clone())));
+        let prepared = owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-admission-race".into(),
+                component_id: "avai".into(),
+                deadline_epoch_ms: now_epoch_ms() + 10_000,
+            })
+            .await;
+        assert_eq!(prepared.owner_state, ComponentOwnerState::Draining as i32);
+        assert_eq!(prepared.outcome, ComponentDrainOutcome::Accepted as i32);
+        assert!(!manager.is_upgrade_drained().await.unwrap());
+
+        let rejected = manager
+            .create_task(test_request("task-after-close"), now_epoch_ms())
+            .await;
+        assert_eq!(rejected.error.unwrap().code, "component_draining");
+
+        release.add_permits(1);
+        let created = create.await.unwrap();
+        assert_eq!(created.task_id, "task-admitted-before-drain");
+        let drained = owner
+            .drain(DrainRequest {
+                operation_id: "op-admission-race".into(),
+                component_id: "avai".into(),
+                deadline_epoch_ms: now_epoch_ms() + 10_000,
+            })
+            .await;
+        assert_eq!(drained.owner_state, ComponentOwnerState::Drained as i32);
+        assert_eq!(manager.in_flight_upgrade_admissions(), 0);
+        assert!(manager.is_upgrade_drained().await.unwrap());
+        assert_eq!(
+            manager
+                .create_task(test_request("task-after-drained"), now_epoch_ms())
+                .await
+                .error
+                .unwrap()
+                .code,
+            "component_draining"
+        );
         manager.close_and_wait().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }

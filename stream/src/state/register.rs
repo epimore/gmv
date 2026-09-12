@@ -1481,7 +1481,10 @@ impl Register {
     }
 
     pub fn close_stream_by_id(stream_id: &str) -> bool {
-        let arc = Self::get().inner.clone();
+        let Some(register) = REGISTER.get() else {
+            return false;
+        };
+        let arc = register.inner.clone();
         let stream_id: Arc<str> = Arc::from(stream_id);
         let Some((_, meta)) = arc.stream_metadata_map.remove(&stream_id) else {
             return false;
@@ -1545,7 +1548,9 @@ impl Register {
     }
 
     pub fn active_stream_count() -> usize {
-        Self::get().inner.stream_metadata_map.len()
+        REGISTER
+            .get()
+            .map_or(0, |register| register.inner.stream_metadata_map.len())
     }
 
     pub fn stream_id_by_ssrc(ssrc: u32) -> Option<Arc<str>> {

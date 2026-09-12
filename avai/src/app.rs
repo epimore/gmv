@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
 use avai::source::SourcePolicy;
-use avai::task::{TaskManager, TaskManagerConfig};
+use avai::task::{AvaiDrainBehavior, TaskManager, TaskManagerConfig};
 use avai::upload::{UploadManager, UploadManagerConfig};
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::cfg_lib::{CliBasic, conf, default_cli_basic};
@@ -13,7 +13,7 @@ use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
 use base::serde::Deserialize;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
-use gmv_nodec::component_management::{ComponentDrainBehavior, ManagedDrainOwner, serve_uds};
+use gmv_nodec::component_management::{ManagedDrainOwner, serve_uds};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::avai::v1::avai_control_server::AvaiControlServer;
 
@@ -381,33 +381,6 @@ fn default_task_worker_count() -> usize {
 
 fn default_management_component_id() -> String {
     "avai".to_string()
-}
-
-struct AvaiDrainBehavior(TaskManager);
-
-#[tonic::async_trait]
-impl ComponentDrainBehavior for AvaiDrainBehavior {
-    fn supported(&self) -> bool {
-        true
-    }
-
-    fn close_admission(&self) {
-        self.0.close_upgrade_admission();
-    }
-
-    async fn is_drained(&self) -> bool {
-        self.0.is_upgrade_drained().await.unwrap_or(false)
-    }
-
-    async fn drain_owned_resources(&self) -> Result<(), &'static str> {
-        loop {
-            match self.0.is_upgrade_drained().await {
-                Ok(true) => return Ok(()),
-                Ok(false) => base::tokio::time::sleep(std::time::Duration::from_millis(10)).await,
-                Err(_) => return Err("avai_drain_state_unavailable"),
-            }
-        }
-    }
 }
 
 fn config_error(error: base::cfg_lib::conf::ConfigError) -> GlobalError {

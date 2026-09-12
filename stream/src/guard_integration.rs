@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicU64, Ordering},
     sync::{Arc, OnceLock},
     time::{Duration, Instant},
 };
@@ -18,7 +18,10 @@ use gmv_domain::info::obj::{
     StreamRecordInfo,
 };
 use gmv_domain::info::output::{OutputEnum, OutputKind};
-use gmv_nodec::{NodeEventSender, component_management::ComponentDrainBehavior};
+use gmv_nodec::{
+    NodeEventSender,
+    component_management::{AdmissionBarrier, ComponentDrainBehavior},
+};
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
 };
@@ -349,21 +352,33 @@ impl StreamGuardNode {
 #[derive(Clone)]
 pub struct StreamControlRpc {
     inner: Arc<Mutex<StreamControlAdapter>>,
-    accepting: Arc<AtomicBool>,
+    admission: AdmissionBarrier,
+    #[cfg(test)]
+    admission_pauses: Arc<std::sync::Mutex<HashMap<&'static str, AdmissionPause>>>,
+}
+
+#[cfg(test)]
+#[derive(Clone)]
+struct AdmissionPause {
+    entered: Arc<base::tokio::sync::Semaphore>,
+    release: Arc<base::tokio::sync::Semaphore>,
+    committed_stream_id: String,
 }
 
 pub struct StreamDrainBehavior {
     control: StreamControlRpc,
-    accepting: Arc<AtomicBool>,
+    admission: AdmissionBarrier,
     media_endpoints: Arc<MediaEndpointManager>,
 }
 
 impl StreamControlRpc {
     pub fn new(adapter: StreamControlAdapter) -> Self {
-        let accepting = adapter.accepting.clone();
+        let admission = adapter.admission.clone();
         Self {
             inner: Arc::new(Mutex::new(adapter)),
-            accepting,
+            admission,
+            #[cfg(test)]
+            admission_pauses: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -376,9 +391,33 @@ impl StreamControlRpc {
         media_endpoints: Arc<MediaEndpointManager>,
     ) -> StreamDrainBehavior {
         StreamDrainBehavior {
-            accepting: self.accepting.clone(),
+            admission: self.admission.clone(),
             control: self.clone(),
             media_endpoints,
+        }
+    }
+
+    #[cfg(test)]
+    async fn pause_after_admission(&self, operation: &'static str) {
+        let pause = self
+            .admission_pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(operation)
+            .cloned();
+        if let Some(pause) = pause {
+            pause.entered.add_permits(1);
+            pause.release.acquire().await.unwrap().forget();
+            self.inner.lock().await.streams.insert(
+                pause.committed_stream_id,
+                StreamRuntime {
+                    lease_id: "admission-race-lease".into(),
+                    route_id: "admission-race-route".into(),
+                    endpoints: vec![],
+                    state: StreamState::Receiving,
+                    primary_output_format: String::new(),
+                },
+            );
         }
     }
 }
@@ -390,7 +429,15 @@ impl ComponentDrainBehavior for StreamDrainBehavior {
     }
 
     fn close_admission(&self) {
-        self.accepting.store(false, Ordering::Release);
+        self.admission.close();
+    }
+
+    fn in_flight_admissions(&self) -> usize {
+        self.admission.in_flight()
+    }
+
+    async fn wait_for_admissions(&self) {
+        self.admission.wait_for_zero().await;
     }
 
     async fn is_drained(&self) -> bool {
@@ -549,14 +596,16 @@ impl StreamControl for StreamControlRpc {
             "stream_control.init_media_ext, req: payload_bytes={}",
             request.payload_json.len()
         );
-        if !self.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return Ok(tonic::Response::new(StreamUnitResponse {
                 error: Some(error(
                     "component_draining",
                     "stream is draining for upgrade",
                 )),
             }));
-        }
+        };
+        #[cfg(test)]
+        self.pause_after_admission("init_media_ext").await;
         Ok(tonic::Response::new(stream_unit_response(
             decode_payload::<MediaMap>(&request.payload_json).and_then(|value| {
                 Register::init_media_ext(value.ssrc, value.ext).map_err(detail_from_error)
@@ -632,7 +681,7 @@ impl StreamControl for StreamControlRpc {
             "stream_control.broadcast_open, req: payload_bytes={}",
             request.payload_json.len()
         );
-        if !self.inner.lock().await.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return Ok(tonic::Response::new(StreamJsonResponse {
                 payload_json: vec![],
                 error: Some(error(
@@ -640,7 +689,9 @@ impl StreamControl for StreamControlRpc {
                     "stream is draining for upgrade",
                 )),
             }));
-        }
+        };
+        #[cfg(test)]
+        self.pause_after_admission("broadcast_open").await;
         Ok(tonic::Response::new(
             match decode_payload::<BroadcastOpenReq>(&request.payload_json) {
                 Ok(value) => match BroadcastManager::open(value).await {
@@ -667,6 +718,14 @@ impl StreamControl for StreamControlRpc {
             "stream_control.broadcast_configure_leg, req: payload_bytes={}",
             request.payload_json.len()
         );
+        let Some(_permit) = self.admission.acquire() else {
+            return Ok(tonic::Response::new(StreamUnitResponse {
+                error: Some(error(
+                    "component_draining",
+                    "stream is draining for upgrade",
+                )),
+            }));
+        };
         let result = match decode_payload::<BroadcastConfigureLegReq>(&request.payload_json) {
             Ok(value) => BroadcastManager::configure_leg(value)
                 .await
@@ -746,7 +805,7 @@ pub struct StreamControlAdapter {
     restart_close_watches: HashMap<String, RestartCloseWatch>,
     media_tx: Option<mpsc::Sender<u32>>,
     media_endpoints: Option<Arc<MediaEndpointManager>>,
-    accepting: Arc<AtomicBool>,
+    admission: AdmissionBarrier,
 }
 
 #[derive(Debug, Clone)]
@@ -869,7 +928,7 @@ impl StreamControlAdapter {
             restart_close_watches: HashMap::new(),
             media_tx: None,
             media_endpoints: None,
-            accepting: Arc::new(AtomicBool::new(true)),
+            admission: AdmissionBarrier::default(),
         }
     }
 
@@ -888,7 +947,7 @@ impl StreamControlAdapter {
     }
 
     pub async fn start_receive(&mut self, request: StartReceiveRequest) -> StartReceiveResponse {
-        if !self.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return start_response(
                 &request.stream_id,
                 StreamState::Failed,
@@ -898,7 +957,7 @@ impl StreamControlAdapter {
                     "stream is draining for upgrade",
                 )),
             );
-        }
+        };
         let transport = MediaTransport::try_from(request.media_transport)
             .unwrap_or(MediaTransport::Unspecified);
         if transport == MediaTransport::Unspecified && request.media_transport != 0 {
@@ -1040,7 +1099,7 @@ impl StreamControlAdapter {
         &self,
         request: ConfigureReceiveTransportRequest,
     ) -> ConfigureReceiveTransportResponse {
-        if !self.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return configure_transport_response(
                 MediaTransportState::Failed,
                 None,
@@ -1050,7 +1109,7 @@ impl StreamControlAdapter {
                     "stream is draining for upgrade",
                 )),
             );
-        }
+        };
         let transport = MediaTransport::try_from(request.media_transport)
             .unwrap_or(MediaTransport::Unspecified);
         let local_endpoint = self.streams.get(&request.stream_id).and_then(|stream| {
@@ -1655,7 +1714,7 @@ impl StreamControlAdapter {
     }
 
     pub fn create_output(&mut self, request: CreateOutputRequest) -> CreateOutputResponse {
-        if !self.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return CreateOutputResponse {
                 output_id: String::new(),
                 endpoints: vec![],
@@ -1665,7 +1724,7 @@ impl StreamControlAdapter {
                 )),
                 output: None,
             };
-        }
+        };
         self.prune_terminal_subscriptions(now_ms());
         if self.streams.get(&request.stream_id).is_some_and(|stream| {
             matches!(stream.state, StreamState::Stopping | StreamState::Stopped)
@@ -1942,14 +2001,14 @@ impl StreamControlAdapter {
     }
 
     pub fn init_media(&mut self, request: StreamJsonRequest) -> StreamUnitResponse {
-        if !self.accepting.load(Ordering::Acquire) {
+        let Some(_permit) = self.admission.acquire() else {
             return StreamUnitResponse {
                 error: Some(error(
                     "component_draining",
                     "stream is draining for upgrade",
                 )),
             };
-        }
+        };
         let media_tx = match self.media_tx.clone() {
             Some(media_tx) => media_tx,
             None => {
@@ -2367,6 +2426,10 @@ mod tests {
     use crate::general::cfg::{MediaListenerConf, MediaListenerMode, MediaPortRange};
     use crate::io::media_endpoint::{MediaBootstrap, MediaEndpointManager, find_free_test_range};
     use base::utils::rt::GlobalRuntime;
+    use gmv_nodec::component_management::{ComponentDrainOwner, ManagedDrainOwner};
+    use gmv_protocol::component_management::v1::{
+        ComponentDrainOutcome, ComponentOwnerState, DrainRequest, PrepareForUpgradeRequest,
+    };
     use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 
     #[test]
@@ -3098,7 +3161,7 @@ mod tests {
             node.identity.clone(),
             endpoint("rtp", "rtp", "127.0.0.1", 30000),
         );
-        control.accepting.store(false, Ordering::Release);
+        control.admission.close();
         let response = control
             .start_receive(StartReceiveRequest {
                 operation: Some(operation("op-draining")),
@@ -3114,5 +3177,135 @@ mod tests {
             .await;
         assert_eq!(response.error.unwrap().code, "component_draining");
         assert!(control.resource_snapshot().resources.is_empty());
+    }
+
+    fn stream_drain_test_rpc() -> (StreamControlRpc, Arc<MediaEndpointManager>) {
+        let runtime = GlobalRuntime::get_main_runtime();
+        let port = find_free_test_range(1).start;
+        let manager = MediaEndpointManager::new(
+            runtime,
+            MediaListenerConf {
+                mode: MediaListenerMode::Multi,
+                bind_ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                advertised_host: "127.0.0.1".into(),
+                single_port: 0,
+                port_range: MediaPortRange {
+                    start: port,
+                    end: port,
+                },
+                reservation_timeout_secs: 60,
+            },
+            MediaBootstrap::Multi,
+        )
+        .unwrap();
+        let node = StreamGuardNode::new(
+            "stream-drain-test",
+            "instance-drain-test",
+            "127.0.0.1",
+            "http://127.0.0.1",
+            0,
+            false,
+            u32::from(port),
+        );
+        let adapter = StreamControlAdapter::new(
+            node.identity,
+            endpoint("rtp", "rtp", "127.0.0.1", u32::from(port)),
+        )
+        .with_media_endpoints(manager.clone());
+        (StreamControlRpc::new(adapter), manager)
+    }
+
+    fn install_admission_pause(
+        rpc: &StreamControlRpc,
+        operation: &'static str,
+        stream_id: &str,
+    ) -> (
+        Arc<base::tokio::sync::Semaphore>,
+        Arc<base::tokio::sync::Semaphore>,
+    ) {
+        let entered = Arc::new(base::tokio::sync::Semaphore::new(0));
+        let release = Arc::new(base::tokio::sync::Semaphore::new(0));
+        rpc.admission_pauses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                operation,
+                AdmissionPause {
+                    entered: entered.clone(),
+                    release: release.clone(),
+                    committed_stream_id: stream_id.into(),
+                },
+            );
+        (entered, release)
+    }
+
+    async fn assert_stream_admission_race(operation: &'static str) {
+        let (rpc, manager) = stream_drain_test_rpc();
+        let (entered, release) = install_admission_pause(&rpc, operation, operation);
+        let request_rpc = rpc.clone();
+        let request = base::tokio::spawn(async move {
+            invoke_admission_path(request_rpc, operation).await;
+        });
+        entered.acquire().await.unwrap().forget();
+        assert_eq!(rpc.admission.in_flight(), 1);
+
+        let owner = ManagedDrainOwner::new("stream", Arc::new(rpc.drain_behavior(manager)));
+        let prepared = owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: format!("op-{operation}"),
+                component_id: "stream".into(),
+                deadline_epoch_ms: now_ms() + 10_000,
+            })
+            .await;
+        assert_eq!(prepared.owner_state, ComponentOwnerState::Draining as i32);
+        assert_eq!(prepared.outcome, ComponentDrainOutcome::Accepted as i32);
+        assert_eq!(
+            invoke_admission_path(rpc.clone(), operation).await.code,
+            "component_draining"
+        );
+
+        release.add_permits(1);
+        request.await.unwrap();
+        let drained = owner
+            .drain(DrainRequest {
+                operation_id: format!("op-{operation}"),
+                component_id: "stream".into(),
+                deadline_epoch_ms: now_ms() + 10_000,
+            })
+            .await;
+        assert_eq!(drained.owner_state, ComponentOwnerState::Drained as i32);
+        assert_eq!(rpc.admission.in_flight(), 0);
+        assert!(rpc.inner.lock().await.streams.is_empty());
+        assert!(rpc.admission.acquire().is_none());
+    }
+
+    async fn invoke_admission_path(rpc: StreamControlRpc, operation: &'static str) -> ErrorDetail {
+        match operation {
+            "broadcast_open" => rpc
+                .broadcast_open(tonic::Request::new(StreamJsonRequest::default()))
+                .await
+                .unwrap()
+                .into_inner()
+                .error
+                .unwrap(),
+            "init_media_ext" => rpc
+                .init_media_ext(tonic::Request::new(StreamJsonRequest::default()))
+                .await
+                .unwrap()
+                .into_inner()
+                .error
+                .unwrap(),
+            _ => unreachable!(),
+        }
+    }
+
+    #[tokio::test]
+    async fn broadcast_admission_cannot_cross_terminal_drain() {
+        assert_stream_admission_race("broadcast_open").await;
+    }
+
+    #[tokio::test]
+    async fn register_media_admission_cannot_cross_terminal_drain() {
+        assert_stream_admission_race("init_media_ext").await;
     }
 }
