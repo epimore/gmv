@@ -226,9 +226,18 @@ impl MediaEndpointManager {
 
     fn install_single(&self, listener: BoundMediaListener) -> GlobalResult<()> {
         let endpoint_id = format!("single-{}", self.conf.single_port);
+        let mut state = self.state.try_lock().map_err(|_| {
+            GlobalError::new_sys_error("media endpoint state is unexpectedly locked", |msg| {
+                error!("{msg}")
+            })
+        })?;
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.checked_add(1).ok_or_else(|| {
+            GlobalError::new_sys_error("media endpoint generation exhausted", |msg| error!("{msg}"))
+        })?;
         let dispatch = Arc::new(EndpointDispatchContext::new(
             endpoint_id.clone(),
-            1,
+            generation,
             None,
             None,
             false,
@@ -240,11 +249,6 @@ impl MediaEndpointManager {
             self.runtime.cancel.child_token(),
             dispatch.clone(),
         )?);
-        let mut state = self.state.try_lock().map_err(|_| {
-            GlobalError::new_sys_error("media endpoint state is unexpectedly locked", |msg| {
-                error!("{msg}")
-            })
-        })?;
         state.endpoints.insert(
             endpoint_id.clone(),
             MediaEndpointRecord {
@@ -252,7 +256,7 @@ impl MediaEndpointManager {
                 stream_id: String::new(),
                 lease_id: String::new(),
                 route_id: String::new(),
-                generation: 1,
+                generation,
                 port: self.conf.single_port,
                 state: MediaEndpointState::Listening,
                 permanent: true,
@@ -261,7 +265,6 @@ impl MediaEndpointManager {
                 io,
             },
         );
-        state.next_generation = 2;
         Ok(())
     }
 
@@ -935,6 +938,38 @@ impl MediaEndpointManager {
         let mut state = self.state.lock().await;
         state.endpoints.clear();
         state.stream_index.clear();
+        state.sessions.clear();
+        Ok(())
+    }
+
+    pub async fn resume_after_upgrade(&self) -> GlobalResult<()> {
+        {
+            let state = self.state.lock().await;
+            if !state.endpoints.is_empty() {
+                if state
+                    .endpoints
+                    .values()
+                    .all(|endpoint| endpoint.state == MediaEndpointState::Listening)
+                {
+                    return Ok(());
+                }
+                return Err(GlobalError::new_sys_error(
+                    "media endpoint state is partially drained",
+                    |msg| error!("{msg}"),
+                ));
+            }
+            if !state.stream_index.is_empty() || !state.sessions.is_empty() {
+                return Err(GlobalError::new_sys_error(
+                    "media endpoint indexes are not drained",
+                    |msg| error!("{msg}"),
+                ));
+            }
+        }
+        if self.conf.mode == MediaListenerMode::Single {
+            let listener =
+                rtp_handler::listen_media_server(self.conf.bind_ip, self.conf.single_port)?;
+            self.install_single(listener)?;
+        }
         Ok(())
     }
 }
@@ -1059,6 +1094,15 @@ mod tests {
         let rebound_tcp = TcpListener::bind((Ipv4Addr::LOCALHOST, range.start)).unwrap();
         let rebound_udp = UdpSocket::bind((Ipv4Addr::LOCALHOST, range.start)).unwrap();
         drop((rebound_tcp, rebound_udp));
+
+        manager.resume_after_upgrade().await.unwrap();
+        let resumed = manager
+            .reserve(request("stream-c", "lease-c", 1003))
+            .await
+            .unwrap();
+        assert!(resumed.generation > first.generation);
+        assert!(TcpListener::bind((Ipv4Addr::LOCALHOST, range.start)).is_err());
+        manager.shutdown().await.unwrap();
     }
 
     #[tokio::test]

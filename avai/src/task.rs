@@ -210,6 +210,10 @@ impl TaskManager {
         self.admission.close();
     }
 
+    pub fn reopen_upgrade_admission(&self) {
+        self.admission.reopen();
+    }
+
     pub fn in_flight_upgrade_admissions(&self) -> usize {
         self.admission.in_flight()
     }
@@ -429,6 +433,14 @@ impl ComponentDrainBehavior for AvaiDrainBehavior {
         self.0.close_upgrade_admission();
     }
 
+    async fn reopen_admission(&self) -> Result<(), &'static str> {
+        if self.0.closed.load(Ordering::Acquire) {
+            return Err("avai_executor_unavailable");
+        }
+        self.0.reopen_upgrade_admission();
+        Ok(())
+    }
+
     fn in_flight_admissions(&self) -> usize {
         self.0.in_flight_upgrade_admissions()
     }
@@ -441,8 +453,11 @@ impl ComponentDrainBehavior for AvaiDrainBehavior {
         self.0.is_upgrade_drained().await.unwrap_or(false)
     }
 
-    async fn drain_owned_resources(&self) -> Result<(), &'static str> {
+    async fn drain_owned_resources(&self, cancel: CancellationToken) -> Result<(), &'static str> {
         loop {
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
             match self.0.is_upgrade_drained().await {
                 Ok(true) => return Ok(()),
                 Ok(false) => base::tokio::time::sleep(std::time::Duration::from_millis(10)).await,
@@ -1278,7 +1293,8 @@ mod tests {
             TransportMode,
         },
         component_management::v1::{
-            ComponentDrainOutcome, ComponentOwnerState, DrainRequest, PrepareForUpgradeRequest,
+            AbortUpgradeRequest, ComponentAbortOutcome, ComponentDrainOutcome, ComponentOwnerState,
+            DrainRequest, PrepareForUpgradeRequest,
         },
     };
     use std::{io::Write, time::Duration};
@@ -1581,6 +1597,16 @@ mod tests {
                 .code,
             "component_draining"
         );
+        let aborted = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-admission-race".into(),
+                component_id: "avai".into(),
+                deadline_epoch_ms: now_epoch_ms() + 10_000,
+            })
+            .await;
+        assert_eq!(aborted.owner_state, ComponentOwnerState::Accepting as i32);
+        assert_eq!(aborted.outcome, ComponentAbortOutcome::Resumed as i32);
+        assert!(manager.admission.acquire().is_some());
         manager.close_and_wait().await.unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
