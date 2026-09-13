@@ -18,6 +18,7 @@ use crate::guard_integration::{
     StreamControlAdapter, StreamControlRpc, StreamGuardNode, init_guard_channel,
     init_guard_event_sender,
 };
+use gmv_nodec::component_management::{ManagedDrainOwner, serve_uds};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
@@ -96,6 +97,8 @@ impl Daemon<StreamBootstrap> for App {
             media_conf,
         } = bootstrap;
         let node_name = self.conf.name.clone();
+        let management_socket = self.conf.management_socket.clone();
+        let management_component_id = self.conf.management_component_id.clone();
         let installation_id = self.conf.installation_id.clone();
         let (http_public_tls, http_public_host, http_public_port) =
             self.conf.http.public_endpoint().map_err(|message| {
@@ -158,6 +161,19 @@ impl Daemon<StreamBootstrap> for App {
                     .with_media_endpoints(media_endpoints.clone())
                     .with_media_tx(tx.clone()),
             );
+            if let Some(socket) = management_socket {
+                let owner = Arc::new(ManagedDrainOwner::new(
+                    management_component_id,
+                    Arc::new(control_rpc.drain_behavior(media_endpoints.clone())),
+                ));
+                let management_cancel = network_rt.cancel.clone();
+                network_rt.spawn("stream-component-management", async move {
+                    if let Err(error) = serve_uds(&socket, owner, management_cancel).await {
+                        error!("stream component management failed: {error}");
+                        GlobalRuntime::request_shutdown_with_error();
+                    }
+                })?;
+            }
             let server_rpc = control_rpc.clone();
             network_rt.spawn("stream-control-rpc", async move {
                 base::log::debug!(

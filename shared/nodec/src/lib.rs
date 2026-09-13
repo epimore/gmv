@@ -20,6 +20,7 @@ use gmv_protocol::guard::v1::{
 use sys_metrics::HostMetricsCollector;
 use tokio_stream::wrappers::ReceiverStream;
 
+pub mod component_management;
 pub mod error;
 pub mod error_code;
 

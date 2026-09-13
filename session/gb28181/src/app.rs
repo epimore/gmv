@@ -16,6 +16,7 @@ use crate::guard_integration::{
     init_guard_event_sender,
 };
 use crate::register::core::Register;
+use gmv_nodec::component_management::{UnsupportedDrainOwner, serve_uds};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
@@ -119,6 +120,8 @@ impl
             .public_endpoint()
             .expect("validated session HTTP public URL");
         let grpc = crate::state::SessionGrpcConf::get();
+        let management_socket = grpc.management_socket.clone();
+        let management_component_id = grpc.management_component_id.clone();
         let (grpc_advertised_tls, grpc_advertised_host, grpc_advertised_port) = grpc
             .advertised_endpoint()
             .expect("validated session gRPC advertised URL");
@@ -127,6 +130,20 @@ impl
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
         let service_rt = network_rt.clone();
         network_rt.spawn("session-service", async move {
+            if let Some(socket) = management_socket {
+                let owner = Arc::new(UnsupportedDrainOwner::new(management_component_id));
+                let management_cancel = service_rt.cancel.clone();
+                if let Err(err) = service_rt.spawn("session-component-management", async move {
+                    if let Err(error) = serve_uds(&socket, owner, management_cancel).await {
+                        error!("session component management failed: {error}");
+                        GlobalRuntime::request_shutdown_with_error();
+                    }
+                }) {
+                    error!("spawn session component management task failed: {err}");
+                    GlobalRuntime::request_shutdown_with_error();
+                    return;
+                }
+            }
             if let Err(err) = SessionConf::run(tu, &service_rt).await {
                 error!("GB28181 session initialization failed: {err}");
                 GlobalRuntime::request_shutdown_with_error();

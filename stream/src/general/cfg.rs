@@ -67,6 +67,10 @@ pub struct ServerConf {
     pub http: HttpServerConf,
     pub grpc: GrpcServerConf,
     pub media: MediaServerConf,
+    #[serde(default)]
+    pub management_socket: Option<PathBuf>,
+    #[serde(default = "default_management_component_id")]
+    pub management_component_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -307,6 +311,20 @@ impl ServerConf {
         if self.name.trim().is_empty() {
             return Err("server.name must not be empty".to_string());
         }
+        if self.management_component_id.trim().is_empty() {
+            return Err("server.management_component_id must not be empty".to_string());
+        }
+        if let Some(socket) = &self.management_socket
+            && (!socket.is_absolute()
+                || socket.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                }))
+        {
+            return Err("server.management_socket must be an absolute normalized path".to_string());
+        }
         if self.http.listen_addr.port() == 0 {
             return Err("server.http.listen_addr port must not be zero".to_string());
         }
@@ -334,6 +352,10 @@ impl ServerConf {
             self.grpc.listen_addr.port(),
         )
     }
+}
+
+fn default_management_component_id() -> String {
+    "stream".to_string()
 }
 
 fn validate_tls_files(

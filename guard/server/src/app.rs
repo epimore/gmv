@@ -9,6 +9,7 @@ use base::log::{debug, error, info, warn};
 use base::logger;
 use base::logger::episode::{EpisodeDecision, FailureEpisode};
 use base::utils::rt::{GlobalRuntime, RuntimeType};
+use gmv_nodec::component_management::{UnsupportedDrainOwner, serve_uds};
 use sha2::{Digest, Sha256};
 
 use crate::api::v2::ApiV2;
@@ -99,6 +100,18 @@ pub async fn start_guard(
     listeners: GuardListeners,
     runtime: GlobalRuntime,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(socket) = config.management_socket.clone() {
+        let owner = Arc::new(UnsupportedDrainOwner::new(
+            config.management_component_id.clone(),
+        ));
+        let management_cancel = runtime.cancel.clone();
+        runtime.spawn("guard-component-management", async move {
+            if let Err(error) = serve_uds(&socket, owner, management_cancel).await {
+                base::log::error!("Guard component management failed: {error}");
+                GlobalRuntime::request_shutdown_with_error();
+            }
+        })?;
+    }
     let web_config = WebServerConfig::from_app(&config)?;
     let persistent = PersistentStore::connect(&config).await?;
     persistent.initialize(&config).await?;

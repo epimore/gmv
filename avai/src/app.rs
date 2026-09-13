@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
 use avai::source::SourcePolicy;
-use avai::task::{TaskManager, TaskManagerConfig};
+use avai::task::{AvaiDrainBehavior, TaskManager, TaskManagerConfig};
 use avai::upload::{UploadManager, UploadManagerConfig};
 use base::cfg_lib::conf::{CheckFromConf, FieldCheckError};
 use base::cfg_lib::{CliBasic, conf, default_cli_basic};
@@ -13,6 +13,7 @@ use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
 use base::serde::Deserialize;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
+use gmv_nodec::component_management::{ManagedDrainOwner, serve_uds};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::avai::v1::avai_control_server::AvaiControlServer;
 
@@ -69,6 +70,10 @@ struct ServerConf {
     allow_private_image_urls: bool,
     #[serde(default)]
     allowed_internal_hosts: Vec<String>,
+    #[serde(default)]
+    management_socket: Option<PathBuf>,
+    #[serde(default = "default_management_component_id")]
+    management_component_id: String,
 }
 
 impl CheckFromConf for ServerConf {
@@ -86,6 +91,24 @@ impl CheckFromConf for ServerConf {
         if self.task_queue_size == 0 || self.task_worker_count == 0 || self.max_image_bytes == 0 {
             return Err(FieldCheckError::BizError(
                 "Avai task capacity values must be positive".to_string(),
+            ));
+        }
+        if let Some(socket) = &self.management_socket
+            && (!socket.is_absolute()
+                || socket.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                }))
+        {
+            return Err(FieldCheckError::BizError(
+                "server.management_socket must be an absolute normalized path".to_string(),
+            ));
+        }
+        if self.management_component_id.trim().is_empty() {
+            return Err(FieldCheckError::BizError(
+                "server.management_component_id must not be empty".to_string(),
             ));
         }
         Ok(())
@@ -215,6 +238,20 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     let event_sender = NodeReporter::spawn_managed_with_events(&runtime, reporter, cancel.clone())?;
     manager.set_event_sender(event_sender).await;
 
+    if let Some(socket) = server.management_socket.clone() {
+        let owner = Arc::new(ManagedDrainOwner::new(
+            server.management_component_id.clone(),
+            Arc::new(AvaiDrainBehavior(manager.clone())),
+        ));
+        let management_cancel = cancel.clone();
+        runtime.spawn("avai-component-management", async move {
+            if let Err(error) = serve_uds(&socket, owner, management_cancel).await {
+                base::log::error!("Avai component management failed: {error}");
+                GlobalRuntime::request_shutdown_with_error();
+            }
+        })?;
+    }
+
     let upload_listener = base::tokio::net::TcpListener::from_std(bootstrap.upload_listener)
         .map_err(external_error)?;
     let upload_cancel = cancel.clone();
@@ -340,6 +377,10 @@ fn default_task_queue_size() -> usize {
 
 fn default_task_worker_count() -> usize {
     2
+}
+
+fn default_management_component_id() -> String {
+    "avai".to_string()
 }
 
 fn config_error(error: base::cfg_lib::conf::ConfigError) -> GlobalError {

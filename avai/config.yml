@@ -12,6 +12,8 @@ guard:
 
 server:
   installation_id: local-installation
+  management_component_id: avai
+  management_socket: /run/gmv/avai-management.sock
   host_id: local-host
   node_id: avai-node-1
   host: 127.0.0.1

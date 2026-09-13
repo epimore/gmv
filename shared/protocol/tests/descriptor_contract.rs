@@ -139,9 +139,120 @@ fn descriptor_contains_versioned_packages() {
         "gmv.stream.v1",
         "gmv.avai.v1",
         "gmv.center_agent.v1",
+        "gmv.component_management.v1",
     ] {
         assert!(packages.contains(&package), "missing package {package}");
     }
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct LegacyComponentDrainResponse {
+    #[prost(string, tag = "1")]
+    operation_id: String,
+    #[prost(string, tag = "2")]
+    component_id: String,
+    #[prost(int32, tag = "3")]
+    owner_state: i32,
+    #[prost(int32, tag = "4")]
+    outcome: i32,
+    #[prost(string, tag = "5")]
+    stable_error_code: String,
+}
+
+#[test]
+fn component_management_contract_is_minimal_additive_and_wire_compatible() {
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.component_management.v1");
+    let service = file
+        .service
+        .iter()
+        .find(|value| value.name.as_deref() == Some("ComponentManagement"))
+        .unwrap();
+    assert_eq!(
+        service
+            .method
+            .iter()
+            .filter_map(|value| value.name.as_deref())
+            .collect::<Vec<_>>(),
+        ["PrepareForUpgrade", "Drain"]
+    );
+    for message_name in ["PrepareForUpgradeRequest", "DrainRequest"] {
+        let message = descriptor_message(file, message_name);
+        assert_eq!(message.field.len(), 3);
+        assert_eq!(descriptor_field_number(message, "operation_id"), Some(1));
+        assert_eq!(descriptor_field_number(message, "component_id"), Some(2));
+        assert_eq!(
+            descriptor_field_number(message, "deadline_epoch_ms"),
+            Some(3)
+        );
+    }
+
+    let current = gmv_protocol::component_management::v1::ComponentDrainResponse {
+        operation_id: "op-1".into(),
+        component_id: "stream".into(),
+        owner_state: 2,
+        outcome: 1,
+        stable_error_code: String::new(),
+        observed_at_epoch_ms: 123,
+    };
+    let legacy = LegacyComponentDrainResponse::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy.operation_id, "op-1");
+    let decoded = gmv_protocol::component_management::v1::ComponentDrainResponse::decode(
+        legacy.encode_to_vec().as_slice(),
+    )
+    .unwrap();
+    assert_eq!(decoded.observed_at_epoch_ms, 0);
+}
+
+#[test]
+fn component_management_fails_closed_for_future_enums_and_has_no_remote_authority() {
+    use gmv_protocol::component_management::v1::{ComponentDrainOutcome, ComponentOwnerState};
+    assert!(ComponentOwnerState::try_from(99).is_err());
+    assert!(ComponentDrainOutcome::try_from(99).is_err());
+
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.component_management.v1");
+    let forbidden = [
+        "shell",
+        "argv",
+        "command",
+        "executable",
+        "path",
+        "unit",
+        "script",
+        "hook",
+        "socket",
+        "endpoint",
+        "pid",
+        "resource",
+    ];
+    for message in &file.message_type {
+        for field in &message.field {
+            let name = field
+                .name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                !forbidden.iter().any(|value| name.contains(value)),
+                "forbidden authority field {name}"
+            );
+        }
+    }
+    let envelope = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    assert!(
+        envelope
+            .message_type
+            .iter()
+            .flat_map(|message| &message.field)
+            .all(|field| {
+                !field
+                    .type_name
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("component_management")
+            })
+    );
 }
 
 #[test]

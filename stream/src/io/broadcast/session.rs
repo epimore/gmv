@@ -497,6 +497,17 @@ impl BroadcastManager {
         BROADCAST_PARENTS.len()
     }
 
+    pub async fn drain_all() -> GlobalResult<()> {
+        let broadcast_ids = BROADCAST_PARENTS
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect::<Vec<_>>();
+        for broadcast_id in broadcast_ids {
+            Self::close(&broadcast_id, "").await?;
+        }
+        Ok(())
+    }
+
     pub async fn close(broadcast_id: &str, requested_leg_id: &str) -> GlobalResult<bool> {
         if !requested_leg_id.is_empty() {
             return close_leg(broadcast_id, requested_leg_id, "leg_close").await;

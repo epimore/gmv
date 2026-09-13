@@ -21,6 +21,10 @@ pub struct SessionGrpcConf {
     pub advertised_url: String,
     #[serde(default)]
     pub tls: GrpcTlsConf,
+    #[serde(default)]
+    pub management_socket: Option<PathBuf>,
+    #[serde(default = "default_management_component_id")]
+    pub management_component_id: String,
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -66,8 +70,30 @@ impl CheckFromConf for SessionGrpcConf {
                 "server.grpc.tls启用时certificate_path和private_key_path不能为空".to_string(),
             ));
         }
+        if self.management_component_id.trim().is_empty() {
+            return Err(FieldCheckError::BizError(
+                "server.grpc.management_component_id不能为空".to_string(),
+            ));
+        }
+        if let Some(socket) = &self.management_socket
+            && (!socket.is_absolute()
+                || socket.components().any(|part| {
+                    matches!(
+                        part,
+                        std::path::Component::CurDir | std::path::Component::ParentDir
+                    )
+                }))
+        {
+            return Err(FieldCheckError::BizError(
+                "server.grpc.management_socket必须是规范化绝对路径".to_string(),
+            ));
+        }
         Ok(())
     }
+}
+
+fn default_management_component_id() -> String {
+    "session".to_string()
 }
 
 impl SessionGrpcConf {
@@ -321,6 +347,8 @@ mod tests {
             listen_addr: "127.0.0.1:19081".parse().unwrap(),
             advertised_url: "https://session-rpc.example.com:443".to_string(),
             tls: GrpcTlsConf::default(),
+            management_socket: None,
+            management_component_id: "session".to_string(),
         };
 
         assert_eq!(
