@@ -369,6 +369,7 @@ pub struct StreamDrainBehavior {
     control: StreamControlRpc,
     admission: AdmissionBarrier,
     media_endpoints: Arc<MediaEndpointManager>,
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl StreamControlRpc {
@@ -394,6 +395,7 @@ impl StreamControlRpc {
             admission: self.admission.clone(),
             control: self.clone(),
             media_endpoints,
+            lifecycle: Arc::new(Mutex::new(())),
         }
     }
 
@@ -432,6 +434,16 @@ impl ComponentDrainBehavior for StreamDrainBehavior {
         self.admission.close();
     }
 
+    async fn reopen_admission(&self) -> Result<(), &'static str> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.media_endpoints
+            .resume_after_upgrade()
+            .await
+            .map_err(|_| "stream_endpoint_resume_failed")?;
+        self.admission.reopen();
+        Ok(())
+    }
+
     fn in_flight_admissions(&self) -> usize {
         self.admission.in_flight()
     }
@@ -454,7 +466,14 @@ impl ComponentDrainBehavior for StreamDrainBehavior {
             && stats.releasing == 0
     }
 
-    async fn drain_owned_resources(&self) -> Result<(), &'static str> {
+    async fn drain_owned_resources(
+        &self,
+        cancel: base::tokio_util::sync::CancellationToken,
+    ) -> Result<(), &'static str> {
+        let _lifecycle = self.lifecycle.lock().await;
+        if cancel.is_cancelled() {
+            return Ok(());
+        }
         let stream_ids = {
             let mut control = self.control.inner.lock().await;
             let ids = control.streams.keys().cloned().collect::<Vec<_>>();

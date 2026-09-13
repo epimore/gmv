@@ -174,9 +174,26 @@ fn component_management_contract_is_minimal_additive_and_wire_compatible() {
             .iter()
             .filter_map(|value| value.name.as_deref())
             .collect::<Vec<_>>(),
-        ["PrepareForUpgrade", "Drain"]
+        ["PrepareForUpgrade", "Drain", "AbortUpgrade"]
     );
-    for message_name in ["PrepareForUpgradeRequest", "DrainRequest"] {
+    let abort_method = service
+        .method
+        .iter()
+        .find(|value| value.name.as_deref() == Some("AbortUpgrade"))
+        .unwrap();
+    assert_eq!(
+        abort_method.input_type.as_deref(),
+        Some(".gmv.component_management.v1.AbortUpgradeRequest")
+    );
+    assert_eq!(
+        abort_method.output_type.as_deref(),
+        Some(".gmv.component_management.v1.ComponentAbortResponse")
+    );
+    for message_name in [
+        "PrepareForUpgradeRequest",
+        "DrainRequest",
+        "AbortUpgradeRequest",
+    ] {
         let message = descriptor_message(file, message_name);
         assert_eq!(message.field.len(), 3);
         assert_eq!(descriptor_field_number(message, "operation_id"), Some(1));
@@ -202,13 +219,43 @@ fn component_management_contract_is_minimal_additive_and_wire_compatible() {
     )
     .unwrap();
     assert_eq!(decoded.observed_at_epoch_ms, 0);
+
+    let abort = descriptor_message(file, "ComponentAbortResponse");
+    for (name, number) in [
+        ("operation_id", 1),
+        ("component_id", 2),
+        ("owner_state", 3),
+        ("outcome", 4),
+        ("stable_error_code", 5),
+        ("observed_at_epoch_ms", 6),
+    ] {
+        assert_eq!(descriptor_field_number(abort, name), Some(number));
+    }
+    let response = gmv_protocol::component_management::v1::ComponentAbortResponse {
+        operation_id: "op-abort".into(),
+        component_id: "stream".into(),
+        owner_state: 1,
+        outcome: 1,
+        stable_error_code: String::new(),
+        observed_at_epoch_ms: 456,
+    };
+    assert_eq!(
+        gmv_protocol::component_management::v1::ComponentAbortResponse::decode(
+            response.encode_to_vec().as_slice()
+        )
+        .unwrap(),
+        response
+    );
 }
 
 #[test]
 fn component_management_fails_closed_for_future_enums_and_has_no_remote_authority() {
-    use gmv_protocol::component_management::v1::{ComponentDrainOutcome, ComponentOwnerState};
+    use gmv_protocol::component_management::v1::{
+        ComponentAbortOutcome, ComponentDrainOutcome, ComponentOwnerState,
+    };
     assert!(ComponentOwnerState::try_from(99).is_err());
     assert!(ComponentDrainOutcome::try_from(99).is_err());
+    assert!(ComponentAbortOutcome::try_from(99).is_err());
 
     let descriptor = descriptor();
     let file = descriptor_file(&descriptor, "gmv.component_management.v1");

@@ -6,12 +6,15 @@ use std::{
 
 use base::tokio_util::sync::CancellationToken;
 use gmv_protocol::component_management::v1::{
-    ComponentDrainResponse, DrainRequest, PrepareForUpgradeRequest,
+    AbortUpgradeRequest, ComponentAbortResponse, ComponentDrainResponse, DrainRequest,
+    PrepareForUpgradeRequest,
     component_management_server::{ComponentManagement, ComponentManagementServer},
 };
 use tonic::{Request, Response, Status, async_trait};
 
-use gmv_protocol::component_management::v1::{ComponentDrainOutcome, ComponentOwnerState};
+use gmv_protocol::component_management::v1::{
+    ComponentAbortOutcome, ComponentDrainOutcome, ComponentOwnerState,
+};
 
 #[async_trait]
 pub trait ComponentDrainOwner: Send + Sync + 'static {
@@ -21,16 +24,19 @@ pub trait ComponentDrainOwner: Send + Sync + 'static {
     ) -> ComponentDrainResponse;
 
     async fn drain(&self, request: DrainRequest) -> ComponentDrainResponse;
+
+    async fn abort_upgrade(&self, request: AbortUpgradeRequest) -> ComponentAbortResponse;
 }
 
 #[async_trait]
 pub trait ComponentDrainBehavior: Send + Sync + 'static {
     fn supported(&self) -> bool;
     fn close_admission(&self);
+    async fn reopen_admission(&self) -> Result<(), &'static str>;
     fn in_flight_admissions(&self) -> usize;
     async fn wait_for_admissions(&self);
     async fn is_drained(&self) -> bool;
-    async fn drain_owned_resources(&self) -> Result<(), &'static str>;
+    async fn drain_owned_resources(&self, cancel: CancellationToken) -> Result<(), &'static str>;
 }
 
 #[derive(Default)]
@@ -87,6 +93,14 @@ impl AdmissionBarrier {
             .accepting = false;
     }
 
+    pub fn reopen(&self) {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accepting = true;
+    }
+
     pub fn in_flight(&self) -> usize {
         self.inner
             .state
@@ -124,17 +138,26 @@ impl Drop for AdmissionPermit {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct Generation {
     operation_id: String,
     drained: bool,
     failure: Option<&'static str>,
+    cancel: CancellationToken,
+    aborting: bool,
+    abort_failure: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OwnerState {
+    generation: Option<Generation>,
+    last_aborted_operation_id: Option<String>,
 }
 
 pub struct ManagedDrainOwner<B> {
     component_id: String,
     behavior: Arc<B>,
-    generation: Arc<base::tokio::sync::Mutex<Option<Generation>>>,
+    state: Arc<base::tokio::sync::Mutex<OwnerState>>,
 }
 
 impl<B> ManagedDrainOwner<B> {
@@ -142,7 +165,7 @@ impl<B> ManagedDrainOwner<B> {
         Self {
             component_id: component_id.into(),
             behavior,
-            generation: Arc::new(base::tokio::sync::Mutex::new(None)),
+            state: Arc::new(base::tokio::sync::Mutex::new(OwnerState::default())),
         }
     }
 
@@ -182,6 +205,47 @@ impl<B> ManagedDrainOwner<B> {
         }
         None
     }
+
+    fn abort_response(
+        &self,
+        operation_id: String,
+        state: ComponentOwnerState,
+        outcome: ComponentAbortOutcome,
+        code: &str,
+    ) -> ComponentAbortResponse {
+        ComponentAbortResponse {
+            operation_id,
+            component_id: self.component_id.clone(),
+            owner_state: state as i32,
+            outcome: outcome as i32,
+            stable_error_code: code.to_string(),
+            observed_at_epoch_ms: now_ms(),
+        }
+    }
+
+    fn validate_abort(
+        &self,
+        operation_id: &str,
+        component_id: &str,
+    ) -> Option<ComponentAbortResponse> {
+        if operation_id.is_empty() {
+            return Some(self.abort_response(
+                operation_id.to_string(),
+                ComponentOwnerState::Blocked,
+                ComponentAbortOutcome::InternalFailure,
+                "operation_id_missing",
+            ));
+        }
+        if component_id != self.component_id {
+            return Some(self.abort_response(
+                operation_id.to_string(),
+                ComponentOwnerState::Blocked,
+                ComponentAbortOutcome::OperationConflict,
+                "component_mismatch",
+            ));
+        }
+        None
+    }
 }
 
 #[async_trait]
@@ -201,8 +265,8 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
                 "component_drain_unsupported",
             );
         }
-        let mut generation = self.generation.lock().await;
-        if let Some(current) = generation.as_ref() {
+        let mut state = self.state.lock().await;
+        if let Some(current) = state.generation.as_ref() {
             if current.operation_id != request.operation_id {
                 return self.response(
                     request.operation_id,
@@ -234,6 +298,14 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
                 current.failure.unwrap_or_default(),
             );
         }
+        if state.last_aborted_operation_id.as_deref() == Some(request.operation_id.as_str()) {
+            return self.response(
+                request.operation_id,
+                ComponentOwnerState::Accepting,
+                ComponentDrainOutcome::Busy,
+                "component_upgrade_aborted",
+            );
+        }
         if request.deadline_epoch_ms <= now_ms() {
             return self.response(
                 request.operation_id,
@@ -244,21 +316,32 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
         }
         self.behavior.close_admission();
         let drained = self.behavior.in_flight_admissions() == 0 && self.behavior.is_drained().await;
-        *generation = Some(Generation {
+        state.last_aborted_operation_id = None;
+        let cancel = CancellationToken::new();
+        state.generation = Some(Generation {
             operation_id: request.operation_id.clone(),
             drained,
             failure: None,
+            cancel: cancel.clone(),
+            aborting: false,
+            abort_failure: None,
         });
         if !drained {
             let behavior = self.behavior.clone();
-            let generation = self.generation.clone();
+            let state = self.state.clone();
             let operation_id = request.operation_id.clone();
             base::tokio::spawn(async move {
-                behavior.wait_for_admissions().await;
-                let result = behavior.drain_owned_resources().await;
+                base::tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = behavior.wait_for_admissions() => {}
+                }
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let result = behavior.drain_owned_resources(cancel).await;
                 let drained = behavior.in_flight_admissions() == 0 && behavior.is_drained().await;
-                let mut generation = generation.lock().await;
-                if let Some(current) = generation.as_mut()
+                let mut state = state.lock().await;
+                if let Some(current) = state.generation.as_mut()
                     && current.operation_id == operation_id
                 {
                     current.drained = result.is_ok() && drained;
@@ -299,7 +382,7 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
             );
         }
         loop {
-            let current = self.generation.lock().await.clone();
+            let current = self.state.lock().await.generation.clone();
             let Some(current) = current else {
                 return self.response(
                     request.operation_id,
@@ -347,6 +430,130 @@ impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
                     ComponentOwnerState::Draining,
                     ComponentDrainOutcome::DeadlineExceeded,
                     "component_drain_deadline_exceeded",
+                );
+            }
+            base::tokio::time::sleep(Duration::from_millis((remaining_ms as u64).min(10))).await;
+        }
+    }
+
+    async fn abort_upgrade(&self, request: AbortUpgradeRequest) -> ComponentAbortResponse {
+        if let Some(response) = self.validate_abort(&request.operation_id, &request.component_id) {
+            return response;
+        }
+        if !self.behavior.supported() {
+            return self.abort_response(
+                request.operation_id,
+                ComponentOwnerState::Accepting,
+                ComponentAbortOutcome::Unsupported,
+                "component_abort_unsupported",
+            );
+        }
+        let mut initiated = false;
+        loop {
+            let mut state = self.state.lock().await;
+            let last_aborted_operation_id = state.last_aborted_operation_id.clone();
+            match state.generation.as_mut() {
+                Some(current) if current.operation_id != request.operation_id => {
+                    return self.abort_response(
+                        request.operation_id,
+                        if current.drained {
+                            ComponentOwnerState::Drained
+                        } else {
+                            ComponentOwnerState::Draining
+                        },
+                        ComponentAbortOutcome::OperationConflict,
+                        "component_abort_operation_conflict",
+                    );
+                }
+                Some(current) if initiated && current.abort_failure.is_some() => {
+                    return self.abort_response(
+                        request.operation_id,
+                        ComponentOwnerState::Blocked,
+                        ComponentAbortOutcome::InternalFailure,
+                        current
+                            .abort_failure
+                            .unwrap_or("component_abort_internal_failure"),
+                    );
+                }
+                Some(current) => {
+                    if request.deadline_epoch_ms <= now_ms() {
+                        return self.abort_response(
+                            request.operation_id,
+                            ComponentOwnerState::Draining,
+                            ComponentAbortOutcome::DeadlineExceeded,
+                            "component_abort_deadline_exceeded",
+                        );
+                    }
+                    if !current.aborting {
+                        current.cancel.cancel();
+                        current.aborting = true;
+                        current.abort_failure = None;
+                        initiated = true;
+                        let behavior = self.behavior.clone();
+                        let owner_state = self.state.clone();
+                        let operation_id = request.operation_id.clone();
+                        base::tokio::spawn(async move {
+                            let result = behavior.reopen_admission().await;
+                            let mut state = owner_state.lock().await;
+                            let Some(current) = state.generation.as_mut() else {
+                                return;
+                            };
+                            if current.operation_id != operation_id || !current.aborting {
+                                return;
+                            }
+                            match result {
+                                Ok(()) => {
+                                    state.generation = None;
+                                    state.last_aborted_operation_id = Some(operation_id);
+                                }
+                                Err(code) => {
+                                    current.aborting = false;
+                                    current.abort_failure = Some(code);
+                                }
+                            }
+                        });
+                    }
+                }
+                None if last_aborted_operation_id.as_deref()
+                    == Some(request.operation_id.as_str()) =>
+                {
+                    return self.abort_response(
+                        request.operation_id,
+                        ComponentOwnerState::Accepting,
+                        if initiated {
+                            ComponentAbortOutcome::Resumed
+                        } else {
+                            ComponentAbortOutcome::AlreadyAccepting
+                        },
+                        "",
+                    );
+                }
+                None if last_aborted_operation_id.is_some() => {
+                    return self.abort_response(
+                        request.operation_id,
+                        ComponentOwnerState::Accepting,
+                        ComponentAbortOutcome::OperationConflict,
+                        "component_abort_operation_conflict",
+                    );
+                }
+                None => {
+                    state.last_aborted_operation_id = Some(request.operation_id.clone());
+                    return self.abort_response(
+                        request.operation_id,
+                        ComponentOwnerState::Accepting,
+                        ComponentAbortOutcome::AlreadyAccepting,
+                        "",
+                    );
+                }
+            }
+            drop(state);
+            let remaining_ms = request.deadline_epoch_ms.saturating_sub(now_ms());
+            if remaining_ms <= 0 {
+                return self.abort_response(
+                    request.operation_id,
+                    ComponentOwnerState::Draining,
+                    ComponentAbortOutcome::DeadlineExceeded,
+                    "component_abort_deadline_exceeded",
                 );
             }
             base::tokio::time::sleep(Duration::from_millis((remaining_ms as u64).min(10))).await;
@@ -419,6 +626,33 @@ impl ComponentDrainOwner for UnsupportedDrainOwner {
             request.deadline_epoch_ms,
         )
     }
+
+    async fn abort_upgrade(&self, request: AbortUpgradeRequest) -> ComponentAbortResponse {
+        let (outcome, code) = if request.component_id != self.component_id {
+            (
+                ComponentAbortOutcome::OperationConflict,
+                "component_mismatch",
+            )
+        } else if request.deadline_epoch_ms <= now_ms() {
+            (
+                ComponentAbortOutcome::DeadlineExceeded,
+                "component_abort_deadline_exceeded",
+            )
+        } else {
+            (
+                ComponentAbortOutcome::Unsupported,
+                "component_abort_unsupported",
+            )
+        };
+        ComponentAbortResponse {
+            operation_id: request.operation_id,
+            component_id: self.component_id.clone(),
+            owner_state: ComponentOwnerState::Accepting as i32,
+            outcome: outcome as i32,
+            stable_error_code: code.to_string(),
+            observed_at_epoch_ms: now_ms(),
+        }
+    }
 }
 
 fn now_ms() -> i64 {
@@ -456,6 +690,15 @@ impl<O: ComponentDrainOwner> ComponentManagement for ComponentManagementRpc<O> {
         request: Request<DrainRequest>,
     ) -> Result<Response<ComponentDrainResponse>, Status> {
         Ok(Response::new(self.owner.drain(request.into_inner()).await))
+    }
+
+    async fn abort_upgrade(
+        &self,
+        request: Request<AbortUpgradeRequest>,
+    ) -> Result<Response<ComponentAbortResponse>, Status> {
+        Ok(Response::new(
+            self.owner.abort_upgrade(request.into_inner()).await,
+        ))
     }
 }
 
@@ -585,6 +828,44 @@ mod tests {
         drain_calls: AtomicUsize,
     }
 
+    struct SlowResumeBehavior {
+        admission: AdmissionBarrier,
+        reopen_started: Arc<base::tokio::sync::Semaphore>,
+        reopen_release: Arc<base::tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl ComponentDrainBehavior for SlowResumeBehavior {
+        fn supported(&self) -> bool {
+            true
+        }
+        fn close_admission(&self) {
+            self.admission.close();
+        }
+        async fn reopen_admission(&self) -> Result<(), &'static str> {
+            self.reopen_started.add_permits(1);
+            self.reopen_release.notified().await;
+            self.admission.reopen();
+            Ok(())
+        }
+        fn in_flight_admissions(&self) -> usize {
+            self.admission.in_flight()
+        }
+        async fn wait_for_admissions(&self) {
+            self.admission.wait_for_zero().await;
+        }
+        async fn is_drained(&self) -> bool {
+            false
+        }
+        async fn drain_owned_resources(
+            &self,
+            cancel: CancellationToken,
+        ) -> Result<(), &'static str> {
+            cancel.cancelled().await;
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl ComponentDrainBehavior for TestBehavior {
         fn supported(&self) -> bool {
@@ -592,6 +873,10 @@ mod tests {
         }
         fn close_admission(&self) {
             self.admission.close();
+        }
+        async fn reopen_admission(&self) -> Result<(), &'static str> {
+            self.admission.reopen();
+            Ok(())
         }
         fn in_flight_admissions(&self) -> usize {
             self.admission.in_flight()
@@ -602,10 +887,16 @@ mod tests {
         async fn is_drained(&self) -> bool {
             self.drained.load(Ordering::Acquire)
         }
-        async fn drain_owned_resources(&self) -> Result<(), &'static str> {
+        async fn drain_owned_resources(
+            &self,
+            cancel: CancellationToken,
+        ) -> Result<(), &'static str> {
             self.drain_calls.fetch_add(1, Ordering::AcqRel);
             if let Some(release) = &self.release {
-                release.notified().await;
+                base::tokio::select! {
+                    _ = cancel.cancelled() => return Ok(()),
+                    _ = release.notified() => {}
+                }
             }
             self.drained.store(true, Ordering::Release);
             Ok(())
@@ -730,6 +1021,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abort_reopens_admission_and_is_idempotent_and_fenced() {
+        let behavior = Arc::new(TestBehavior {
+            admission: AdmissionBarrier::default(),
+            drained: AtomicBool::new(false),
+            release: Some(Arc::new(base::tokio::sync::Notify::new())),
+            drain_calls: AtomicUsize::new(0),
+        });
+        let owner = ManagedDrainOwner::new("stream", behavior.clone());
+        owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-1".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        let aborted = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-1".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(aborted.owner_state, ComponentOwnerState::Accepting as i32);
+        assert_eq!(aborted.outcome, ComponentAbortOutcome::Resumed as i32);
+        assert!(behavior.admission.acquire().is_some());
+
+        let replay = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-1".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: now_ms() - 1,
+            })
+            .await;
+        assert_eq!(
+            replay.outcome,
+            ComponentAbortOutcome::AlreadyAccepting as i32
+        );
+        let conflicting_abort = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-2".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(
+            conflicting_abort.outcome,
+            ComponentAbortOutcome::OperationConflict as i32
+        );
+        let late_prepare = owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-1".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(
+            late_prepare.owner_state,
+            ComponentOwnerState::Accepting as i32
+        );
+        assert_eq!(late_prepare.outcome, ComponentDrainOutcome::Busy as i32);
+        assert!(behavior.admission.acquire().is_some());
+
+        owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-2".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        let late_abort = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-1".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(
+            late_abort.outcome,
+            ComponentAbortOutcome::OperationConflict as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn abort_on_fresh_owner_confirms_accepting_and_replays() {
+        let behavior = Arc::new(TestBehavior {
+            admission: AdmissionBarrier::default(),
+            drained: AtomicBool::new(false),
+            release: None,
+            drain_calls: AtomicUsize::new(0),
+        });
+        let owner = ManagedDrainOwner::new("avai", behavior.clone());
+        for deadline_epoch_ms in [future_deadline(), now_ms() - 1] {
+            let response = owner
+                .abort_upgrade(AbortUpgradeRequest {
+                    operation_id: "op-uncertain".into(),
+                    component_id: "avai".into(),
+                    deadline_epoch_ms,
+                })
+                .await;
+            assert_eq!(response.owner_state, ComponentOwnerState::Accepting as i32);
+            assert_eq!(
+                response.outcome,
+                ComponentAbortOutcome::AlreadyAccepting as i32
+            );
+        }
+        assert!(behavior.admission.acquire().is_some());
+    }
+
+    #[tokio::test]
+    async fn dropped_abort_caller_does_not_cancel_resume_and_replay_observes_truth() {
+        let behavior = Arc::new(SlowResumeBehavior {
+            admission: AdmissionBarrier::default(),
+            reopen_started: Arc::new(base::tokio::sync::Semaphore::new(0)),
+            reopen_release: Arc::new(base::tokio::sync::Notify::new()),
+        });
+        let owner = Arc::new(ManagedDrainOwner::new("stream", behavior.clone()));
+        owner
+            .prepare_for_upgrade(PrepareForUpgradeRequest {
+                operation_id: "op-loss".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        let abort_owner = owner.clone();
+        let caller = base::tokio::spawn(async move {
+            abort_owner
+                .abort_upgrade(AbortUpgradeRequest {
+                    operation_id: "op-loss".into(),
+                    component_id: "stream".into(),
+                    deadline_epoch_ms: future_deadline(),
+                })
+                .await
+        });
+        behavior.reopen_started.acquire().await.unwrap().forget();
+        caller.abort();
+        behavior.reopen_release.notify_one();
+        let replay = owner
+            .abort_upgrade(AbortUpgradeRequest {
+                operation_id: "op-loss".into(),
+                component_id: "stream".into(),
+                deadline_epoch_ms: future_deadline(),
+            })
+            .await;
+        assert_eq!(replay.owner_state, ComponentOwnerState::Accepting as i32);
+        assert_eq!(
+            replay.outcome,
+            ComponentAbortOutcome::AlreadyAccepting as i32
+        );
+        assert!(behavior.admission.acquire().is_some());
+    }
+
+    #[tokio::test]
     async fn unsupported_busy_and_component_route_isolation_are_typed() {
         for component_id in ["guard", "session", "stream", "avai"] {
             let unsupported = UnsupportedDrainOwner::new(component_id);
@@ -741,6 +1184,14 @@ mod tests {
                 })
                 .await;
             assert_eq!(response.outcome, ComponentDrainOutcome::Unsupported as i32);
+            let abort = unsupported
+                .abort_upgrade(AbortUpgradeRequest {
+                    operation_id: "op-1".into(),
+                    component_id: component_id.into(),
+                    deadline_epoch_ms: future_deadline(),
+                })
+                .await;
+            assert_eq!(abort.outcome, ComponentAbortOutcome::Unsupported as i32);
             let cross_target = unsupported
                 .prepare_for_upgrade(PrepareForUpgradeRequest {
                     operation_id: "op-1".into(),

@@ -5,6 +5,7 @@ package gmv.component_management.v1;
 service ComponentManagement {
   rpc PrepareForUpgrade(PrepareForUpgradeRequest) returns (ComponentDrainResponse);
   rpc Drain(DrainRequest) returns (ComponentDrainResponse);
+  rpc AbortUpgrade(AbortUpgradeRequest) returns (ComponentAbortResponse);
 }
 
 message PrepareForUpgradeRequest {
@@ -19,11 +20,26 @@ message DrainRequest {
   int64 deadline_epoch_ms = 3;
 }
 
+message AbortUpgradeRequest {
+  string operation_id = 1;
+  string component_id = 2;
+  int64 deadline_epoch_ms = 3;
+}
+
 message ComponentDrainResponse {
   string operation_id = 1;
   string component_id = 2;
   ComponentOwnerState owner_state = 3;
   ComponentDrainOutcome outcome = 4;
+  string stable_error_code = 5;
+  int64 observed_at_epoch_ms = 6;
+}
+
+message ComponentAbortResponse {
+  string operation_id = 1;
+  string component_id = 2;
+  ComponentOwnerState owner_state = 3;
+  ComponentAbortOutcome outcome = 4;
   string stable_error_code = 5;
   int64 observed_at_epoch_ms = 6;
 }
@@ -47,4 +63,14 @@ enum ComponentDrainOutcome {
   COMPONENT_DRAIN_OUTCOME_DEADLINE_EXCEEDED = 7;
   COMPONENT_DRAIN_OUTCOME_OPERATION_CONFLICT = 8;
   COMPONENT_DRAIN_OUTCOME_INTERNAL_FAILURE = 9;
+}
+
+enum ComponentAbortOutcome {
+  COMPONENT_ABORT_OUTCOME_UNSPECIFIED = 0;
+  COMPONENT_ABORT_OUTCOME_RESUMED = 1;
+  COMPONENT_ABORT_OUTCOME_ALREADY_ACCEPTING = 2;
+  COMPONENT_ABORT_OUTCOME_UNSUPPORTED = 3;
+  COMPONENT_ABORT_OUTCOME_DEADLINE_EXCEEDED = 4;
+  COMPONENT_ABORT_OUTCOME_OPERATION_CONFLICT = 5;
+  COMPONENT_ABORT_OUTCOME_INTERNAL_FAILURE = 6;
 }
