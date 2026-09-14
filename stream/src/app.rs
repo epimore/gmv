@@ -18,7 +18,7 @@ use crate::guard_integration::{
     StreamControlAdapter, StreamControlRpc, StreamGuardNode, init_guard_channel,
     init_guard_event_sender,
 };
-use gmv_nodec::component_management::{ManagedDrainOwner, serve_uds};
+use gmv_nodec::component_management::{ComponentRuntimeHealth, ManagedDrainOwner, serve_uds};
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::common::v1::{Endpoint, EndpointMode};
 use gmv_protocol::guard::v1::NodeResourceSnapshot;
@@ -122,6 +122,7 @@ impl Daemon<StreamBootstrap> for App {
         let started_at_epoch_ms = now_epoch_ms();
         let (tx, rx) = mpsc::channel(100);
         let network_rt = GlobalRuntime::register_default(RuntimeType::CommonNetwork)?;
+        let component_health = ComponentRuntimeHealth::default();
         Register::init(&network_rt, self.conf.clone())?;
         {
             let _enter = network_rt.rt_handle.enter();
@@ -164,7 +165,10 @@ impl Daemon<StreamBootstrap> for App {
             if let Some(socket) = management_socket {
                 let owner = Arc::new(ManagedDrainOwner::new(
                     management_component_id,
-                    Arc::new(control_rpc.drain_behavior(media_endpoints.clone())),
+                    Arc::new(
+                        control_rpc
+                            .drain_behavior(media_endpoints.clone(), component_health.clone()),
+                    ),
                 ));
                 let management_cancel = network_rt.cancel.clone();
                 network_rt.spawn("stream-component-management", async move {
@@ -175,7 +179,9 @@ impl Daemon<StreamBootstrap> for App {
                 })?;
             }
             let server_rpc = control_rpc.clone();
+            let control_critical = component_health.register_critical();
             network_rt.spawn("stream-control-rpc", async move {
+                let _critical = control_critical;
                 base::log::debug!(
                     "stream rpc service inbound: node_id={}, bind_addr={}, tls={}",
                     control_node_id,
@@ -303,7 +309,9 @@ impl Daemon<StreamBootstrap> for App {
         }
         let http_cancel = network_rt.cancel.clone();
         let http_shutdown = http_cancel.clone();
+        let http_critical = component_health.register_critical();
         network_rt.spawn("stream-http", async move {
+            let _critical = http_critical;
             let result = http::run(
                 http_listener,
                 self.conf.http.tls.enabled.then(|| http::HttpTlsConfig {
@@ -329,10 +337,12 @@ impl Daemon<StreamBootstrap> for App {
 
         let compute_rt = GlobalRuntime::register_default(RuntimeType::CommonCompute)?;
         let dispatcher_rt = compute_rt.clone();
-        compute_rt.spawn(
-            "stream-media-dispatcher",
-            media::handle_process(rx, dispatcher_rt),
-        )?;
+        let dispatcher_critical = component_health.register_critical();
+        compute_rt.spawn("stream-media-dispatcher", async move {
+            let _critical = dispatcher_critical;
+            media::handle_process(rx, dispatcher_rt).await;
+        })?;
+        component_health.mark_ready();
 
         let report = GlobalRuntime::order_shutdown(&[
             RuntimeType::CommonNetwork,

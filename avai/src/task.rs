@@ -20,7 +20,9 @@ use base_db::{
 };
 use gmv_nodec::{
     NodeEventSender,
-    component_management::{AdmissionBarrier, ComponentDrainBehavior},
+    component_management::{
+        AdmissionBarrier, ComponentDrainBehavior, ComponentProbeSnapshot, ComponentRuntimeHealth,
+    },
 };
 use gmv_protocol::{
     avai::v1::{
@@ -98,6 +100,7 @@ pub struct TaskManager {
     running: Arc<AtomicUsize>,
     closed: Arc<AtomicBool>,
     admission: AdmissionBarrier,
+    runtime_health: ComponentRuntimeHealth,
     #[cfg(test)]
     admission_pause: Arc<std::sync::Mutex<Option<AdmissionPause>>>,
 }
@@ -136,6 +139,7 @@ impl TaskManager {
         let task_cancellations = Arc::new(Mutex::new(HashMap::new()));
         let event_sender = Arc::new(RwLock::new(None));
         let running = Arc::new(AtomicUsize::new(0));
+        let runtime_health = ComponentRuntimeHealth::default();
 
         for worker_id in 0..config.worker_count {
             let context = WorkerContext {
@@ -149,11 +153,12 @@ impl TaskManager {
                 event_sender: event_sender.clone(),
                 running: running.clone(),
             };
+            let critical = runtime_health.register_critical();
             let handle = runtime
-                .spawn(
-                    format!("avai-task-worker-{worker_id}"),
-                    worker_loop(context),
-                )
+                .spawn(format!("avai-task-worker-{worker_id}"), async move {
+                    worker_loop(context).await;
+                    drop(critical);
+                })
                 .map_err(|error| TaskError::internal("spawn_worker", error))?;
             workers.lock().await.push(handle);
         }
@@ -170,6 +175,7 @@ impl TaskManager {
             running,
             closed: Arc::new(AtomicBool::new(false)),
             admission: AdmissionBarrier::default(),
+            runtime_health,
             #[cfg(test)]
             admission_pause: Arc::new(std::sync::Mutex::new(None)),
         };
@@ -204,6 +210,10 @@ impl TaskManager {
 
     pub fn running_task_count(&self) -> usize {
         self.running.load(Ordering::Acquire)
+    }
+
+    pub fn mark_runtime_ready(&self) {
+        self.runtime_health.mark_ready();
     }
 
     pub fn close_upgrade_admission(&self) {
@@ -425,6 +435,14 @@ pub struct AvaiDrainBehavior(pub TaskManager);
 
 #[tonic::async_trait]
 impl ComponentDrainBehavior for AvaiDrainBehavior {
+    fn probe_snapshot(&self) -> ComponentProbeSnapshot {
+        self.0.runtime_health.snapshot(
+            self.0.admission.is_accepting()
+                && !self.0.closed.load(Ordering::Acquire)
+                && !self.0.cancel.is_cancelled(),
+        )
+    }
+
     fn supported(&self) -> bool {
         true
     }
@@ -1284,6 +1302,9 @@ mod tests {
         uds::{ManagedUnixStreamListener, UnixTransportConfig},
     };
     use gmv_nodec::component_management::{ComponentDrainOwner, ManagedDrainOwner};
+    use gmv_protocol::component_management::v1::{
+        ComponentHealthState, ComponentProbeRequest, ComponentReadinessState,
+    };
     #[cfg(unix)]
     use gmv_protocol::session::v1::{ReadGrantedImageRequest, ReadGrantedImageResponse};
     use gmv_protocol::{
@@ -1361,6 +1382,36 @@ mod tests {
         .await
         .unwrap();
         (manager, root)
+    }
+
+    #[tokio::test]
+    async fn avai_probe_uses_worker_liveness_and_admission_without_business_db_queries() {
+        let (manager, root) = test_manager().await;
+        let owner = ManagedDrainOwner::new("avai", Arc::new(AvaiDrainBehavior(manager.clone())));
+        let request = || ComponentProbeRequest {
+            operation_id: "probe-avai".into(),
+            component_id: "avai".into(),
+            readiness_contract_version: 1,
+            deadline_epoch_ms: now_epoch_ms() + 5_000,
+        };
+        let starting = owner.probe(request()).await;
+        assert_eq!(
+            starting.readiness_state,
+            ComponentReadinessState::NotReady as i32
+        );
+        manager.mark_runtime_ready();
+        let ready = owner.probe(request()).await;
+        assert_eq!(ready.readiness_state, ComponentReadinessState::Ready as i32);
+        assert_eq!(ready.health_state, ComponentHealthState::Healthy as i32);
+        manager.close_upgrade_admission();
+        let drained = owner.probe(request()).await;
+        assert_eq!(
+            drained.readiness_state,
+            ComponentReadinessState::NotReady as i32
+        );
+        assert_eq!(drained.health_state, ComponentHealthState::Healthy as i32);
+        manager.close_and_wait().await.unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn png_bytes() -> Vec<u8> {

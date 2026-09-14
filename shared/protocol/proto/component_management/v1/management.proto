@@ -6,6 +6,24 @@ service ComponentManagement {
   rpc PrepareForUpgrade(PrepareForUpgradeRequest) returns (ComponentDrainResponse);
   rpc Drain(DrainRequest) returns (ComponentDrainResponse);
   rpc AbortUpgrade(AbortUpgradeRequest) returns (ComponentAbortResponse);
+  rpc Probe(ComponentProbeRequest) returns (ComponentProbeResponse);
+}
+
+message ComponentProbeRequest {
+  string operation_id = 1;
+  string component_id = 2;
+  uint32 readiness_contract_version = 3;
+  int64 deadline_epoch_ms = 4;
+}
+
+message ComponentProbeResponse {
+  string operation_id = 1;
+  string component_id = 2;
+  uint32 readiness_contract_version = 3;
+  ComponentReadinessState readiness_state = 4;
+  ComponentHealthState health_state = 5;
+  string stable_error_code = 6;
+  int64 observed_at_epoch_ms = 7;
 }
 
 message PrepareForUpgradeRequest {
@@ -73,4 +91,20 @@ enum ComponentAbortOutcome {
   COMPONENT_ABORT_OUTCOME_DEADLINE_EXCEEDED = 4;
   COMPONENT_ABORT_OUTCOME_OPERATION_CONFLICT = 5;
   COMPONENT_ABORT_OUTCOME_INTERNAL_FAILURE = 6;
+}
+
+enum ComponentReadinessState {
+  COMPONENT_READINESS_STATE_UNSPECIFIED = 0;
+  COMPONENT_READINESS_STATE_READY = 1;
+  COMPONENT_READINESS_STATE_NOT_READY = 2;
+  COMPONENT_READINESS_STATE_UNSUPPORTED = 3;
+  COMPONENT_READINESS_STATE_UNKNOWN = 4;
+}
+
+enum ComponentHealthState {
+  COMPONENT_HEALTH_STATE_UNSPECIFIED = 0;
+  COMPONENT_HEALTH_STATE_HEALTHY = 1;
+  COMPONENT_HEALTH_STATE_DEGRADED = 2;
+  COMPONENT_HEALTH_STATE_UNSUPPORTED = 3;
+  COMPONENT_HEALTH_STATE_UNKNOWN = 4;
 }
