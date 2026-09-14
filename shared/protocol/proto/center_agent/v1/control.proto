@@ -76,6 +76,17 @@ message ComponentObservation {
   string observed_version = 4;
   ComponentState state = 5;
   string stable_reason = 6;
+  string actual_revision = 7;
+  ComponentActualRevisionState actual_revision_state = 8;
+  string actual_revision_reason = 9;
+}
+
+enum ComponentActualRevisionState {
+  COMPONENT_ACTUAL_REVISION_STATE_UNSPECIFIED = 0;
+  COMPONENT_ACTUAL_REVISION_STATE_UNKNOWN = 1;
+  COMPONENT_ACTUAL_REVISION_STATE_RUNNING_VERIFIED = 2;
+  COMPONENT_ACTUAL_REVISION_STATE_STOPPED_POINTER_VERIFIED = 3;
+  COMPONENT_ACTUAL_REVISION_STATE_CONFLICT = 4;
 }
 
 enum ComponentState {
@@ -185,6 +196,7 @@ message DeliveryReceipt {
   string stable_error_code = 5;
   string detail_digest = 6;
   int64 observed_at_epoch_ms = 7;
+  string actual_revision = 8;
 }
 
 enum DeliveryState {
