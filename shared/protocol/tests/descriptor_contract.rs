@@ -539,6 +539,31 @@ fn artifact_compatibility_contract_is_additive_typed_and_safe() {
         descriptor_field_number(desired, "target_component_id"),
         Some(5)
     );
+    let observation = descriptor_message(file, "ComponentObservation");
+    for (field, number) in [
+        ("actual_revision", 7),
+        ("actual_revision_state", 8),
+        ("actual_revision_reason", 9),
+    ] {
+        assert_eq!(descriptor_field_number(observation, field), Some(number));
+    }
+    let receipt = descriptor_message(file, "DeliveryReceipt");
+    assert_eq!(descriptor_field_number(receipt, "actual_revision"), Some(8));
+    for (value, number) in [
+        ("COMPONENT_ACTUAL_REVISION_STATE_UNSPECIFIED", 0),
+        ("COMPONENT_ACTUAL_REVISION_STATE_UNKNOWN", 1),
+        ("COMPONENT_ACTUAL_REVISION_STATE_RUNNING_VERIFIED", 2),
+        (
+            "COMPONENT_ACTUAL_REVISION_STATE_STOPPED_POINTER_VERIFIED",
+            3,
+        ),
+        ("COMPONENT_ACTUAL_REVISION_STATE_CONFLICT", 4),
+    ] {
+        assert_eq!(
+            descriptor_enum_value_number(file, "ComponentActualRevisionState", value),
+            Some(number)
+        );
+    }
 
     for (enum_name, values) in [
         (
