@@ -1,12 +1,16 @@
 use std::{
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
 use base::tokio_util::sync::CancellationToken;
 use gmv_protocol::component_management::v1::{
-    AbortUpgradeRequest, ComponentAbortResponse, ComponentDrainResponse, DrainRequest,
+    AbortUpgradeRequest, ComponentAbortResponse, ComponentDrainResponse, ComponentHealthState,
+    ComponentProbeRequest, ComponentProbeResponse, ComponentReadinessState, DrainRequest,
     PrepareForUpgradeRequest,
     component_management_server::{ComponentManagement, ComponentManagementServer},
 };
@@ -18,6 +22,8 @@ use gmv_protocol::component_management::v1::{
 
 #[async_trait]
 pub trait ComponentDrainOwner: Send + Sync + 'static {
+    async fn probe(&self, request: ComponentProbeRequest) -> ComponentProbeResponse;
+
     async fn prepare_for_upgrade(
         &self,
         request: PrepareForUpgradeRequest,
@@ -30,6 +36,9 @@ pub trait ComponentDrainOwner: Send + Sync + 'static {
 
 #[async_trait]
 pub trait ComponentDrainBehavior: Send + Sync + 'static {
+    fn probe_snapshot(&self) -> ComponentProbeSnapshot {
+        ComponentProbeSnapshot::unsupported("component_probe_unsupported")
+    }
     fn supported(&self) -> bool;
     fn close_admission(&self);
     async fn reopen_admission(&self) -> Result<(), &'static str>;
@@ -37,6 +46,100 @@ pub trait ComponentDrainBehavior: Send + Sync + 'static {
     async fn wait_for_admissions(&self);
     async fn is_drained(&self) -> bool;
     async fn drain_owned_resources(&self, cancel: CancellationToken) -> Result<(), &'static str>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComponentProbeSnapshot {
+    pub readiness: ComponentReadinessState,
+    pub health: ComponentHealthState,
+    pub stable_error_code: &'static str,
+}
+
+impl ComponentProbeSnapshot {
+    pub const fn ready_healthy() -> Self {
+        Self {
+            readiness: ComponentReadinessState::Ready,
+            health: ComponentHealthState::Healthy,
+            stable_error_code: "",
+        }
+    }
+
+    pub const fn unsupported(code: &'static str) -> Self {
+        Self {
+            readiness: ComponentReadinessState::Unsupported,
+            health: ComponentHealthState::Unsupported,
+            stable_error_code: code,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct ComponentRuntimeHealth {
+    inner: Arc<ComponentRuntimeHealthInner>,
+}
+
+#[derive(Default)]
+struct ComponentRuntimeHealthInner {
+    ready: AtomicBool,
+    fatal: AtomicBool,
+    critical_expected: AtomicUsize,
+    critical_live: AtomicUsize,
+}
+
+impl ComponentRuntimeHealth {
+    pub fn register_critical(&self) -> CriticalRuntimeGuard {
+        self.inner.critical_expected.fetch_add(1, Ordering::AcqRel);
+        self.inner.critical_live.fetch_add(1, Ordering::AcqRel);
+        CriticalRuntimeGuard {
+            inner: self.inner.clone(),
+        }
+    }
+
+    pub fn mark_ready(&self) {
+        self.inner.ready.store(true, Ordering::Release);
+    }
+
+    pub fn latch_fatal(&self) {
+        self.inner.fatal.store(true, Ordering::Release);
+    }
+
+    pub fn snapshot(&self, admission_open: bool) -> ComponentProbeSnapshot {
+        let critical_live = self.inner.critical_live.load(Ordering::Acquire);
+        let critical_expected = self.inner.critical_expected.load(Ordering::Acquire);
+        if self.inner.fatal.load(Ordering::Acquire) || critical_live != critical_expected {
+            return ComponentProbeSnapshot {
+                readiness: ComponentReadinessState::NotReady,
+                health: ComponentHealthState::Degraded,
+                stable_error_code: "component_critical_runtime_unhealthy",
+            };
+        }
+        if !self.inner.ready.load(Ordering::Acquire) {
+            return ComponentProbeSnapshot {
+                readiness: ComponentReadinessState::NotReady,
+                health: ComponentHealthState::Unknown,
+                stable_error_code: "component_runtime_starting",
+            };
+        }
+        if !admission_open {
+            return ComponentProbeSnapshot {
+                readiness: ComponentReadinessState::NotReady,
+                health: ComponentHealthState::Healthy,
+                stable_error_code: "component_admission_closed",
+            };
+        }
+        ComponentProbeSnapshot::ready_healthy()
+    }
+}
+
+pub struct CriticalRuntimeGuard {
+    inner: Arc<ComponentRuntimeHealthInner>,
+}
+
+impl Drop for CriticalRuntimeGuard {
+    fn drop(&mut self) {
+        self.inner.fatal.store(true, Ordering::Release);
+        self.inner.critical_live.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Default)]
@@ -107,6 +210,14 @@ impl AdmissionBarrier {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .in_flight
+    }
+
+    pub fn is_accepting(&self) -> bool {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .accepting
     }
 
     pub async fn wait_for_zero(&self) {
@@ -250,6 +361,54 @@ impl<B> ManagedDrainOwner<B> {
 
 #[async_trait]
 impl<B: ComponentDrainBehavior> ComponentDrainOwner for ManagedDrainOwner<B> {
+    async fn probe(&self, request: ComponentProbeRequest) -> ComponentProbeResponse {
+        let (snapshot, code) = if request.operation_id.is_empty() {
+            (
+                ComponentProbeSnapshot {
+                    readiness: ComponentReadinessState::Unknown,
+                    health: ComponentHealthState::Unknown,
+                    stable_error_code: "operation_id_missing",
+                },
+                "operation_id_missing",
+            )
+        } else if request.component_id != self.component_id {
+            (
+                ComponentProbeSnapshot {
+                    readiness: ComponentReadinessState::Unknown,
+                    health: ComponentHealthState::Unknown,
+                    stable_error_code: "component_mismatch",
+                },
+                "component_mismatch",
+            )
+        } else if request.readiness_contract_version != 1 {
+            (
+                ComponentProbeSnapshot::unsupported("readiness_contract_unsupported"),
+                "readiness_contract_unsupported",
+            )
+        } else if request.deadline_epoch_ms <= now_ms() {
+            (
+                ComponentProbeSnapshot {
+                    readiness: ComponentReadinessState::Unknown,
+                    health: ComponentHealthState::Unknown,
+                    stable_error_code: "component_probe_deadline_exceeded",
+                },
+                "component_probe_deadline_exceeded",
+            )
+        } else {
+            let snapshot = self.behavior.probe_snapshot();
+            (snapshot, snapshot.stable_error_code)
+        };
+        ComponentProbeResponse {
+            operation_id: request.operation_id,
+            component_id: self.component_id.clone(),
+            readiness_contract_version: request.readiness_contract_version,
+            readiness_state: snapshot.readiness as i32,
+            health_state: snapshot.health as i32,
+            stable_error_code: code.to_string(),
+            observed_at_epoch_ms: now_ms(),
+        }
+    }
+
     async fn prepare_for_upgrade(
         &self,
         request: PrepareForUpgradeRequest,
@@ -608,6 +767,25 @@ impl UnsupportedDrainOwner {
 
 #[async_trait]
 impl ComponentDrainOwner for UnsupportedDrainOwner {
+    async fn probe(&self, request: ComponentProbeRequest) -> ComponentProbeResponse {
+        let code = if request.component_id != self.component_id {
+            "component_mismatch"
+        } else if request.deadline_epoch_ms <= now_ms() {
+            "component_probe_deadline_exceeded"
+        } else {
+            "component_probe_unsupported"
+        };
+        ComponentProbeResponse {
+            operation_id: request.operation_id,
+            component_id: self.component_id.clone(),
+            readiness_contract_version: request.readiness_contract_version,
+            readiness_state: ComponentReadinessState::Unsupported as i32,
+            health_state: ComponentHealthState::Unsupported as i32,
+            stable_error_code: code.to_string(),
+            observed_at_epoch_ms: now_ms(),
+        }
+    }
+
     async fn prepare_for_upgrade(
         &self,
         request: PrepareForUpgradeRequest,
@@ -676,6 +854,13 @@ impl<O> ComponentManagementRpc<O> {
 
 #[async_trait]
 impl<O: ComponentDrainOwner> ComponentManagement for ComponentManagementRpc<O> {
+    async fn probe(
+        &self,
+        request: Request<ComponentProbeRequest>,
+    ) -> Result<Response<ComponentProbeResponse>, Status> {
+        Ok(Response::new(self.owner.probe(request.into_inner()).await))
+    }
+
     async fn prepare_for_upgrade(
         &self,
         request: Request<PrepareForUpgradeRequest>,
@@ -820,6 +1005,56 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     static NEXT_TEST_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn probe_request(component_id: &str) -> ComponentProbeRequest {
+        ComponentProbeRequest {
+            operation_id: "probe-op".into(),
+            component_id: component_id.into(),
+            readiness_contract_version: 1,
+            deadline_epoch_ms: now_ms() + 5_000,
+        }
+    }
+
+    #[test]
+    fn runtime_health_is_a_bounded_in_process_liveness_snapshot() {
+        let health = ComponentRuntimeHealth::default();
+        let critical = health.register_critical();
+        assert_eq!(
+            health.snapshot(true).readiness,
+            ComponentReadinessState::NotReady
+        );
+        health.mark_ready();
+        assert_eq!(
+            health.snapshot(true),
+            ComponentProbeSnapshot::ready_healthy()
+        );
+        assert_eq!(health.snapshot(false).health, ComponentHealthState::Healthy);
+        assert_eq!(
+            health.snapshot(false).readiness,
+            ComponentReadinessState::NotReady
+        );
+        drop(critical);
+        assert_eq!(health.snapshot(true).health, ComponentHealthState::Degraded);
+        health.latch_fatal();
+        assert_eq!(health.snapshot(true).health, ComponentHealthState::Degraded);
+    }
+
+    #[tokio::test]
+    async fn unsupported_owners_never_report_ready_or_healthy() {
+        for component_id in ["guard", "session"] {
+            let response = UnsupportedDrainOwner::new(component_id)
+                .probe(probe_request(component_id))
+                .await;
+            assert_eq!(
+                response.readiness_state,
+                ComponentReadinessState::Unsupported as i32
+            );
+            assert_eq!(
+                response.health_state,
+                ComponentHealthState::Unsupported as i32
+            );
+        }
+    }
 
     struct TestBehavior {
         admission: AdmissionBarrier,

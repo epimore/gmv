@@ -20,7 +20,9 @@ use gmv_domain::info::obj::{
 use gmv_domain::info::output::{OutputEnum, OutputKind};
 use gmv_nodec::{
     NodeEventSender,
-    component_management::{AdmissionBarrier, ComponentDrainBehavior},
+    component_management::{
+        AdmissionBarrier, ComponentDrainBehavior, ComponentProbeSnapshot, ComponentRuntimeHealth,
+    },
 };
 use gmv_protocol::common::v1::{
     Endpoint, EndpointMode, ErrorDetail, NodeIdentity, NodeKind, OperationRef, ResourceRef,
@@ -370,6 +372,7 @@ pub struct StreamDrainBehavior {
     admission: AdmissionBarrier,
     media_endpoints: Arc<MediaEndpointManager>,
     lifecycle: Arc<Mutex<()>>,
+    runtime_health: ComponentRuntimeHealth,
 }
 
 impl StreamControlRpc {
@@ -390,12 +393,14 @@ impl StreamControlRpc {
     pub fn drain_behavior(
         &self,
         media_endpoints: Arc<MediaEndpointManager>,
+        runtime_health: ComponentRuntimeHealth,
     ) -> StreamDrainBehavior {
         StreamDrainBehavior {
             admission: self.admission.clone(),
             control: self.clone(),
             media_endpoints,
             lifecycle: Arc::new(Mutex::new(())),
+            runtime_health,
         }
     }
 
@@ -426,6 +431,10 @@ impl StreamControlRpc {
 
 #[tonic::async_trait]
 impl ComponentDrainBehavior for StreamDrainBehavior {
+    fn probe_snapshot(&self) -> ComponentProbeSnapshot {
+        self.runtime_health.snapshot(self.admission.is_accepting())
+    }
+
     fn supported(&self) -> bool {
         true
     }
@@ -2447,7 +2456,8 @@ mod tests {
     use base::utils::rt::GlobalRuntime;
     use gmv_nodec::component_management::{ComponentDrainOwner, ManagedDrainOwner};
     use gmv_protocol::component_management::v1::{
-        ComponentDrainOutcome, ComponentOwnerState, DrainRequest, PrepareForUpgradeRequest,
+        ComponentDrainOutcome, ComponentHealthState, ComponentOwnerState, ComponentProbeRequest,
+        ComponentReadinessState, DrainRequest, PrepareForUpgradeRequest,
     };
     use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
 
@@ -3234,6 +3244,38 @@ mod tests {
         (StreamControlRpc::new(adapter), manager)
     }
 
+    #[tokio::test]
+    async fn stream_probe_uses_registered_runtime_liveness_and_admission() {
+        let (rpc, manager) = stream_drain_test_rpc();
+        let health = ComponentRuntimeHealth::default();
+        let _critical = health.register_critical();
+        let owner = ManagedDrainOwner::new(
+            "stream",
+            Arc::new(rpc.drain_behavior(manager, health.clone())),
+        );
+        let request = || ComponentProbeRequest {
+            operation_id: "probe-stream".into(),
+            component_id: "stream".into(),
+            readiness_contract_version: 1,
+            deadline_epoch_ms: now_ms() + 5_000,
+        };
+        assert_eq!(
+            owner.probe(request()).await.readiness_state,
+            ComponentReadinessState::NotReady as i32
+        );
+        health.mark_ready();
+        let ready = owner.probe(request()).await;
+        assert_eq!(ready.readiness_state, ComponentReadinessState::Ready as i32);
+        assert_eq!(ready.health_state, ComponentHealthState::Healthy as i32);
+        rpc.admission.close();
+        let closed = owner.probe(request()).await;
+        assert_eq!(
+            closed.readiness_state,
+            ComponentReadinessState::NotReady as i32
+        );
+        assert_eq!(closed.health_state, ComponentHealthState::Healthy as i32);
+    }
+
     fn install_admission_pause(
         rpc: &StreamControlRpc,
         operation: &'static str,
@@ -3268,7 +3310,10 @@ mod tests {
         entered.acquire().await.unwrap().forget();
         assert_eq!(rpc.admission.in_flight(), 1);
 
-        let owner = ManagedDrainOwner::new("stream", Arc::new(rpc.drain_behavior(manager)));
+        let owner = ManagedDrainOwner::new(
+            "stream",
+            Arc::new(rpc.drain_behavior(manager, ComponentRuntimeHealth::default())),
+        );
         let prepared = owner
             .prepare_for_upgrade(PrepareForUpgradeRequest {
                 operation_id: format!("op-{operation}"),

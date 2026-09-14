@@ -298,6 +298,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         node.identity.node_id,
         address
     );
+    manager.mark_runtime_ready();
     let serve_result = tonic::transport::Server::builder()
         .add_service(AvaiControlServer::new(rpc))
         .serve_with_incoming_shutdown(incoming, async move { shutdown.cancelled().await })
