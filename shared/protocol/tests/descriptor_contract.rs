@@ -1760,3 +1760,102 @@ fn start_receive_request_is_wire_compatible_with_legacy_callers() {
     assert_eq!(decoded_legacy.route_id, current.route_id);
     assert_eq!(decoded_legacy.lease_id, current.lease_id);
 }
+
+#[test]
+fn avai_local_model_management_is_typed_bounded_and_not_public_avai_control() {
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.avai.model_management.v1");
+    let service = file
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("AvaiModelManagement"))
+        .unwrap();
+    assert_eq!(
+        service
+            .method
+            .iter()
+            .filter_map(|method| method.name.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            "ListModels",
+            "InspectModel",
+            "ImportStagedModel",
+            "PreloadModel",
+            "ActivateModel",
+            "RollbackModel",
+            "UnloadModel",
+        ]
+    );
+
+    for request_name in [
+        "ImportStagedModelRequest",
+        "PreloadModelRequest",
+        "ActivateModelRequest",
+        "RollbackModelRequest",
+        "UnloadModelRequest",
+    ] {
+        let request = descriptor_message(file, request_name);
+        assert_eq!(descriptor_field_number(request, "operation"), Some(1));
+        assert_eq!(
+            descriptor_field_number(request, "deadline_epoch_ms"),
+            Some(2)
+        );
+    }
+    let import = descriptor_message(file, "ImportStagedModelRequest");
+    assert_eq!(descriptor_field_number(import, "stage_id"), Some(3));
+    assert_eq!(
+        descriptor_field_number(import, "expected_manifest_sha256"),
+        Some(5)
+    );
+
+    let forbidden = [
+        "path",
+        "url",
+        "shell",
+        "argv",
+        "command",
+        "executable",
+        "unit",
+        "script",
+        "hook",
+        "drain",
+        "readiness",
+        "probe",
+    ];
+    for message in &file.message_type {
+        for field in &message.field {
+            let name = field
+                .name
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            assert!(
+                !forbidden.iter().any(|word| name.contains(word)),
+                "forbidden local model-management authority field {name}"
+            );
+        }
+    }
+
+    let public_avai = descriptor_file(&descriptor, "gmv.avai.v1");
+    let public_service = public_avai
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("AvaiControl"))
+        .unwrap();
+    let public_methods = public_service
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    for forbidden_method in [
+        "ListModels",
+        "InspectModel",
+        "ImportStagedModel",
+        "PreloadModel",
+        "ActivateModel",
+        "RollbackModel",
+        "UnloadModel",
+    ] {
+        assert!(!public_methods.contains(&forbidden_method));
+    }
+}

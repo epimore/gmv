@@ -26,3 +26,25 @@ server:
   task_worker_count: 2
   allow_private_image_urls: false
   allowed_internal_hosts: []
+
+model:
+  database_path: ./data/avai-model.db
+  root: ./data/models
+  trusted_import_root: ./data/model-import
+  architecture: x86_64
+  allowed_runtime_ids: []
+  allowed_accelerators:
+    - cpu
+  allowed_result_schemas: []
+  approved_spdx: []
+  available_license_refs: []
+  trusted_signing_keys: {}
+  max_manifest_bytes: 262144
+  max_file_count: 256
+  max_package_bytes: 4294967296
+  max_memory_mb: 16384
+  max_vram_mb: 16384
+  max_loaded_models: 8
+  operation_receipt_capacity: 4096
+  operation_retention_ms: 86400000
+  mutation_concurrency: 1

@@ -4,7 +4,7 @@ mod repository;
 mod runtime;
 
 pub use manager::{
-    ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelStatus,
+    ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelObservation, ModelStatus,
     RecoveredCapability,
 };
 pub use package::{
@@ -12,11 +12,14 @@ pub use package::{
     ResultSchema, RuntimeVariant, SelfTestCase, SigningSpec, VerifiedModelPackage,
     model_package_signing_payload, verify_package,
 };
-pub use repository::{InstalledModel, ModelRepository, ModelState};
-pub use runtime::{
-    FakeRuntimeBehavior, FakeRuntimeProvider, InferenceResult, ModelInstance, RuntimeDescriptor,
-    RuntimeProvider,
+pub(crate) use repository::{
+    ClaimOperation, OperationClaimRequest, OperationReceipt, OperationReceiptLimits,
+    OperationReceiptState,
 };
+pub use repository::{InstalledModel, ModelRepository, ModelState};
+#[cfg(test)]
+pub use runtime::{FakeRuntimeBehavior, FakeRuntimeProvider};
+pub use runtime::{InferenceResult, ModelInstance, RuntimeDescriptor, RuntimeProvider};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {

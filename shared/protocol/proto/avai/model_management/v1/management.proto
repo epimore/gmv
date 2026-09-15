@@ -1,0 +1,127 @@
+syntax = "proto3";
+
+package gmv.avai.model_management.v1;
+
+import "common/v1/types.proto";
+
+service AvaiModelManagement {
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc InspectModel(InspectModelRequest) returns (InspectModelResponse);
+  rpc ImportStagedModel(ImportStagedModelRequest) returns (ModelMutationResponse);
+  rpc PreloadModel(PreloadModelRequest) returns (ModelMutationResponse);
+  rpc ActivateModel(ActivateModelRequest) returns (ModelMutationResponse);
+  rpc RollbackModel(RollbackModelRequest) returns (ModelMutationResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (ModelMutationResponse);
+}
+
+message ModelIdentity {
+  string model_id = 1;
+  string version = 2;
+  string revision = 3;
+}
+
+message ModelSnapshot {
+  ModelIdentity identity = 1;
+  ModelLifecycleState lifecycle_state = 2;
+  repeated string capabilities = 3;
+  string runtime = 4;
+  bool runtime_available = 5;
+  bool loaded = 6;
+  repeated string active_capabilities = 7;
+  repeated string previous_capabilities = 8;
+  optional uint64 generation = 9;
+  uint64 in_flight_tasks = 10;
+  ModelHealth health = 11;
+  string manifest_sha256 = 12;
+  gmv.common.v1.ErrorDetail error = 13;
+  int64 observed_at_epoch_ms = 14;
+}
+
+message ListModelsRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListModelsResponse {
+  repeated ModelSnapshot models = 1;
+  string next_page_token = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+  int64 observed_at_epoch_ms = 4;
+}
+
+message InspectModelRequest {
+  ModelIdentity identity = 1;
+  bool observe_live_health = 2;
+  int64 deadline_epoch_ms = 3;
+}
+
+message InspectModelResponse {
+  ModelSnapshot model = 1;
+  gmv.common.v1.ErrorDetail error = 2;
+  int64 observed_at_epoch_ms = 3;
+}
+
+message ImportStagedModelRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  int64 deadline_epoch_ms = 2;
+  string stage_id = 3;
+  ModelIdentity expected_identity = 4;
+  string expected_manifest_sha256 = 5;
+}
+
+message PreloadModelRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  int64 deadline_epoch_ms = 2;
+  ModelIdentity identity = 3;
+}
+
+message ActivateModelRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  int64 deadline_epoch_ms = 2;
+  ModelIdentity identity = 3;
+}
+
+message RollbackModelRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  int64 deadline_epoch_ms = 2;
+  ModelIdentity from_identity = 3;
+  ModelIdentity to_identity = 4;
+}
+
+message UnloadModelRequest {
+  gmv.common.v1.OperationRef operation = 1;
+  int64 deadline_epoch_ms = 2;
+  ModelIdentity identity = 3;
+}
+
+message ModelMutationResponse {
+  string operation_id = 1;
+  ModelOperationOutcome outcome = 2;
+  gmv.common.v1.ErrorDetail error = 3;
+  int64 observed_at_epoch_ms = 4;
+  ModelSnapshot model = 5;
+  bool replayed = 6;
+}
+
+enum ModelLifecycleState {
+  MODEL_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  MODEL_LIFECYCLE_STATE_INSTALLED = 1;
+  MODEL_LIFECYCLE_STATE_READY = 2;
+  MODEL_LIFECYCLE_STATE_ACTIVE = 3;
+  MODEL_LIFECYCLE_STATE_RETIRED = 4;
+  MODEL_LIFECYCLE_STATE_FAILED = 5;
+}
+
+enum ModelHealth {
+  MODEL_HEALTH_UNSPECIFIED = 0;
+  MODEL_HEALTH_UNKNOWN = 1;
+  MODEL_HEALTH_HEALTHY = 2;
+  MODEL_HEALTH_UNHEALTHY = 3;
+  MODEL_HEALTH_UNAVAILABLE = 4;
+}
+
+enum ModelOperationOutcome {
+  MODEL_OPERATION_OUTCOME_UNSPECIFIED = 0;
+  MODEL_OPERATION_OUTCOME_SUCCEEDED = 1;
+  MODEL_OPERATION_OUTCOME_FAILED = 2;
+}
