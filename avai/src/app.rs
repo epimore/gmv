@@ -518,10 +518,10 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     if let Some(management_task) = management_task {
         management_task.await.map_err(external_error)?;
     }
-    manager.close_and_wait().await.map_err(external_error)?;
     if let Some(provider) = onnx_cpu_provider {
         provider.close_and_wait().await.map_err(external_error)?;
     }
+    manager.close_and_wait().await.map_err(external_error)?;
     uploads
         .cleanup_expired(now_epoch_ms())
         .await

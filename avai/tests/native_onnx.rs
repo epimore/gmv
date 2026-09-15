@@ -716,31 +716,36 @@ async fn native_onnx_cpu_acceptance_and_cooperative_termination() {
     drop(small_result_instance);
     small_result_provider.close_and_wait().await.unwrap();
 
-    tasks.close_and_wait().await.unwrap();
-    drop(management);
-    drop(tasks);
+    restarted.preload(&stress.identity, 18).await.unwrap();
+    restarted.activate(&stress.identity, 19).await.unwrap();
     let before_shutdown = provider.lifetime_snapshot();
-    let shutdown_instance = stress_instance.clone();
-    let shutdown_call = base::tokio::spawn(async move {
-        shutdown_instance
-            .infer(runtime_input(), context(Duration::from_secs(10)))
-            .await
-    });
+    create_owned_task(
+        &tasks,
+        &node,
+        "native-shutdown-task",
+        object_id,
+        &input_bytes,
+        20,
+    )
+    .await;
     wait_for_native_job(&provider, before_shutdown.admitted_jobs).await;
+    drop(management);
+    task_runtime.cancel.cancel();
     base::tokio::time::timeout(Duration::from_secs(5), provider.close_and_wait())
         .await
         .expect("Architecture Stop Condition: native executor shutdown did not drain")
         .unwrap();
-    assert_eq!(
-        shutdown_call.await.unwrap().unwrap_err().code,
-        "model_runtime_cancelled"
-    );
+    base::tokio::time::timeout(Duration::from_secs(5), tasks.close_and_wait())
+        .await
+        .expect("TaskManager did not join after bounded native drain")
+        .unwrap();
     let shutdown = provider.lifetime_snapshot();
     assert!(!shutdown.accepting);
     assert_eq!(shutdown.active_jobs, 0);
     assert_eq!(shutdown.admitted_jobs, shutdown.completed_jobs);
     assert_eq!(shutdown.workers_remaining, 0);
 
+    drop(tasks);
     drop(stress_instance);
     drop(restarted);
     repository.close().await;
