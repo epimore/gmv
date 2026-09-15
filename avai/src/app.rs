@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
 use avai::model::{
-    ModelManager, ModelManagerConfig, ModelRepository, ONNX_CPU_RUNTIME, OnnxCpuConfig,
-    OnnxCpuProvider, PackagePolicy, RuntimeProvider,
+    ExecutionLimits, ModelManager, ModelManagerConfig, ModelRepository, ONNX_CPU_RUNTIME,
+    OnnxCpuConfig, OnnxCpuProvider, PackagePolicy, RuntimeProvider,
 };
 use avai::model_management::{AvaiModelManagementRpc, ModelManagementConfig, serve_uds};
 use avai::source::SourcePolicy;
@@ -134,6 +134,18 @@ struct ModelConf {
     ort_intra_threads: usize,
     #[serde(default = "default_ort_thread_count")]
     ort_inter_threads: usize,
+    #[serde(default = "default_native_shutdown_timeout_ms")]
+    native_shutdown_timeout_ms: u64,
+    #[serde(default = "default_max_input_tensor_elements")]
+    max_input_tensor_elements: usize,
+    #[serde(default = "default_max_input_tensor_bytes")]
+    max_input_tensor_bytes: usize,
+    #[serde(default = "default_max_output_tensor_count")]
+    max_output_tensor_count: usize,
+    #[serde(default = "default_max_output_tensor_elements")]
+    max_output_tensor_elements: usize,
+    #[serde(default = "default_max_output_tensor_bytes")]
+    max_output_tensor_bytes: usize,
     #[serde(default = "default_operation_receipt_capacity")]
     operation_receipt_capacity: usize,
     #[serde(default = "default_operation_retention_ms")]
@@ -163,6 +175,13 @@ impl CheckFromConf for ModelConf {
             || self.native_queue_capacity == 0
             || self.ort_intra_threads == 0
             || self.ort_inter_threads == 0
+            || self.native_shutdown_timeout_ms == 0
+            || self.native_shutdown_timeout_ms > 60_000
+            || self.max_input_tensor_elements == 0
+            || self.max_input_tensor_bytes == 0
+            || self.max_output_tensor_count == 0
+            || self.max_output_tensor_elements == 0
+            || self.max_output_tensor_bytes == 0
             || self.operation_receipt_capacity == 0
             || self.operation_receipt_capacity > 4096
             || self.operation_retention_ms < 24 * 60 * 60 * 1_000
@@ -306,6 +325,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     node.host_id = server.host_id;
     node.started_at_epoch_ms = now_epoch_ms();
     let package_policy = model.package_policy()?;
+    let execution_limits = package_policy.execution_limits;
     let model_repository = ModelRepository::open(
         PathBuf::from(&model.database_path).as_path(),
         PathBuf::from(&model.root).as_path(),
@@ -313,6 +333,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     .await
     .map_err(external_error)?;
     let mut providers: Vec<Arc<dyn RuntimeProvider>> = Vec::new();
+    let mut onnx_cpu_provider = None;
     if model
         .allowed_runtime_ids
         .iter()
@@ -324,8 +345,13 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             intra_threads: model.ort_intra_threads,
             inter_threads: model.ort_inter_threads,
             max_result_bytes: server.max_result_bytes,
+            shutdown_timeout: std::time::Duration::from_millis(model.native_shutdown_timeout_ms),
+            execution_limits,
         }) {
-            Ok(provider) => providers.push(Arc::new(provider)),
+            Ok(provider) => {
+                providers.push(Arc::new(provider.clone()));
+                onnx_cpu_provider = Some(provider);
+            }
             Err(error) => base::log::warn!(
                 "Optional ONNX CPU runtime unavailable: action=model_runtime, stage=initialize, runtime=onnx-cpu, error_code={}, error={}",
                 error.code,
@@ -333,7 +359,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             ),
         }
     }
-    let model_manager = ModelManager::open(
+    let model_manager = ModelManager::open_with_cancellation(
         model_repository.clone(),
         providers,
         ModelManagerConfig {
@@ -341,6 +367,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             max_memory_mb: model.max_memory_mb,
             max_vram_mb: model.max_vram_mb,
         },
+        runtime.cancel.clone(),
     )
     .await
     .map_err(external_error)?;
@@ -398,12 +425,12 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     let event_sender = NodeReporter::spawn_managed_with_events(&runtime, reporter, cancel.clone())?;
     manager.set_event_sender(event_sender).await;
 
-    if let Some(socket) = server.management_socket.clone() {
+    let management_task = if let Some(socket) = server.management_socket.clone() {
         let owner = Arc::new(ManagedDrainOwner::new(
             server.management_component_id.clone(),
             Arc::new(AvaiDrainBehavior(manager.clone())),
         ));
-        let model_rpc = AvaiModelManagementRpc::new(
+        let model_rpc = AvaiModelManagementRpc::new_with_cancellation(
             model_repository.clone(),
             model_manager.clone(),
             manager.clone(),
@@ -414,16 +441,19 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
                 receipt_retention_ms: model.operation_retention_ms,
                 mutation_concurrency: model.mutation_concurrency,
             },
+            cancel.clone(),
         )
         .map_err(external_error)?;
         let management_cancel = cancel.clone();
-        runtime.spawn("avai-local-management", async move {
+        Some(runtime.spawn("avai-local-management", async move {
             if let Err(error) = serve_uds(&socket, owner, model_rpc, management_cancel).await {
                 base::log::error!("Avai local management failed: {error}");
                 GlobalRuntime::request_shutdown_with_error();
             }
-        })?;
-    }
+        })?)
+    } else {
+        None
+    };
 
     let upload_listener = base::tokio::net::TcpListener::from_std(bootstrap.upload_listener)
         .map_err(external_error)?;
@@ -485,7 +515,13 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     }
     upload_task.await.map_err(external_error)?;
     upload_cleanup_task.await.map_err(external_error)?;
+    if let Some(management_task) = management_task {
+        management_task.await.map_err(external_error)?;
+    }
     manager.close_and_wait().await.map_err(external_error)?;
+    if let Some(provider) = onnx_cpu_provider {
+        provider.close_and_wait().await.map_err(external_error)?;
+    }
     uploads
         .cleanup_expired(now_epoch_ms())
         .await
@@ -531,6 +567,13 @@ impl ModelConf {
             max_package_bytes: self.max_package_bytes,
             max_memory_mb: self.max_memory_mb,
             max_vram_mb: self.max_vram_mb,
+            execution_limits: ExecutionLimits {
+                max_input_elements: self.max_input_tensor_elements,
+                max_input_bytes: self.max_input_tensor_bytes,
+                max_output_tensors: self.max_output_tensor_count,
+                max_output_elements: self.max_output_tensor_elements,
+                max_output_bytes: self.max_output_tensor_bytes,
+            },
         })
     }
 }
@@ -636,6 +679,24 @@ fn default_native_queue_capacity() -> usize {
 }
 fn default_ort_thread_count() -> usize {
     1
+}
+fn default_native_shutdown_timeout_ms() -> u64 {
+    5_000
+}
+fn default_max_input_tensor_elements() -> usize {
+    16 * 1024 * 1024
+}
+fn default_max_input_tensor_bytes() -> usize {
+    64 * 1024 * 1024
+}
+fn default_max_output_tensor_count() -> usize {
+    16
+}
+fn default_max_output_tensor_elements() -> usize {
+    16 * 1024 * 1024
+}
+fn default_max_output_tensor_bytes() -> usize {
+    64 * 1024 * 1024
 }
 fn default_operation_receipt_capacity() -> usize {
     4096

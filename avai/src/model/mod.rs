@@ -8,12 +8,15 @@ pub use manager::{
     ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelObservation, ModelStatus,
     RecoveredCapability,
 };
+#[cfg(any(test, feature = "native-onnx-tests"))]
+pub use onnx_cpu::NativeRuntimeSnapshot;
 pub use onnx_cpu::{ONNX_CPU_RUNTIME, ONNX_RUNTIME_VERSION, OnnxCpuConfig, OnnxCpuProvider};
 pub use package::{
-    ExecutionContract, ExecutionInput, LicenseSpec, ModelFile, ModelIdentity, ModelPackageManifest,
-    PackagePolicy, PostprocessContract, PreprocessContract, ResourceHints, ResultSchema,
-    RuntimeVariant, SelectedRuntimeVariant, SelfTestCase, SelfTestOracle, SigningSpec,
-    TensorContract, VerifiedModelPackage, model_package_signing_payload, verify_package,
+    ExecutionContract, ExecutionInput, ExecutionLimits, LicenseSpec, ModelFile, ModelIdentity,
+    ModelPackageManifest, PackagePolicy, PostprocessContract, PreprocessContract, ResourceHints,
+    ResultSchema, RuntimeVariant, SelectedRuntimeVariant, SelfTestCase, SelfTestOracle,
+    SigningSpec, TensorContract, VerifiedModelPackage, model_package_signing_payload,
+    verify_package,
 };
 pub(crate) use repository::{
     ClaimOperation, OperationClaimRequest, OperationReceipt, OperationReceiptLimits,

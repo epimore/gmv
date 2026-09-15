@@ -49,6 +49,12 @@ model:
   native_queue_capacity: 8
   ort_intra_threads: 1
   ort_inter_threads: 1
+  native_shutdown_timeout_ms: 5000
+  max_input_tensor_elements: 16777216
+  max_input_tensor_bytes: 67108864
+  max_output_tensor_count: 16
+  max_output_tensor_elements: 16777216
+  max_output_tensor_bytes: 67108864
   operation_receipt_capacity: 4096
   operation_retention_ms: 86400000
   mutation_concurrency: 1

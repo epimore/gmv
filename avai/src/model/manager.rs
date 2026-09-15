@@ -4,7 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use base::{
@@ -81,6 +81,7 @@ pub struct ModelManager {
     slots: Arc<RwLock<HashMap<String, CapabilitySlot>>>,
     next_generation: Arc<AtomicU64>,
     lifecycle: Arc<Mutex<()>>,
+    runtime_cancellation: CancellationToken,
 }
 
 struct LoadedModel {
@@ -135,13 +136,6 @@ const PRELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn runtime_context(timeout: Duration) -> RuntimeCallContext {
-    RuntimeCallContext {
-        deadline: Instant::now() + timeout,
-        cancellation: CancellationToken::new(),
-    }
-}
-
 impl Clone for ActiveModel {
     fn clone(&self) -> Self {
         self.generation
@@ -169,6 +163,15 @@ impl ModelManager {
         providers: Vec<Arc<dyn RuntimeProvider>>,
         config: ModelManagerConfig,
     ) -> ModelResult<Self> {
+        Self::open_with_cancellation(repository, providers, config, CancellationToken::new()).await
+    }
+
+    pub async fn open_with_cancellation(
+        repository: ModelRepository,
+        providers: Vec<Arc<dyn RuntimeProvider>>,
+        config: ModelManagerConfig,
+        runtime_cancellation: CancellationToken,
+    ) -> ModelResult<Self> {
         if config.max_loaded_models == 0 || config.max_memory_mb == 0 {
             return Err(ModelError::new(
                 "invalid_model_manager_config",
@@ -194,6 +197,7 @@ impl ModelManager {
             slots: Arc::new(RwLock::new(HashMap::new())),
             next_generation: Arc::new(AtomicU64::new(next_generation)),
             lifecycle: Arc::new(Mutex::new(())),
+            runtime_cancellation,
         };
         manager.restore_capability_slots().await?;
         Ok(manager)
@@ -374,13 +378,15 @@ impl ModelManager {
         let execution_contract = load_installed_execution_contract(&model)?;
         self.ensure_budget(&model).await?;
         let instance = provider
-            .preload(&model, runtime_context(PRELOAD_TIMEOUT))
+            .preload(&model, self.runtime_context(PRELOAD_TIMEOUT))
             .await?;
         validate_instance(&model, &instance)?;
         instance
-            .self_test(&model.self_tests, runtime_context(SELF_TEST_TIMEOUT))
+            .self_test(&model.self_tests, self.runtime_context(SELF_TEST_TIMEOUT))
             .await?;
-        instance.health(runtime_context(HEALTH_TIMEOUT)).await?;
+        instance
+            .health(self.runtime_context(HEALTH_TIMEOUT))
+            .await?;
         let loaded = Arc::new(LoadedModel {
             model,
             instance,
@@ -395,6 +401,20 @@ impl ModelManager {
     }
 
     pub async fn preload(&self, identity: &ModelIdentity, now_epoch_ms: i64) -> ModelResult<()> {
+        self.preload_with_context(
+            identity,
+            now_epoch_ms,
+            self.runtime_context(PRELOAD_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn preload_with_context(
+        &self,
+        identity: &ModelIdentity,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
+    ) -> ModelResult<()> {
         let _lifecycle = self.lifecycle.lock().await;
         if self.loaded.lock().await.contains_key(identity) {
             return Ok(());
@@ -420,7 +440,7 @@ impl ModelManager {
         };
         self.ensure_budget(&model).await?;
         let instance = match provider
-            .preload(&model, runtime_context(PRELOAD_TIMEOUT))
+            .preload(&model, context.with_local_maximum(PRELOAD_TIMEOUT))
             .await
         {
             Ok(instance) => instance,
@@ -438,7 +458,10 @@ impl ModelManager {
             return Err(error);
         }
         if let Err(error) = instance
-            .self_test(&model.self_tests, runtime_context(SELF_TEST_TIMEOUT))
+            .self_test(
+                &model.self_tests,
+                context.with_local_maximum(SELF_TEST_TIMEOUT),
+            )
             .await
         {
             self.repository
@@ -446,7 +469,10 @@ impl ModelManager {
                 .await?;
             return Err(error);
         }
-        if let Err(error) = instance.health(runtime_context(HEALTH_TIMEOUT)).await {
+        if let Err(error) = instance
+            .health(context.with_local_maximum(HEALTH_TIMEOUT))
+            .await
+        {
             self.repository
                 .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                 .await?;
@@ -468,6 +494,16 @@ impl ModelManager {
     }
 
     pub async fn activate(&self, identity: &ModelIdentity, now_epoch_ms: i64) -> ModelResult<u64> {
+        self.activate_with_context(identity, now_epoch_ms, self.runtime_context(HEALTH_TIMEOUT))
+            .await
+    }
+
+    pub async fn activate_with_context(
+        &self,
+        identity: &ModelIdentity,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
+    ) -> ModelResult<u64> {
         let _lifecycle = self.lifecycle.lock().await;
         let loaded = self
             .loaded
@@ -511,7 +547,7 @@ impl ModelManager {
         drop(slots);
         loaded
             .instance
-            .health(runtime_context(HEALTH_TIMEOUT))
+            .health(context.with_local_maximum(HEALTH_TIMEOUT))
             .await?;
         let mut slots = self.slots.write().await;
         let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
@@ -566,8 +602,23 @@ impl ModelManager {
     }
 
     pub async fn rollback(&self, capability: &str, now_epoch_ms: i64) -> ModelResult<u64> {
+        self.rollback_with_context(
+            capability,
+            now_epoch_ms,
+            self.runtime_context(HEALTH_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn rollback_with_context(
+        &self,
+        capability: &str,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
+    ) -> ModelResult<u64> {
         let _lifecycle = self.lifecycle.lock().await;
-        self.rollback_locked(capability, now_epoch_ms).await
+        self.rollback_locked(capability, now_epoch_ms, context)
+            .await
     }
 
     pub async fn rollback_exact(
@@ -575,6 +626,22 @@ impl ModelManager {
         from: &ModelIdentity,
         to: &ModelIdentity,
         now_epoch_ms: i64,
+    ) -> ModelResult<u64> {
+        self.rollback_exact_with_context(
+            from,
+            to,
+            now_epoch_ms,
+            self.runtime_context(HEALTH_TIMEOUT),
+        )
+        .await
+    }
+
+    pub async fn rollback_exact_with_context(
+        &self,
+        from: &ModelIdentity,
+        to: &ModelIdentity,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
     ) -> ModelResult<u64> {
         let _lifecycle = self.lifecycle.lock().await;
         if from == to {
@@ -643,7 +710,7 @@ impl ModelManager {
         }
         to_loaded
             .instance
-            .health(runtime_context(HEALTH_TIMEOUT))
+            .health(context.with_local_maximum(HEALTH_TIMEOUT))
             .await?;
         let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
         let persisted = from_loaded
@@ -684,7 +751,12 @@ impl ModelManager {
         Ok(generation)
     }
 
-    async fn rollback_locked(&self, capability: &str, now_epoch_ms: i64) -> ModelResult<u64> {
+    async fn rollback_locked(
+        &self,
+        capability: &str,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
+    ) -> ModelResult<u64> {
         let mut slots = self.slots.write().await;
         let slot = slots
             .get(capability)
@@ -699,7 +771,7 @@ impl ModelManager {
         previous
             .loaded
             .instance
-            .health(runtime_context(HEALTH_TIMEOUT))
+            .health(context.with_local_maximum(HEALTH_TIMEOUT))
             .await?;
         let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
         let replaced = current
@@ -857,7 +929,7 @@ impl ModelManager {
                 }
             };
             let instance = match provider
-                .preload(&model, runtime_context(PRELOAD_TIMEOUT))
+                .preload(&model, self.runtime_context(PRELOAD_TIMEOUT))
                 .await
             {
                 Ok(instance) => instance,
@@ -875,7 +947,7 @@ impl ModelManager {
                 return Err(error);
             }
             if let Err(error) = instance
-                .self_test(&model.self_tests, runtime_context(SELF_TEST_TIMEOUT))
+                .self_test(&model.self_tests, self.runtime_context(SELF_TEST_TIMEOUT))
                 .await
             {
                 self.repository
@@ -883,7 +955,7 @@ impl ModelManager {
                     .await?;
                 return Err(error);
             }
-            if let Err(error) = instance.health(runtime_context(HEALTH_TIMEOUT)).await {
+            if let Err(error) = instance.health(self.runtime_context(HEALTH_TIMEOUT)).await {
                 self.repository
                     .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                     .await?;
@@ -998,7 +1070,7 @@ impl ModelManager {
         if active
             .loaded
             .instance
-            .health(runtime_context(HEALTH_TIMEOUT))
+            .health(self.runtime_context(HEALTH_TIMEOUT))
             .await
             .is_ok()
         {
@@ -1027,7 +1099,7 @@ impl ModelManager {
                 && previous
                     .loaded
                     .instance
-                    .health(runtime_context(HEALTH_TIMEOUT))
+                    .health(self.runtime_context(HEALTH_TIMEOUT))
                     .await
                     .is_ok()
             {
@@ -1161,6 +1233,15 @@ impl ModelManager {
     }
 
     pub async fn health(&self, identity: &ModelIdentity) -> ModelResult<()> {
+        self.health_with_context(identity, self.runtime_context(HEALTH_TIMEOUT))
+            .await
+    }
+
+    pub async fn health_with_context(
+        &self,
+        identity: &ModelIdentity,
+        context: RuntimeCallContext,
+    ) -> ModelResult<()> {
         let loaded = self
             .loaded
             .lock()
@@ -1170,8 +1251,12 @@ impl ModelManager {
             .ok_or_else(|| ModelError::new("model_not_ready", "model is not loaded"))?;
         loaded
             .instance
-            .health(runtime_context(HEALTH_TIMEOUT))
+            .health(context.with_local_maximum(HEALTH_TIMEOUT))
             .await
+    }
+
+    fn runtime_context(&self, maximum: Duration) -> RuntimeCallContext {
+        RuntimeCallContext::local(maximum, self.runtime_cancellation.clone())
     }
 
     pub async fn active_identities(&self) -> HashSet<ModelIdentity> {

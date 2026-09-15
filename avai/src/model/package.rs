@@ -186,6 +186,28 @@ pub struct PackagePolicy {
     pub max_package_bytes: u64,
     pub max_memory_mb: u64,
     pub max_vram_mb: u64,
+    pub execution_limits: ExecutionLimits,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ExecutionLimits {
+    pub max_input_elements: usize,
+    pub max_input_bytes: usize,
+    pub max_output_tensors: usize,
+    pub max_output_elements: usize,
+    pub max_output_bytes: usize,
+}
+
+impl Default for ExecutionLimits {
+    fn default() -> Self {
+        Self {
+            max_input_elements: 16 * 1024 * 1024,
+            max_input_bytes: 64 * 1024 * 1024,
+            max_output_tensors: 16,
+            max_output_elements: 16 * 1024 * 1024,
+            max_output_bytes: 64 * 1024 * 1024,
+        }
+    }
 }
 
 impl Default for PackagePolicy {
@@ -203,6 +225,7 @@ impl Default for PackagePolicy {
             max_package_bytes: 4 * 1024 * 1024 * 1024,
             max_memory_mb: 16 * 1024,
             max_vram_mb: 16 * 1024,
+            execution_limits: ExecutionLimits::default(),
         }
     }
 }
@@ -658,7 +681,11 @@ fn validate_manifest(manifest: &ModelPackageManifest, policy: &PackagePolicy) ->
         ));
     }
     if let Some(execution) = &manifest.execution {
-        validate_execution_contract(execution)?;
+        validate_execution_contract(
+            execution,
+            &policy.execution_limits,
+            manifest.resources.memory_mb,
+        )?;
     }
     for case in &manifest.self_test {
         if let Some(oracle) = &case.oracle
@@ -677,7 +704,11 @@ fn validate_manifest(manifest: &ModelPackageManifest, policy: &PackagePolicy) ->
     Ok(())
 }
 
-fn validate_execution_contract(execution: &ExecutionContract) -> ModelResult<()> {
+pub(crate) fn validate_execution_contract(
+    execution: &ExecutionContract,
+    limits: &ExecutionLimits,
+    resource_memory_mb: u64,
+) -> ModelResult<()> {
     let input = &execution.input;
     if execution.version != 1
         || input.kind != "encoded_image_tensor_v1"
@@ -722,8 +753,29 @@ fn validate_execution_contract(execution: &ExecutionContract) -> ModelResult<()>
             "execution contract declares an unsupported encoded image media type",
         ));
     }
-    checked_element_count(&input.tensor.shape)?;
+    let input_elements = checked_element_count(&input.tensor.shape)?;
+    let input_bytes = input_elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_execution_resource_limit_exceeded",
+                "input tensor byte count overflows this platform",
+            )
+        })?;
+    if input_elements > limits.max_input_elements || input_bytes > limits.max_input_bytes {
+        return Err(ModelError::new(
+            "model_execution_resource_limit_exceeded",
+            "input tensor exceeds configured element or byte limits",
+        ));
+    }
+    if execution.outputs.len() > limits.max_output_tensors {
+        return Err(ModelError::new(
+            "model_execution_resource_limit_exceeded",
+            "output tensor count exceeds the configured limit",
+        ));
+    }
     let mut output_names = HashSet::new();
+    let mut output_elements = 0_usize;
     for output in &execution.outputs {
         if output.name.trim().is_empty()
             || !output_names.insert(&output.name)
@@ -735,7 +787,46 @@ fn validate_execution_contract(execution: &ExecutionContract) -> ModelResult<()>
                 "execution output contract is unsupported or duplicated",
             ));
         }
-        checked_element_count(&output.shape)?;
+        output_elements = output_elements
+            .checked_add(checked_element_count(&output.shape)?)
+            .ok_or_else(|| {
+                ModelError::new(
+                    "model_execution_resource_limit_exceeded",
+                    "aggregate output element count overflows this platform",
+                )
+            })?;
+    }
+    let output_bytes = output_elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_execution_resource_limit_exceeded",
+                "aggregate output byte count overflows this platform",
+            )
+        })?;
+    let contract_bytes = input_bytes.checked_add(output_bytes).ok_or_else(|| {
+        ModelError::new(
+            "model_execution_resource_limit_exceeded",
+            "aggregate tensor byte count overflows this platform",
+        )
+    })?;
+    let resource_bytes = usize::try_from(resource_memory_mb)
+        .ok()
+        .and_then(|memory| memory.checked_mul(1024 * 1024))
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_execution_resource_limit_exceeded",
+                "declared model memory does not fit this platform",
+            )
+        })?;
+    if output_elements > limits.max_output_elements
+        || output_bytes > limits.max_output_bytes
+        || contract_bytes > resource_bytes
+    {
+        return Err(ModelError::new(
+            "model_execution_resource_limit_exceeded",
+            "output tensors exceed configured or declared resource limits",
+        ));
     }
     Ok(())
 }

@@ -271,6 +271,53 @@ fn package_verifier_rejects_untrusted_and_malformed_inputs() {
         verify_package(root.path(), &policy()).unwrap_err().code,
         "model_path_invalid"
     );
+
+    let execution = "execution:\n  version: 1\n  input:\n    kind: encoded_image_tensor_v1\n    accepted_media_types: [image/png]\n    max_bytes: 1024\n    max_width: 1\n    max_height: 1\n    tensor:\n      name: input\n      dtype: f32\n      layout: nchw\n      shape: [1, 3, 1, 1]\n    preprocess:\n      resize: exact\n      interpolation: bilinear\n      color: rgb\n      scale: 1.0\n      mean: [0.0, 0.0, 0.0]\n      std: [1.0, 1.0, 1.0]\n  outputs:\n    - name: output\n      dtype: f32\n      shape: [1, 3, 1, 1]\n  postprocess:\n    kind: tensor_json_v1\n";
+    let executable = valid
+        .replace(
+            "  - runtime: fake\n    architecture:",
+            "  - runtime: fake\n    runtime_contract_version: 1\n    architecture:",
+        )
+        .replace("resources:\n", &format!("{execution}resources:\n"));
+    std::fs::write(&manifest_path, resign_manifest(&executable)).unwrap();
+    assert!(verify_package(root.path(), &policy()).is_ok());
+
+    let oversized_input = executable.replace(
+        "      shape: [1, 3, 1, 1]\n    preprocess:",
+        "      shape: [1, 3, 4096, 4096]\n    preprocess:",
+    );
+    std::fs::write(&manifest_path, resign_manifest(&oversized_input)).unwrap();
+    assert_eq!(
+        verify_package(root.path(), &policy()).unwrap_err().code,
+        "model_execution_resource_limit_exceeded"
+    );
+
+    let oversized_output = executable.replace(
+        "      shape: [1, 3, 1, 1]\n  postprocess:",
+        "      shape: [1, 3, 4096, 4096]\n  postprocess:",
+    );
+    std::fs::write(&manifest_path, resign_manifest(&oversized_output)).unwrap();
+    assert_eq!(
+        verify_package(root.path(), &policy()).unwrap_err().code,
+        "model_execution_resource_limit_exceeded"
+    );
+
+    let outputs = (0..17)
+        .map(|index| {
+            format!("    - name: output-{index}\n      dtype: f32\n      shape: [1, 3, 1, 1]")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let excessive_tensor_count = executable.replace(
+        "    - name: output\n      dtype: f32\n      shape: [1, 3, 1, 1]",
+        &outputs,
+    );
+    std::fs::write(&manifest_path, resign_manifest(&excessive_tensor_count)).unwrap();
+    assert_eq!(
+        verify_package(root.path(), &policy()).unwrap_err().code,
+        "model_execution_resource_limit_exceeded"
+    );
+    std::fs::write(&manifest_path, &valid).unwrap();
 }
 
 #[tokio::test]

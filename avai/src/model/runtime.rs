@@ -31,6 +31,20 @@ pub struct RuntimeCallContext {
 }
 
 impl RuntimeCallContext {
+    pub fn local(maximum: std::time::Duration, cancellation: CancellationToken) -> Self {
+        Self {
+            deadline: Instant::now() + maximum,
+            cancellation,
+        }
+    }
+
+    pub fn with_local_maximum(&self, maximum: std::time::Duration) -> Self {
+        Self {
+            deadline: self.deadline.min(Instant::now() + maximum),
+            cancellation: self.cancellation.clone(),
+        }
+    }
+
     pub fn ensure_active(&self) -> ModelResult<()> {
         if self.cancellation.is_cancelled() {
             return Err(ModelError::new(

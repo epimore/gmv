@@ -44,27 +44,32 @@ model.opset_import.add(domain="", version=13)
 with open("model.onnx", "wb") as output:
     output.write(model.SerializeToString())
 
-stress_graph = onnx.GraphProto(name="avai-termination-stress-v1")
-
-
-def stress_value_info(name):
-    value = onnx.ValueInfoProto(name=name)
-    tensor = value.type.tensor_type
-    tensor.elem_type = onnx.TensorProto.FLOAT
-    for size in (1, 3, 512, 512):
-        tensor.shape.dim.add().dim_value = size
-    return value
-
-
-stress_graph.input.append(stress_value_info("input"))
-stress_graph.output.append(stress_value_info("output"))
-previous = "input"
-for index in range(128):
-    current = "output" if index == 127 else f"sin-{index}"
+stress_graph = onnx.GraphProto(name="avai-termination-stress-v2")
+stress_graph.input.append(value_info("input"))
+stress_graph.output.append(value_info("output"))
+stress_shape = stress_graph.initializer.add()
+stress_shape.name = "stress-shape"
+stress_shape.data_type = onnx.TensorProto.INT64
+stress_shape.dims.extend((4,))
+stress_shape.raw_data = struct.pack("<qqqq", 1, 3, 1024, 1024)
+stress_graph.node.add(
+    name="expand-input",
+    op_type="Expand",
+    input=["input", "stress-shape"],
+    output=["expanded"],
+)
+previous = "expanded"
+for index in range(256):
+    current = f"sin-{index}"
     stress_graph.node.add(
         name=f"sin-{index}", op_type="Sin", input=[previous], output=[current]
     )
     previous = current
+reduction = stress_graph.node.add(
+    name="reduce-output", op_type="ReduceMean", input=[previous], output=["output"]
+)
+reduction.attribute.add(name="axes", ints=[2, 3], type=onnx.AttributeProto.INTS)
+reduction.attribute.add(name="keepdims", i=1, type=onnx.AttributeProto.INT)
 stress_model = onnx.ModelProto(
     ir_version=10, producer_name="epimore-gmv-wp03g", graph=stress_graph
 )

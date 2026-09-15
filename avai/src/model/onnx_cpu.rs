@@ -1,9 +1,19 @@
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant},
 };
 
-use base::{serde::Serialize, tokio::sync::oneshot};
+use base::{
+    serde::Serialize,
+    tokio::sync::{Mutex as AsyncMutex, Notify, oneshot},
+    tokio_util::sync::CancellationToken,
+};
 use image::imageops::FilterType;
 use ort::{
     session::{RunOptions, Session},
@@ -11,10 +21,12 @@ use ort::{
 };
 
 use super::{
-    ExecutionContract, InferenceResult, InstalledModel, ModelError, ModelIdentity, ModelInstance,
-    ModelResult, RuntimeCallContext, RuntimeDescriptor, RuntimeInput, RuntimeProvider,
-    SelfTestCase, TensorContract,
-    package::{checked_element_count, load_installed_execution_contract},
+    ExecutionContract, ExecutionLimits, InferenceResult, InstalledModel, ModelError, ModelIdentity,
+    ModelInstance, ModelResult, RuntimeCallContext, RuntimeDescriptor, RuntimeInput,
+    RuntimeProvider, SelfTestCase, TensorContract,
+    package::{
+        checked_element_count, load_installed_execution_contract, validate_execution_contract,
+    },
     runtime::RuntimeFuture,
 };
 
@@ -31,6 +43,8 @@ pub struct OnnxCpuConfig {
     pub intra_threads: usize,
     pub inter_threads: usize,
     pub max_result_bytes: usize,
+    pub shutdown_timeout: Duration,
+    pub execution_limits: ExecutionLimits,
 }
 
 impl Default for OnnxCpuConfig {
@@ -41,6 +55,8 @@ impl Default for OnnxCpuConfig {
             intra_threads: 1,
             inter_threads: 1,
             max_result_bytes: 1024 * 1024,
+            shutdown_timeout: Duration::from_secs(5),
+            execution_limits: ExecutionLimits::default(),
         }
     }
 }
@@ -49,6 +65,8 @@ impl Default for OnnxCpuConfig {
 pub struct OnnxCpuProvider {
     executor: NativeExecutor,
     config: OnnxCpuConfig,
+    instances_created: Arc<AtomicUsize>,
+    instances_dropped: Arc<AtomicUsize>,
 }
 
 impl OnnxCpuProvider {
@@ -112,8 +130,45 @@ impl OnnxCpuProvider {
         Ok(Self {
             executor: NativeExecutor::new(config.worker_count, config.queue_capacity)?,
             config,
+            instances_created: Arc::new(AtomicUsize::new(0)),
+            instances_dropped: Arc::new(AtomicUsize::new(0)),
         })
     }
+
+    pub async fn close_and_wait(&self) -> ModelResult<()> {
+        self.executor
+            .close_and_wait(Instant::now() + self.config.shutdown_timeout)
+            .await
+    }
+
+    #[cfg(any(test, feature = "native-onnx-tests"))]
+    pub fn lifetime_snapshot(&self) -> NativeRuntimeSnapshot {
+        NativeRuntimeSnapshot {
+            accepting: self.executor.inner.accepting.load(Ordering::Acquire),
+            admitted_jobs: self.executor.inner.admitted_jobs.load(Ordering::Acquire),
+            completed_jobs: self.executor.inner.completed_jobs.load(Ordering::Acquire),
+            active_jobs: self.executor.inner.active_jobs.load(Ordering::Acquire),
+            workers_remaining: self
+                .executor
+                .inner
+                .workers_remaining
+                .load(Ordering::Acquire),
+            instances_created: self.instances_created.load(Ordering::Acquire),
+            instances_dropped: self.instances_dropped.load(Ordering::Acquire),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "native-onnx-tests"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeRuntimeSnapshot {
+    pub accepting: bool,
+    pub admitted_jobs: usize,
+    pub completed_jobs: usize,
+    pub active_jobs: usize,
+    pub workers_remaining: usize,
+    pub instances_created: usize,
+    pub instances_dropped: usize,
 }
 
 fn validate_config(config: OnnxCpuConfig) -> ModelResult<()> {
@@ -123,6 +178,12 @@ fn validate_config(config: OnnxCpuConfig) -> ModelResult<()> {
         || config.intra_threads == 0
         || config.inter_threads == 0
         || config.max_result_bytes == 0
+        || config.shutdown_timeout.is_zero()
+        || config.execution_limits.max_input_elements == 0
+        || config.execution_limits.max_input_bytes == 0
+        || config.execution_limits.max_output_tensors == 0
+        || config.execution_limits.max_output_elements == 0
+        || config.execution_limits.max_output_bytes == 0
     {
         return Err(ModelError::new(
             "invalid_model_runtime_config",
@@ -163,6 +224,11 @@ impl RuntimeProvider for OnnxCpuProvider {
                     "onnx-cpu requires execution contract v1",
                 )
             })?;
+            validate_execution_contract(
+                &execution,
+                &self.config.execution_limits,
+                model.resources.memory_mb,
+            )?;
             if installed.self_tests.is_empty()
                 || installed.self_tests.iter().any(|case| {
                     case.oracle
@@ -188,6 +254,7 @@ impl RuntimeProvider for OnnxCpuProvider {
                 )
                 .await?;
             validate_session(&session, &execution)?;
+            self.instances_created.fetch_add(1, Ordering::AcqRel);
             Ok(Arc::new(OnnxCpuInstance {
                 identity: model.identity.clone(),
                 capabilities: model.capabilities.clone(),
@@ -197,6 +264,7 @@ impl RuntimeProvider for OnnxCpuProvider {
                 session: Arc::new(Mutex::new(session)),
                 executor: self.executor.clone(),
                 max_result_bytes: self.config.max_result_bytes,
+                instances_dropped: self.instances_dropped.clone(),
             }) as Arc<dyn ModelInstance>)
         })
     }
@@ -211,6 +279,13 @@ struct OnnxCpuInstance {
     session: Arc<Mutex<Session>>,
     executor: NativeExecutor,
     max_result_bytes: usize,
+    instances_dropped: Arc<AtomicUsize>,
+}
+
+impl Drop for OnnxCpuInstance {
+    fn drop(&mut self) {
+        self.instances_dropped.fetch_add(1, Ordering::AcqRel);
+    }
 }
 
 impl ModelInstance for OnnxCpuInstance {
@@ -605,18 +680,82 @@ type NativeJob = Box<dyn FnOnce() + Send + 'static>;
 
 #[derive(Clone)]
 struct NativeExecutor {
-    sender: mpsc::SyncSender<NativeJob>,
+    inner: Arc<NativeExecutorInner>,
+}
+
+struct NativeExecutorInner {
+    sender: Mutex<Option<mpsc::SyncSender<NativeJob>>>,
+    accepting: AtomicBool,
+    shutdown: CancellationToken,
+    admitted_jobs: AtomicUsize,
+    completed_jobs: AtomicUsize,
+    active_jobs: AtomicUsize,
+    workers_remaining: AtomicUsize,
+    workers: Mutex<Option<Vec<JoinHandle<()>>>>,
+    state_changed: Notify,
+    shutdown_lock: AsyncMutex<()>,
+}
+
+impl Drop for NativeExecutorInner {
+    fn drop(&mut self) {
+        self.accepting.store(false, Ordering::Release);
+        self.shutdown.cancel();
+        if let Ok(sender) = self.sender.get_mut() {
+            sender.take();
+        }
+    }
+}
+
+struct NativeJobGuard {
+    inner: Weak<NativeExecutorInner>,
+    counted: Arc<AtomicBool>,
+}
+
+impl Drop for NativeJobGuard {
+    fn drop(&mut self) {
+        if self.counted.swap(false, Ordering::AcqRel)
+            && let Some(inner) = self.inner.upgrade()
+        {
+            inner.completed_jobs.fetch_add(1, Ordering::AcqRel);
+            inner.active_jobs.fetch_sub(1, Ordering::AcqRel);
+            inner.state_changed.notify_one();
+        }
+    }
 }
 
 impl NativeExecutor {
     fn new(worker_count: usize, queue_capacity: usize) -> ModelResult<Self> {
         let (sender, receiver) = mpsc::sync_channel::<NativeJob>(queue_capacity);
         let receiver = Arc::new(Mutex::new(receiver));
+        let inner = Arc::new(NativeExecutorInner {
+            sender: Mutex::new(Some(sender)),
+            accepting: AtomicBool::new(true),
+            shutdown: CancellationToken::new(),
+            admitted_jobs: AtomicUsize::new(0),
+            completed_jobs: AtomicUsize::new(0),
+            active_jobs: AtomicUsize::new(0),
+            workers_remaining: AtomicUsize::new(0),
+            workers: Mutex::new(Some(Vec::with_capacity(worker_count))),
+            state_changed: Notify::new(),
+            shutdown_lock: AsyncMutex::new(()),
+        });
         for index in 0..worker_count {
             let receiver = receiver.clone();
-            std::thread::Builder::new()
+            let weak = Arc::downgrade(&inner);
+            inner.workers_remaining.fetch_add(1, Ordering::AcqRel);
+            let worker = std::thread::Builder::new()
                 .name(format!("avai-onnx-cpu-{index}"))
                 .spawn(move || {
+                    struct WorkerGuard(Weak<NativeExecutorInner>);
+                    impl Drop for WorkerGuard {
+                        fn drop(&mut self) {
+                            if let Some(inner) = self.0.upgrade() {
+                                inner.workers_remaining.fetch_sub(1, Ordering::AcqRel);
+                                inner.state_changed.notify_one();
+                            }
+                        }
+                    }
+                    let _guard = WorkerGuard(weak);
                     loop {
                         let job = match receiver.lock() {
                             Ok(receiver) => receiver.recv(),
@@ -628,9 +767,120 @@ impl NativeExecutor {
                         }
                     }
                 })
-                .map_err(|error| ModelError::io("start ONNX native worker", error))?;
+                .map_err(|error| {
+                    inner.workers_remaining.fetch_sub(1, Ordering::AcqRel);
+                    ModelError::io("start ONNX native worker", error)
+                })?;
+            inner
+                .workers
+                .lock()
+                .map_err(|_| {
+                    ModelError::new("model_runtime_failed", "native worker lock is poisoned")
+                })?
+                .as_mut()
+                .expect("workers exist during construction")
+                .push(worker);
         }
-        Ok(Self { sender })
+        Ok(Self { inner })
+    }
+
+    fn submit(&self, job: NativeJob) -> ModelResult<()> {
+        let sender = self.inner.sender.lock().map_err(|_| {
+            ModelError::new(
+                "model_runtime_failed",
+                "native executor sender lock is poisoned",
+            )
+        })?;
+        if !self.inner.accepting.load(Ordering::Acquire) {
+            return Err(ModelError::new(
+                "model_runtime_unavailable",
+                "ONNX native executor is shutting down",
+            ));
+        }
+        let sender = sender.as_ref().ok_or_else(|| {
+            ModelError::new(
+                "model_runtime_unavailable",
+                "ONNX native executor is unavailable",
+            )
+        })?;
+        self.inner.admitted_jobs.fetch_add(1, Ordering::AcqRel);
+        self.inner.active_jobs.fetch_add(1, Ordering::AcqRel);
+        let counted = Arc::new(AtomicBool::new(true));
+        let guard = NativeJobGuard {
+            inner: Arc::downgrade(&self.inner),
+            counted: counted.clone(),
+        };
+        sender
+            .try_send(Box::new(move || {
+                let _guard = guard;
+                job();
+            }))
+            .map_err(|error| {
+                if counted.swap(false, Ordering::AcqRel) {
+                    self.inner.admitted_jobs.fetch_sub(1, Ordering::AcqRel);
+                    self.inner.active_jobs.fetch_sub(1, Ordering::AcqRel);
+                }
+                match error {
+                    mpsc::TrySendError::Full(_) => {
+                        ModelError::new("model_runtime_busy", "ONNX native executor queue is full")
+                    }
+                    mpsc::TrySendError::Disconnected(_) => ModelError::new(
+                        "model_runtime_unavailable",
+                        "ONNX native executor is unavailable",
+                    ),
+                }
+            })
+    }
+
+    async fn close_and_wait(&self, deadline: Instant) -> ModelResult<()> {
+        let _shutdown = self.inner.shutdown_lock.lock().await;
+        self.inner.accepting.store(false, Ordering::Release);
+        self.inner.shutdown.cancel();
+        self.inner
+            .sender
+            .lock()
+            .map_err(|_| {
+                ModelError::new(
+                    "model_runtime_failed",
+                    "native executor sender lock is poisoned",
+                )
+            })?
+            .take();
+        while self.inner.active_jobs.load(Ordering::Acquire) != 0
+            || self.inner.workers_remaining.load(Ordering::Acquire) != 0
+        {
+            if Instant::now() >= deadline {
+                return Err(ModelError::new(
+                    "model_runtime_shutdown_incomplete",
+                    "ONNX native executor did not drain before its shutdown deadline",
+                ));
+            }
+            base::tokio::select! {
+                _ = self.inner.state_changed.notified() => {}
+                _ = base::tokio::time::sleep_until(deadline.into()) => {
+                    return Err(ModelError::new(
+                        "model_runtime_shutdown_incomplete",
+                        "ONNX native executor did not drain before its shutdown deadline",
+                    ));
+                }
+            }
+        }
+        let workers = self
+            .inner
+            .workers
+            .lock()
+            .map_err(|_| ModelError::new("model_runtime_failed", "native worker lock is poisoned"))?
+            .take()
+            .unwrap_or_default();
+        for worker in workers {
+            worker.join().map_err(|_| {
+                ModelError::new(
+                    "model_runtime_shutdown_failed",
+                    "ONNX native worker panicked",
+                )
+            })?;
+        }
+        Ok(())
     }
 
     async fn execute<T, F, C, E>(
@@ -647,19 +897,9 @@ impl NativeExecutor {
     {
         context.ensure_active()?;
         let (result_sender, mut result_receiver) = oneshot::channel();
-        self.sender
-            .try_send(Box::new(move || {
-                let _ = result_sender.send(job());
-            }))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => {
-                    ModelError::new("model_runtime_busy", "ONNX native executor queue is full")
-                }
-                mpsc::TrySendError::Disconnected(_) => ModelError::new(
-                    "model_runtime_unavailable",
-                    "ONNX native executor is unavailable",
-                ),
-            })?;
+        self.submit(Box::new(move || {
+            let _ = result_sender.send(job());
+        }))?;
         let interrupted = base::tokio::select! {
             result = &mut result_receiver => return result.map_err(|_| {
                 ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
@@ -668,15 +908,24 @@ impl NativeExecutor {
                 "model_runtime_cancelled",
                 "ONNX runtime call was cooperatively cancelled",
             ),
+            _ = self.inner.shutdown.cancelled() => ModelError::new(
+                "model_runtime_cancelled",
+                "ONNX runtime call was cancelled for provider shutdown",
+            ),
             _ = base::tokio::time::sleep_until(context.deadline.into()) => ModelError::new(
                 "model_runtime_deadline_exceeded",
                 "ONNX runtime call exceeded its deadline",
             ),
         };
-        cancel().map_err(|error| runtime_error("signal ONNX cooperative termination", error))?;
+        let cancel_error = cancel()
+            .err()
+            .map(|error| runtime_error("signal ONNX cooperative termination", error));
         let _late_result = result_receiver.await.map_err(|_| {
             ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
         })?;
+        if let Some(error) = cancel_error {
+            return Err(error);
+        }
         Err(interrupted)
     }
 
@@ -690,32 +939,22 @@ impl NativeExecutor {
         context.ensure_active()?;
         let (canceler_sender, mut canceler_receiver) = oneshot::channel();
         let (result_sender, mut result_receiver) = oneshot::channel();
-        self.sender
-            .try_send(Box::new(move || {
-                let result = (|| {
-                    let mut builder = Session::builder()
-                        .map_err(|error| runtime_error("create ONNX session builder", error))?
-                        .with_intra_threads(intra_threads)
-                        .map_err(|error| runtime_error("configure ONNX intra-op threads", error))?
-                        .with_inter_threads(inter_threads)
-                        .map_err(|error| runtime_error("configure ONNX inter-op threads", error))?;
-                    let canceler = builder.canceler();
-                    let _ = canceler_sender.send(canceler);
-                    builder
-                        .commit_from_file(&artifact)
-                        .map_err(|error| runtime_error("load ONNX model", error))
-                })();
-                let _ = result_sender.send(result);
-            }))
-            .map_err(|error| match error {
-                mpsc::TrySendError::Full(_) => {
-                    ModelError::new("model_runtime_busy", "ONNX native executor queue is full")
-                }
-                mpsc::TrySendError::Disconnected(_) => ModelError::new(
-                    "model_runtime_unavailable",
-                    "ONNX native executor is unavailable",
-                ),
-            })?;
+        self.submit(Box::new(move || {
+            let result = (|| {
+                let mut builder = Session::builder()
+                    .map_err(|error| runtime_error("create ONNX session builder", error))?
+                    .with_intra_threads(intra_threads)
+                    .map_err(|error| runtime_error("configure ONNX intra-op threads", error))?
+                    .with_inter_threads(inter_threads)
+                    .map_err(|error| runtime_error("configure ONNX inter-op threads", error))?;
+                let canceler = builder.canceler();
+                let _ = canceler_sender.send(canceler);
+                builder
+                    .commit_from_file(&artifact)
+                    .map_err(|error| runtime_error("load ONNX model", error))
+            })();
+            let _ = result_sender.send(result);
+        }))?;
         let canceler = base::tokio::select! {
             result = &mut result_receiver => return result.map_err(|_| {
                 ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
@@ -727,20 +966,45 @@ impl NativeExecutor {
                 let canceler = canceler_receiver.await.map_err(|_| {
                     ModelError::new("model_runtime_unavailable", "ONNX load canceler was unavailable")
                 })?;
-                canceler.cancel().map_err(|error| runtime_error("cancel ONNX model load", error))?;
+                let cancel_error = canceler.cancel()
+                    .err()
+                    .map(|error| runtime_error("cancel ONNX model load", error));
                 let _late_result = result_receiver.await.map_err(|_| {
                     ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
                 })?;
+                if let Some(error) = cancel_error {
+                    return Err(error);
+                }
                 return Err(ModelError::new("model_runtime_cancelled", "ONNX model load was cancelled"));
+            },
+            _ = self.inner.shutdown.cancelled() => {
+                let canceler = canceler_receiver.await.map_err(|_| {
+                    ModelError::new("model_runtime_unavailable", "ONNX load canceler was unavailable")
+                })?;
+                let cancel_error = canceler.cancel()
+                    .err()
+                    .map(|error| runtime_error("cancel ONNX model load for shutdown", error));
+                let _late_result = result_receiver.await.map_err(|_| {
+                    ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
+                })?;
+                if let Some(error) = cancel_error {
+                    return Err(error);
+                }
+                return Err(ModelError::new("model_runtime_cancelled", "ONNX model load was cancelled for provider shutdown"));
             },
             _ = base::tokio::time::sleep_until(context.deadline.into()) => {
                 let canceler = canceler_receiver.await.map_err(|_| {
                     ModelError::new("model_runtime_unavailable", "ONNX load canceler was unavailable")
                 })?;
-                canceler.cancel().map_err(|error| runtime_error("cancel ONNX model load", error))?;
+                let cancel_error = canceler.cancel()
+                    .err()
+                    .map(|error| runtime_error("cancel ONNX model load", error));
                 let _late_result = result_receiver.await.map_err(|_| {
                     ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
                 })?;
+                if let Some(error) = cancel_error {
+                    return Err(error);
+                }
                 return Err(ModelError::new("model_runtime_deadline_exceeded", "ONNX model load exceeded its deadline"));
             },
         };
@@ -752,17 +1016,25 @@ impl NativeExecutor {
                 "model_runtime_cancelled",
                 "ONNX model load was cancelled",
             ),
+            _ = self.inner.shutdown.cancelled() => ModelError::new(
+                "model_runtime_cancelled",
+                "ONNX model load was cancelled for provider shutdown",
+            ),
             _ = base::tokio::time::sleep_until(context.deadline.into()) => ModelError::new(
                 "model_runtime_deadline_exceeded",
                 "ONNX model load exceeded its deadline",
             ),
         };
-        canceler
+        let cancel_error = canceler
             .cancel()
-            .map_err(|error| runtime_error("cancel ONNX model load", error))?;
+            .err()
+            .map(|error| runtime_error("cancel ONNX model load", error));
         let _late_result = result_receiver.await.map_err(|_| {
             ModelError::new("model_runtime_unavailable", "ONNX native worker stopped")
         })?;
+        if let Some(error) = cancel_error {
+            return Err(error);
+        }
         Err(interrupted)
     }
 }
