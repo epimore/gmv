@@ -9,7 +9,8 @@ use base_db::{
 };
 
 use super::{
-    ModelError, ModelIdentity, ModelResult, VerifiedModelPackage, package::safe_relative_path,
+    ModelError, ModelIdentity, ModelResult, SelectedRuntimeVariant, VerifiedModelPackage,
+    package::safe_relative_path,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub struct InstalledModel {
     pub runtime: String,
     pub installed_path: PathBuf,
     pub manifest_sha256: String,
+    pub selected_variant: Option<SelectedRuntimeVariant>,
     pub resources: super::ResourceHints,
     pub self_tests: Vec<super::SelfTestCase>,
     pub state: ModelState,
@@ -159,6 +161,7 @@ impl ModelRepository {
         .execute(&pool)
         .await
         .map_err(|error| ModelError::io("initialize model schema", error))?;
+        ensure_selected_variant_column(&pool).await?;
         base_db::sqlx::query(
             "CREATE TABLE IF NOT EXISTS avai_model_capability_slot (\
              capability TEXT NOT NULL PRIMARY KEY,\
@@ -308,16 +311,20 @@ impl ModelRepository {
             .map_err(|error| ModelError::io("encode model capabilities", error))?;
         let self_tests_json = base::serde_json::to_string(&package.manifest.self_test)
             .map_err(|error| ModelError::io("encode model self-tests", error))?;
+        let selected_variant_json =
+            base::serde_json::to_string(&SelectedRuntimeVariant::from_verified(package)?)
+                .map_err(|error| ModelError::io("encode selected model variant", error))?;
         base_db::sqlx::query(
             "INSERT INTO avai_model_revision(\
-             model_id,version,revision,capabilities_json,runtime,installed_path,manifest_sha256,\
-             memory_mb,vram_mb,max_batch,self_tests_json,state,installed_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+             model_id,version,revision,capabilities_json,runtime,selected_variant_json,installed_path,manifest_sha256,\
+             memory_mb,vram_mb,max_batch,self_tests_json,state,installed_at_ms) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
         .bind(&identity.model_id)
         .bind(&identity.version)
         .bind(&identity.revision)
         .bind(capabilities_json)
         .bind(&package.selected_variant.runtime)
+        .bind(selected_variant_json)
         .bind(destination.to_string_lossy().as_ref())
         .bind(&package.manifest_sha256)
         .bind(
@@ -380,8 +387,8 @@ impl ModelRepository {
             .map_err(|_| ModelError::new("model_page_invalid", "page size is too large"))?;
         let rows = if let Some(after) = after {
             base_db::sqlx::query(
-                "SELECT model_id,version,revision,capabilities_json,runtime,installed_path,\
-                 manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,\
+                "SELECT model_id,version,revision,capabilities_json,runtime,selected_variant_json,\
+                 installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,\
                  active_generation FROM avai_model_revision WHERE model_id>? OR \
                  (model_id=? AND version>?) OR (model_id=? AND version=? AND revision>?) \
                  ORDER BY model_id,version,revision LIMIT ?",
@@ -397,8 +404,8 @@ impl ModelRepository {
             .await
         } else {
             base_db::sqlx::query(
-                "SELECT model_id,version,revision,capabilities_json,runtime,installed_path,\
-                 manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,\
+                "SELECT model_id,version,revision,capabilities_json,runtime,selected_variant_json,\
+                 installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,\
                  active_generation FROM avai_model_revision \
                  ORDER BY model_id,version,revision LIMIT ?",
             )
@@ -957,8 +964,28 @@ impl ModelRepository {
     }
 }
 
-const SELECT_MODEL: &str = "SELECT model_id,version,revision,capabilities_json,runtime,installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,active_generation FROM avai_model_revision WHERE model_id=? AND version=? AND revision=?";
-const SELECT_MODELS: &str = "SELECT model_id,version,revision,capabilities_json,runtime,installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,active_generation FROM avai_model_revision ORDER BY model_id,version,revision";
+async fn ensure_selected_variant_column(pool: &SqlitePool) -> ModelResult<()> {
+    let columns = base_db::sqlx::query("PRAGMA table_info(avai_model_revision)")
+        .fetch_all(pool)
+        .await
+        .map_err(|error| ModelError::io("inspect model schema", error))?;
+    if columns.iter().any(|row| {
+        row.try_get::<String, _>("name")
+            .is_ok_and(|name| name == "selected_variant_json")
+    }) {
+        return Ok(());
+    }
+    base_db::sqlx::query(
+        "ALTER TABLE avai_model_revision ADD COLUMN selected_variant_json TEXT NULL",
+    )
+    .execute(pool)
+    .await
+    .map_err(|error| ModelError::io("migrate selected model variant", error))?;
+    Ok(())
+}
+
+const SELECT_MODEL: &str = "SELECT model_id,version,revision,capabilities_json,runtime,selected_variant_json,installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,active_generation FROM avai_model_revision WHERE model_id=? AND version=? AND revision=?";
+const SELECT_MODELS: &str = "SELECT model_id,version,revision,capabilities_json,runtime,selected_variant_json,installed_path,manifest_sha256,memory_mb,vram_mb,max_batch,self_tests_json,state,active_generation FROM avai_model_revision ORDER BY model_id,version,revision";
 const SELECT_OPERATION: &str = "SELECT operation_id,idempotency_key,operation_kind,request_hash,state,stable_error_code,deadline_epoch_ms FROM avai_model_management_operation WHERE operation_id=? OR idempotency_key=? LIMIT 1";
 
 fn decode_operation(row: base_db::sqlx::sqlite::SqliteRow) -> ModelResult<OperationReceipt> {
@@ -996,6 +1023,8 @@ fn decode_model(row: base_db::sqlx::sqlite::SqliteRow) -> ModelResult<InstalledM
     let vram_mb: i64 = row.try_get("vram_mb").map_err(decode_error)?;
     let max_batch: i64 = row.try_get("max_batch").map_err(decode_error)?;
     let active_generation: Option<i64> = row.try_get("active_generation").map_err(decode_error)?;
+    let selected_variant_json: Option<String> =
+        row.try_get("selected_variant_json").map_err(decode_error)?;
     Ok(InstalledModel {
         identity: ModelIdentity {
             model_id: row.try_get("model_id").map_err(decode_error)?,
@@ -1005,6 +1034,12 @@ fn decode_model(row: base_db::sqlx::sqlite::SqliteRow) -> ModelResult<InstalledM
         capabilities: base::serde_json::from_str(&capabilities_json)
             .map_err(|error| ModelError::io("parse model capabilities", error))?,
         runtime: row.try_get("runtime").map_err(decode_error)?,
+        selected_variant: selected_variant_json
+            .map(|json| {
+                base::serde_json::from_str(&json)
+                    .map_err(|error| ModelError::io("parse selected model variant", error))
+            })
+            .transpose()?,
         installed_path: PathBuf::from(
             row.try_get::<String, _>("installed_path")
                 .map_err(decode_error)?,

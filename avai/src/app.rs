@@ -4,7 +4,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
-use avai::model::{ModelManager, ModelManagerConfig, ModelRepository, PackagePolicy};
+use avai::model::{
+    ModelManager, ModelManagerConfig, ModelRepository, ONNX_CPU_RUNTIME, OnnxCpuConfig,
+    OnnxCpuProvider, PackagePolicy, RuntimeProvider,
+};
 use avai::model_management::{AvaiModelManagementRpc, ModelManagementConfig, serve_uds};
 use avai::source::SourcePolicy;
 use avai::task::{AvaiDrainBehavior, TaskManager, TaskManagerConfig};
@@ -123,6 +126,14 @@ struct ModelConf {
     max_vram_mb: u64,
     #[serde(default = "default_max_loaded_models")]
     max_loaded_models: usize,
+    #[serde(default = "default_native_worker_count")]
+    native_worker_count: usize,
+    #[serde(default = "default_native_queue_capacity")]
+    native_queue_capacity: usize,
+    #[serde(default = "default_ort_thread_count")]
+    ort_intra_threads: usize,
+    #[serde(default = "default_ort_thread_count")]
+    ort_inter_threads: usize,
     #[serde(default = "default_operation_receipt_capacity")]
     operation_receipt_capacity: usize,
     #[serde(default = "default_operation_retention_ms")]
@@ -147,6 +158,11 @@ impl CheckFromConf for ModelConf {
             || self.max_package_bytes == 0
             || self.max_memory_mb == 0
             || self.max_loaded_models == 0
+            || self.native_worker_count == 0
+            || self.native_worker_count > 64
+            || self.native_queue_capacity == 0
+            || self.ort_intra_threads == 0
+            || self.ort_inter_threads == 0
             || self.operation_receipt_capacity == 0
             || self.operation_receipt_capacity > 4096
             || self.operation_retention_ms < 24 * 60 * 60 * 1_000
@@ -224,6 +240,11 @@ impl Daemon<Bootstrap> for App {
         let guard = GuardConf::try_conf().map_err(config_error)?;
         let server = ServerConf::try_conf().map_err(config_error)?;
         let model = ModelConf::try_conf().map_err(config_error)?;
+        if model.native_worker_count > server.task_worker_count {
+            return Err(global_error(
+                "model.native_worker_count must not exceed server.task_worker_count",
+            ));
+        }
         let grpc_listener =
             TcpListener::bind(("0.0.0.0", server.grpc_port)).map_err(external_error)?;
         grpc_listener
@@ -291,9 +312,30 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     )
     .await
     .map_err(external_error)?;
+    let mut providers: Vec<Arc<dyn RuntimeProvider>> = Vec::new();
+    if model
+        .allowed_runtime_ids
+        .iter()
+        .any(|runtime| runtime == ONNX_CPU_RUNTIME)
+    {
+        match OnnxCpuProvider::initialize_from_release(OnnxCpuConfig {
+            worker_count: model.native_worker_count,
+            queue_capacity: model.native_queue_capacity,
+            intra_threads: model.ort_intra_threads,
+            inter_threads: model.ort_inter_threads,
+            max_result_bytes: server.max_result_bytes,
+        }) {
+            Ok(provider) => providers.push(Arc::new(provider)),
+            Err(error) => base::log::warn!(
+                "Optional ONNX CPU runtime unavailable: action=model_runtime, stage=initialize, runtime=onnx-cpu, error_code={}, error={}",
+                error.code,
+                error.message
+            ),
+        }
+    }
     let model_manager = ModelManager::open(
         model_repository.clone(),
-        Vec::new(),
+        providers,
         ModelManagerConfig {
             max_loaded_models: model.max_loaded_models,
             max_memory_mb: model.max_memory_mb,
@@ -585,6 +627,15 @@ fn default_max_model_vram_mb() -> u64 {
 }
 fn default_max_loaded_models() -> usize {
     8
+}
+fn default_native_worker_count() -> usize {
+    1
+}
+fn default_native_queue_capacity() -> usize {
+    8
+}
+fn default_ort_thread_count() -> usize {
+    1
 }
 fn default_operation_receipt_capacity() -> usize {
     4096

@@ -5,16 +5,22 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use avai::model::{
     FakeRuntimeBehavior, FakeRuntimeProvider, HealthReconcile, ModelIdentity, ModelManager,
     ModelManagerConfig, ModelPackageManifest, ModelRepository, ModelState, PackagePolicy,
-    RuntimeProvider, model_package_signing_payload, verify_package,
+    RuntimeCallContext, RuntimeInput, RuntimeProvider, model_package_signing_payload,
+    verify_package,
 };
 use base::{
     base64::Engine,
     sha2::{Digest, Sha256},
+};
+use base_db::{
+    dbx::{DatabasePoolConfig, sqlitex::SqliteConnectionConfig},
+    sqlx::Row,
 };
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -247,6 +253,18 @@ fn package_verifier_rejects_untrusted_and_malformed_inputs() {
         "model_resource_limit_exceeded"
     );
 
+    let variant = format!(
+        "  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
+        std::env::consts::ARCH
+    );
+    let ambiguous = valid.replace(&variant, &format!("{variant}{variant}"));
+    std::fs::write(&manifest_path, resign_manifest(&ambiguous)).unwrap();
+    assert_eq!(
+        verify_package(root.path(), &policy()).unwrap_err().code,
+        "model_variant_ambiguous"
+    );
+    std::fs::write(&manifest_path, &valid).unwrap();
+
     let unsafe_manifest = valid.replace("model/model.bin", "../model.bin");
     std::fs::write(&manifest_path, resign_manifest(&unsafe_manifest)).unwrap();
     assert_eq!(
@@ -263,6 +281,13 @@ async fn repository_installs_immutable_revision_and_persists_state() {
     let installed = repository.get(&model_a).await.unwrap().unwrap();
     assert_eq!(installed.state, ModelState::Installed);
     assert!(installed.installed_path.join("model/model.bin").is_file());
+    let selected = installed.selected_variant.as_ref().unwrap();
+    assert_eq!(selected.runtime, "fake");
+    assert_eq!(selected.artifact, "model/model.bin");
+    assert_eq!(
+        selected.artifact_sha256,
+        format!("{:x}", Sha256::digest(b"fake-model"))
+    );
 
     let source = root.path().join("source-rev-a");
     let package = verify_package(&source, &policy()).unwrap();
@@ -285,6 +310,122 @@ async fn repository_installs_immutable_revision_and_persists_state() {
         .unwrap();
     assert_eq!(reopened.list().await.unwrap().len(), 1);
     reopened.close().await;
+}
+
+#[tokio::test]
+async fn repository_upgrades_legacy_selected_variant_schema_idempotently() {
+    let root = TestRoot::new("selected-variant-migration");
+    let database_path = root.path().join("avai.db");
+    let pool = base_db::dbx::sqlitex::build_sqlite_pool(
+        SqliteConnectionConfig::new(&database_path),
+        DatabasePoolConfig {
+            max_size: 1,
+            min_idle: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    base_db::sqlx::query(
+        "CREATE TABLE avai_model_revision (\
+         model_id TEXT NOT NULL, version TEXT NOT NULL, revision TEXT NOT NULL,\
+         capabilities_json TEXT NOT NULL, runtime TEXT NOT NULL, installed_path TEXT NOT NULL,\
+         manifest_sha256 TEXT NOT NULL, memory_mb INTEGER NOT NULL, vram_mb INTEGER NOT NULL,\
+         max_batch INTEGER NOT NULL, self_tests_json TEXT NOT NULL, state INTEGER NOT NULL,\
+         active_generation INTEGER NULL, installed_at_ms INTEGER NOT NULL,\
+         activated_at_ms INTEGER NULL, last_error TEXT NULL,\
+         PRIMARY KEY(model_id, version, revision))",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    for _ in 0..2 {
+        let repository = ModelRepository::open(&database_path, &root.path().join("models"))
+            .await
+            .unwrap();
+        repository.close().await;
+    }
+
+    let pool = base_db::dbx::sqlitex::build_sqlite_pool(
+        SqliteConnectionConfig::new(&database_path),
+        DatabasePoolConfig {
+            max_size: 1,
+            min_idle: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let columns = base_db::sqlx::query("PRAGMA table_info(avai_model_revision)")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        columns
+            .iter()
+            .filter(|row| row.get::<String, _>("name") == "selected_variant_json")
+            .count(),
+        1
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn legacy_ambiguous_selected_variant_recovery_fails_closed() {
+    let root = TestRoot::new("legacy-ambiguous-variant");
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    install_test_model(&repository, &root, "model-a", "1", "rev-a", &[CAPABILITY]).await;
+    let model_a = identity("model-a", "1", "rev-a");
+    let installed = repository.get(&model_a).await.unwrap().unwrap();
+    let manifest_path = installed.installed_path.join("manifest.yaml");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    let variant = format!(
+        "  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
+        std::env::consts::ARCH
+    );
+    let ambiguous = resign_manifest(&manifest.replace(&variant, &format!("{variant}{variant}")));
+    std::fs::write(&manifest_path, &ambiguous).unwrap();
+    let manifest_sha256 = format!("{:x}", Sha256::digest(ambiguous.as_bytes()));
+    let pool = base_db::dbx::sqlitex::build_sqlite_pool(
+        SqliteConnectionConfig::new(root.path().join("avai.db")),
+        DatabasePoolConfig {
+            max_size: 1,
+            min_idle: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    base_db::sqlx::query(
+        "UPDATE avai_model_revision SET selected_variant_json=NULL, manifest_sha256=? \
+         WHERE model_id=? AND version=? AND revision=?",
+    )
+    .bind(manifest_sha256)
+    .bind(&model_a.model_id)
+    .bind(&model_a.version)
+    .bind(&model_a.revision)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        manager.preload(&model_a, 1).await.unwrap_err().code,
+        "model_selected_variant_ambiguous"
+    );
+    repository.close().await;
 }
 
 #[tokio::test]
@@ -395,9 +536,23 @@ async fn atomic_switch_keeps_in_flight_tasks_on_captured_generation() {
     let mut tasks = Vec::new();
     for _ in 0..100 {
         let active = manager.capture(CAPABILITY).await.unwrap();
-        tasks.push(tokio::spawn(
-            async move { active.infer(vec![1]).await.unwrap() },
-        ));
+        tasks.push(tokio::spawn(async move {
+            active
+                .infer(
+                    RuntimeInput {
+                        encoded: base::bytes::Bytes::from_static(&[1]),
+                        media_type: "image/png".to_string(),
+                        width: 1,
+                        height: 1,
+                    },
+                    RuntimeCallContext {
+                        deadline: Instant::now() + Duration::from_secs(30),
+                        cancellation: base::tokio_util::sync::CancellationToken::new(),
+                    },
+                )
+                .await
+                .unwrap()
+        }));
     }
     for _ in 0..100 {
         if fake.started_inferences() == 100 {

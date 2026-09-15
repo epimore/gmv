@@ -693,6 +693,7 @@ async fn cancellation_and_absolute_deadline_release_captured_executions() {
         "fake",
         FakeRuntimeBehavior {
             block_inference: true,
+            ignore_inference_cancellation: true,
             inference_output: Some(br#"{"ok":true}"#.to_vec()),
             ..Default::default()
         },
@@ -737,6 +738,15 @@ async fn cancellation_and_absolute_deadline_release_captured_executions() {
         })
         .await;
     assert_eq!(cancelled.state, AiTaskState::Cancelled as i32);
+    assert_eq!(
+        manager
+            .retire_previous(CAPABILITY, 15)
+            .await
+            .unwrap_err()
+            .code,
+        "model_in_use"
+    );
+    fake.release_inferences();
     assert_eq!(wait_retired(&manager, CAPABILITY, 15).await, model_a);
 
     tasks
@@ -749,6 +759,15 @@ async fn cancellation_and_absolute_deadline_release_captured_executions() {
     manager.activate(&model_c, 16).await.unwrap();
     let expired = wait_terminal(&tasks, "deadline").await;
     assert_eq!(expired.error.unwrap().code, "task_expired");
+    assert_eq!(
+        manager
+            .retire_previous(CAPABILITY, 17)
+            .await
+            .unwrap_err()
+            .code,
+        "model_in_use"
+    );
+    fake.release_inferences();
     assert_eq!(wait_retired(&manager, CAPABILITY, 17).await, model_b);
     tasks.close_and_wait().await.unwrap();
     repository.close().await;

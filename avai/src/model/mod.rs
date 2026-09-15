@@ -1,4 +1,5 @@
 mod manager;
+mod onnx_cpu;
 mod package;
 mod repository;
 mod runtime;
@@ -7,10 +8,12 @@ pub use manager::{
     ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelObservation, ModelStatus,
     RecoveredCapability,
 };
+pub use onnx_cpu::{ONNX_CPU_RUNTIME, ONNX_RUNTIME_VERSION, OnnxCpuConfig, OnnxCpuProvider};
 pub use package::{
-    LicenseSpec, ModelFile, ModelIdentity, ModelPackageManifest, PackagePolicy, ResourceHints,
-    ResultSchema, RuntimeVariant, SelfTestCase, SigningSpec, VerifiedModelPackage,
-    model_package_signing_payload, verify_package,
+    ExecutionContract, ExecutionInput, LicenseSpec, ModelFile, ModelIdentity, ModelPackageManifest,
+    PackagePolicy, PostprocessContract, PreprocessContract, ResourceHints, ResultSchema,
+    RuntimeVariant, SelectedRuntimeVariant, SelfTestCase, SelfTestOracle, SigningSpec,
+    TensorContract, VerifiedModelPackage, model_package_signing_payload, verify_package,
 };
 pub(crate) use repository::{
     ClaimOperation, OperationClaimRequest, OperationReceipt, OperationReceiptLimits,
@@ -19,7 +22,10 @@ pub(crate) use repository::{
 pub use repository::{InstalledModel, ModelRepository, ModelState};
 #[cfg(test)]
 pub use runtime::{FakeRuntimeBehavior, FakeRuntimeProvider};
-pub use runtime::{InferenceResult, ModelInstance, RuntimeDescriptor, RuntimeProvider};
+pub use runtime::{
+    InferenceResult, ModelInstance, RuntimeCallContext, RuntimeDescriptor, RuntimeInput,
+    RuntimeProvider,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelError {

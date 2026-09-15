@@ -31,6 +31,7 @@ utoipa = { version = "5.4", features = ["axum_extras", "chrono", "uuid"] }
 utoipa-swagger-ui = { version = "9.0", features = ["axum", "vendored"] }
 axum = "0.8"
 axum-server = "0.8"
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-28"] }
 tower-http = "0.6"
 argon2 = "0.5"
 tower = "0.5"

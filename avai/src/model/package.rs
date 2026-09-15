@@ -43,6 +43,8 @@ pub struct ModelPackageManifest {
     pub capabilities: Vec<String>,
     pub result_schema: ResultSchema,
     pub variants: Vec<RuntimeVariant>,
+    #[serde(default)]
+    pub execution: Option<ExecutionContract>,
     pub resources: ResourceHints,
     pub license: LicenseSpec,
     #[serde(default)]
@@ -63,10 +65,60 @@ pub struct ResultSchema {
 #[serde(crate = "base::serde", deny_unknown_fields)]
 pub struct RuntimeVariant {
     pub runtime: String,
+    #[serde(default)]
+    pub runtime_contract_version: u32,
     pub architecture: String,
     #[serde(default)]
     pub accelerator: String,
     pub artifact: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct ExecutionContract {
+    pub version: u32,
+    pub input: ExecutionInput,
+    pub outputs: Vec<TensorContract>,
+    pub postprocess: PostprocessContract,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct ExecutionInput {
+    pub kind: String,
+    pub accepted_media_types: Vec<String>,
+    pub max_bytes: u64,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub tensor: TensorContract,
+    pub preprocess: PreprocessContract,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct TensorContract {
+    pub name: String,
+    pub dtype: String,
+    pub shape: Vec<u64>,
+    #[serde(default)]
+    pub layout: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct PreprocessContract {
+    pub resize: String,
+    pub interpolation: String,
+    pub color: String,
+    pub scale: f32,
+    pub mean: [f32; 3],
+    pub std: [f32; 3],
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct PostprocessContract {
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -93,6 +145,16 @@ pub struct LicenseSpec {
 pub struct SelfTestCase {
     pub input: String,
     pub expected: String,
+    #[serde(default)]
+    pub oracle: Option<SelfTestOracle>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct SelfTestOracle {
+    pub kind: String,
+    pub abs_tolerance: f64,
+    pub rel_tolerance: f64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -157,6 +219,50 @@ pub struct VerifiedModelPackage {
 #[derive(Debug, Clone)]
 pub(crate) struct InstalledExecutionContract {
     pub result_schema: ResultSchema,
+    pub selected_variant: SelectedRuntimeVariant,
+    pub execution: Option<ExecutionContract>,
+    pub self_tests: Vec<SelfTestCase>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+pub struct SelectedRuntimeVariant {
+    pub version: u32,
+    pub runtime: String,
+    pub runtime_contract_version: u32,
+    pub architecture: String,
+    pub accelerator: String,
+    pub artifact: String,
+    pub artifact_sha256: String,
+}
+
+impl SelectedRuntimeVariant {
+    pub(crate) fn from_verified(package: &VerifiedModelPackage) -> ModelResult<Self> {
+        let artifact = safe_relative_path(&package.selected_variant.artifact)?;
+        let file = package
+            .manifest
+            .files
+            .iter()
+            .find(|file| safe_relative_path(&file.path).is_ok_and(|path| path == artifact))
+            .ok_or_else(|| {
+                ModelError::new(
+                    "invalid_model_manifest",
+                    "selected artifact is not hash-declared",
+                )
+            })?;
+        Ok(Self {
+            version: 1,
+            runtime: package.selected_variant.runtime.clone(),
+            runtime_contract_version: package.selected_variant.runtime_contract_version,
+            architecture: package.selected_variant.architecture.clone(),
+            accelerator: package.selected_variant.accelerator.clone(),
+            artifact: package.selected_variant.artifact.clone(),
+            artifact_sha256: file
+                .sha256
+                .trim_start_matches("sha256:")
+                .to_ascii_lowercase(),
+        })
+    }
 }
 
 pub(crate) fn load_installed_execution_contract(
@@ -174,18 +280,62 @@ pub(crate) fn load_installed_execution_contract(
     }
     let manifest: ModelPackageManifest = base::serde_yaml::from_slice(&manifest_bytes)
         .map_err(|error| ModelError::new("invalid_model_manifest", error.to_string()))?;
-    if manifest.metadata != model.identity
-        || manifest.capabilities != model.capabilities
-        || !manifest
-            .variants
-            .iter()
-            .any(|variant| variant.runtime == model.runtime)
-    {
+    if manifest.metadata != model.identity || manifest.capabilities != model.capabilities {
         return Err(ModelError::new(
             "model_package_changed",
             "installed model execution metadata no longer matches durable metadata",
         ));
     }
+    let selected_variant = match &model.selected_variant {
+        Some(selected) => {
+            if selected.version != 1 || selected.runtime != model.runtime {
+                return Err(ModelError::new(
+                    "model_selected_variant_invalid",
+                    "persisted selected variant is invalid",
+                ));
+            }
+            let matches = manifest.variants.iter().any(|variant| {
+                variant.runtime == selected.runtime
+                    && variant.runtime_contract_version == selected.runtime_contract_version
+                    && variant.architecture == selected.architecture
+                    && variant.accelerator == selected.accelerator
+                    && variant.artifact == selected.artifact
+            });
+            if !matches {
+                return Err(ModelError::new(
+                    "model_package_changed",
+                    "persisted selected variant no longer matches the immutable manifest",
+                ));
+            }
+            selected.clone()
+        }
+        None => {
+            let mut matches = manifest
+                .variants
+                .iter()
+                .filter(|variant| variant.runtime == model.runtime);
+            let variant = matches.next().ok_or_else(|| {
+                ModelError::new(
+                    "model_selected_variant_missing",
+                    "legacy model has no matching runtime variant",
+                )
+            })?;
+            if matches.next().is_some() {
+                return Err(ModelError::new(
+                    "model_selected_variant_ambiguous",
+                    "legacy model runtime maps to multiple manifest variants",
+                ));
+            }
+            selected_from_manifest(&manifest, variant)?
+        }
+    };
+    verify_installed_file(
+        model,
+        &manifest,
+        &selected_variant.artifact,
+        Some(&selected_variant.artifact_sha256),
+        "selected model artifact",
+    )?;
     let schema_path = safe_relative_path(&manifest.result_schema.path)?;
     let declared = manifest
         .files
@@ -216,7 +366,84 @@ pub(crate) fn load_installed_execution_contract(
     })?;
     Ok(InstalledExecutionContract {
         result_schema: manifest.result_schema,
+        selected_variant,
+        execution: manifest.execution,
+        self_tests: manifest.self_test,
     })
+}
+
+fn selected_from_manifest(
+    manifest: &ModelPackageManifest,
+    variant: &RuntimeVariant,
+) -> ModelResult<SelectedRuntimeVariant> {
+    let artifact = safe_relative_path(&variant.artifact)?;
+    let file = manifest
+        .files
+        .iter()
+        .find(|file| safe_relative_path(&file.path).is_ok_and(|path| path == artifact))
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_package_changed",
+                "selected model artifact is not hash-declared",
+            )
+        })?;
+    Ok(SelectedRuntimeVariant {
+        version: 1,
+        runtime: variant.runtime.clone(),
+        runtime_contract_version: variant.runtime_contract_version,
+        architecture: variant.architecture.clone(),
+        accelerator: variant.accelerator.clone(),
+        artifact: variant.artifact.clone(),
+        artifact_sha256: file
+            .sha256
+            .trim_start_matches("sha256:")
+            .to_ascii_lowercase(),
+    })
+}
+
+fn verify_installed_file(
+    model: &InstalledModel,
+    manifest: &ModelPackageManifest,
+    relative: &str,
+    expected_hash: Option<&str>,
+    description: &str,
+) -> ModelResult<()> {
+    let relative = safe_relative_path(relative)?;
+    let declared = manifest
+        .files
+        .iter()
+        .find(|file| safe_relative_path(&file.path).is_ok_and(|path| path == relative))
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_package_changed",
+                format!("installed {description} is not hash-declared"),
+            )
+        })?;
+    if expected_hash.is_some_and(|hash| {
+        !hash.eq_ignore_ascii_case(declared.sha256.trim_start_matches("sha256:"))
+    }) {
+        return Err(ModelError::new(
+            "model_package_changed",
+            format!("installed {description} hash does not match selected variant"),
+        ));
+    }
+    let metadata = confined_regular_file_metadata(&model.installed_path, &relative)?;
+    let bytes = std::fs::read(model.installed_path.join(relative)).map_err(|error| {
+        ModelError::new(
+            "model_io_failed",
+            format!("read installed {description}: {error}"),
+        )
+    })?;
+    if metadata.len() != declared.size
+        || !format!("{:x}", Sha256::digest(&bytes))
+            .eq_ignore_ascii_case(declared.sha256.trim_start_matches("sha256:"))
+    {
+        return Err(ModelError::new(
+            "model_package_changed",
+            format!("installed {description} no longer matches its declared hash"),
+        ));
+    }
+    Ok(())
 }
 
 impl VerifiedModelPackage {
@@ -329,22 +556,32 @@ pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<Verifi
         )
     })?;
 
-    let selected_variant = manifest
+    let compatible_variants = manifest
         .variants
         .iter()
-        .find(|variant| {
+        .filter(|variant| {
             variant.architecture == policy.architecture
                 && policy.available_runtimes.contains(&variant.runtime)
                 && (variant.accelerator.is_empty()
                     || policy.available_accelerators.contains(&variant.accelerator))
         })
         .cloned()
-        .ok_or_else(|| {
-            ModelError::new(
+        .collect::<Vec<_>>();
+    let selected_variant = match compatible_variants.as_slice() {
+        [selected] => selected.clone(),
+        [] => {
+            return Err(ModelError::new(
                 "model_runtime_incompatible",
                 "no model variant matches this architecture and available runtime",
-            )
-        })?;
+            ));
+        }
+        _ => {
+            return Err(ModelError::new(
+                "model_variant_ambiguous",
+                "multiple model variants match this architecture and available runtime",
+            ));
+        }
+    };
     Ok(VerifiedModelPackage {
         root: root.to_path_buf(),
         manifest,
@@ -420,7 +657,110 @@ fn validate_manifest(manifest: &ModelPackageManifest, policy: &PackagePolicy) ->
             "model resource hints exceed configured limits",
         ));
     }
+    if let Some(execution) = &manifest.execution {
+        validate_execution_contract(execution)?;
+    }
+    for case in &manifest.self_test {
+        if let Some(oracle) = &case.oracle
+            && (oracle.kind != "json_numeric_v1"
+                || !oracle.abs_tolerance.is_finite()
+                || oracle.abs_tolerance < 0.0
+                || !oracle.rel_tolerance.is_finite()
+                || oracle.rel_tolerance < 0.0)
+        {
+            return Err(ModelError::new(
+                "invalid_model_execution_contract",
+                "self-test oracle is unsupported or invalid",
+            ));
+        }
+    }
     Ok(())
+}
+
+fn validate_execution_contract(execution: &ExecutionContract) -> ModelResult<()> {
+    let input = &execution.input;
+    if execution.version != 1
+        || input.kind != "encoded_image_tensor_v1"
+        || input.accepted_media_types.is_empty()
+        || input.max_bytes == 0
+        || input.max_width == 0
+        || input.max_height == 0
+        || input.tensor.name.trim().is_empty()
+        || input.tensor.dtype != "f32"
+        || input.tensor.layout != "nchw"
+        || input.tensor.shape.len() != 4
+        || input.tensor.shape[0] != 1
+        || input.tensor.shape[1] != 3
+        || input.tensor.shape[2] == 0
+        || input.tensor.shape[3] == 0
+        || input.preprocess.resize != "exact"
+        || input.preprocess.interpolation != "bilinear"
+        || input.preprocess.color != "rgb"
+        || !input.preprocess.scale.is_finite()
+        || input.preprocess.mean.iter().any(|value| !value.is_finite())
+        || input
+            .preprocess
+            .std
+            .iter()
+            .any(|value| !value.is_finite() || *value == 0.0)
+        || execution.outputs.is_empty()
+        || execution.postprocess.kind != "tensor_json_v1"
+    {
+        return Err(ModelError::new(
+            "invalid_model_execution_contract",
+            "execution contract v1 contains unsupported or invalid values",
+        ));
+    }
+    let supported_media = ["image/jpeg", "image/png", "image/webp"];
+    if input
+        .accepted_media_types
+        .iter()
+        .any(|media| !supported_media.contains(&media.as_str()))
+    {
+        return Err(ModelError::new(
+            "invalid_model_execution_contract",
+            "execution contract declares an unsupported encoded image media type",
+        ));
+    }
+    checked_element_count(&input.tensor.shape)?;
+    let mut output_names = HashSet::new();
+    for output in &execution.outputs {
+        if output.name.trim().is_empty()
+            || !output_names.insert(&output.name)
+            || output.dtype != "f32"
+            || !output.layout.is_empty()
+        {
+            return Err(ModelError::new(
+                "invalid_model_execution_contract",
+                "execution output contract is unsupported or duplicated",
+            ));
+        }
+        checked_element_count(&output.shape)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn checked_element_count(shape: &[u64]) -> ModelResult<usize> {
+    if shape.is_empty() || shape.contains(&0) {
+        return Err(ModelError::new(
+            "invalid_model_execution_contract",
+            "tensor shape must contain fixed positive dimensions",
+        ));
+    }
+    shape.iter().try_fold(1_usize, |count, dimension| {
+        let dimension = usize::try_from(*dimension).map_err(|_| {
+            ModelError::new(
+                "invalid_model_execution_contract",
+                "tensor dimension does not fit this platform",
+            )
+        })?;
+        count.checked_mul(dimension).ok_or_else(|| {
+            ModelError::new(
+                "invalid_model_execution_contract",
+                "tensor element count overflows this platform",
+            )
+        })
+    })
 }
 
 pub fn model_package_signing_payload(manifest: &ModelPackageManifest) -> ModelResult<Vec<u8>> {

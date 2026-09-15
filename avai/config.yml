@@ -45,6 +45,10 @@ model:
   max_memory_mb: 16384
   max_vram_mb: 16384
   max_loaded_models: 8
+  native_worker_count: 1
+  native_queue_capacity: 8
+  ort_intra_threads: 1
+  ort_inter_threads: 1
   operation_receipt_capacity: 4096
   operation_retention_ms: 86400000
   mutation_concurrency: 1
