@@ -9,7 +9,7 @@ use base::{
     sha2::{Digest, Sha256},
 };
 
-use super::{ModelError, ModelResult};
+use super::{InstalledModel, ModelError, ModelResult};
 
 const MANIFEST_FILE: &str = "manifest.yaml";
 const API_VERSION: &str = "gmv.ai/v1";
@@ -29,6 +29,7 @@ impl ModelIdentity {
             model_id: self.model_id.clone(),
             version: self.version.clone(),
             runtime: runtime.into(),
+            revision: self.revision.clone(),
         }
     }
 }
@@ -151,6 +152,71 @@ pub struct VerifiedModelPackage {
     pub selected_variant: RuntimeVariant,
     pub manifest_sha256: String,
     policy: PackagePolicy,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct InstalledExecutionContract {
+    pub result_schema: ResultSchema,
+}
+
+pub(crate) fn load_installed_execution_contract(
+    model: &InstalledModel,
+) -> ModelResult<InstalledExecutionContract> {
+    let manifest_path = model.installed_path.join(MANIFEST_FILE);
+    let manifest_bytes = std::fs::read(&manifest_path)
+        .map_err(|error| ModelError::io("read installed model manifest", error))?;
+    let manifest_hash = format!("{:x}", Sha256::digest(&manifest_bytes));
+    if manifest_hash != model.manifest_sha256 {
+        return Err(ModelError::new(
+            "model_package_changed",
+            "installed model manifest no longer matches its verified hash",
+        ));
+    }
+    let manifest: ModelPackageManifest = base::serde_yaml::from_slice(&manifest_bytes)
+        .map_err(|error| ModelError::new("invalid_model_manifest", error.to_string()))?;
+    if manifest.metadata != model.identity
+        || manifest.capabilities != model.capabilities
+        || !manifest
+            .variants
+            .iter()
+            .any(|variant| variant.runtime == model.runtime)
+    {
+        return Err(ModelError::new(
+            "model_package_changed",
+            "installed model execution metadata no longer matches durable metadata",
+        ));
+    }
+    let schema_path = safe_relative_path(&manifest.result_schema.path)?;
+    let declared = manifest
+        .files
+        .iter()
+        .find(|file| safe_relative_path(&file.path).is_ok_and(|path| path == schema_path))
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_package_changed",
+                "installed result schema is not hash-declared",
+            )
+        })?;
+    let schema_bytes = std::fs::read(model.installed_path.join(&schema_path))
+        .map_err(|error| ModelError::io("read installed result schema", error))?;
+    if schema_bytes.len() as u64 != declared.size
+        || !format!("{:x}", Sha256::digest(&schema_bytes))
+            .eq_ignore_ascii_case(declared.sha256.trim_start_matches("sha256:"))
+    {
+        return Err(ModelError::new(
+            "model_package_changed",
+            "installed result schema no longer matches its declared hash",
+        ));
+    }
+    base::serde_json::from_slice::<base::serde_json::Value>(&schema_bytes).map_err(|error| {
+        ModelError::new(
+            "invalid_result_schema",
+            format!("installed result schema is invalid JSON: {error}"),
+        )
+    })?;
+    Ok(InstalledExecutionContract {
+        result_schema: manifest.result_schema,
+    })
 }
 
 impl VerifiedModelPackage {

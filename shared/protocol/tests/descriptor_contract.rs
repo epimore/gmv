@@ -76,6 +76,16 @@ struct LegacyDesiredState {
     deadline_epoch_ms: i64,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct LegacyModelRef {
+    #[prost(string, tag = "1")]
+    model_id: String,
+    #[prost(string, tag = "2")]
+    version: String,
+    #[prost(string, tag = "3")]
+    runtime: String,
+}
+
 fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
 }
@@ -1475,6 +1485,15 @@ fn avai_multisource_task_contract_is_additive_and_typed() {
     assert_eq!(descriptor_field_number(grant, "proof"), Some(6));
 
     let avai = descriptor_file(&descriptor, "gmv.avai.v1");
+    let model_ref = descriptor_message(avai, "ModelRef");
+    for (field, number) in [
+        ("model_id", 1),
+        ("version", 2),
+        ("runtime", 3),
+        ("revision", 4),
+    ] {
+        assert_eq!(descriptor_field_number(model_ref, field), Some(number));
+    }
     let create = descriptor_message(avai, "CreateTaskRequest");
     for (field, number) in [
         ("task_type", 3),
@@ -1547,6 +1566,32 @@ fn avai_multisource_task_contract_is_additive_and_typed() {
     let read_response = descriptor_message(session, "ReadGrantedImageResponse");
     assert_eq!(descriptor_field_number(read_response, "image"), Some(1));
     assert_eq!(descriptor_field_number(read_response, "error"), Some(4));
+}
+
+#[test]
+fn model_ref_revision_is_wire_compatible_with_legacy_callers() {
+    let legacy = LegacyModelRef {
+        model_id: "model-a".to_string(),
+        version: "1".to_string(),
+        runtime: "fake".to_string(),
+    };
+    let current =
+        gmv_protocol::avai::v1::ModelRef::decode(legacy.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(current.model_id, legacy.model_id);
+    assert_eq!(current.version, legacy.version);
+    assert_eq!(current.runtime, legacy.runtime);
+    assert!(current.revision.is_empty());
+
+    let current = gmv_protocol::avai::v1::ModelRef {
+        model_id: "model-a".to_string(),
+        version: "1".to_string(),
+        runtime: "fake".to_string(),
+        revision: "rev-a".to_string(),
+    };
+    let legacy = LegacyModelRef::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy.model_id, current.model_id);
+    assert_eq!(legacy.version, current.version);
+    assert_eq!(legacy.runtime, current.runtime);
 }
 
 #[test]

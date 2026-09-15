@@ -62,6 +62,8 @@ struct ServerConf {
     upload_public_url: String,
     #[serde(default = "default_max_image_bytes")]
     max_image_bytes: usize,
+    #[serde(default = "default_max_result_bytes")]
+    max_result_bytes: usize,
     #[serde(default = "default_task_queue_size")]
     task_queue_size: usize,
     #[serde(default = "default_task_worker_count")]
@@ -88,7 +90,11 @@ impl CheckFromConf for ServerConf {
                 "server.node_id, server.host and server.grpc_port are required".to_string(),
             ));
         }
-        if self.task_queue_size == 0 || self.task_worker_count == 0 || self.max_image_bytes == 0 {
+        if self.task_queue_size == 0
+            || self.task_worker_count == 0
+            || self.max_image_bytes == 0
+            || self.max_result_bytes == 0
+        {
             return Err(FieldCheckError::BizError(
                 "Avai task capacity values must be positive".to_string(),
             ));
@@ -201,6 +207,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
                 allowed_internal_hosts: server.allowed_internal_hosts.into_iter().collect(),
                 ..SourcePolicy::default()
             },
+            max_result_bytes: server.max_result_bytes,
         },
         &runtime,
     )
@@ -370,6 +377,10 @@ fn default_upload_public_url() -> String {
 
 fn default_max_image_bytes() -> usize {
     16 * 1024 * 1024
+}
+
+fn default_max_result_bytes() -> usize {
+    1024 * 1024
 }
 
 fn default_task_queue_size() -> usize {

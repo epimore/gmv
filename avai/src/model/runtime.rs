@@ -55,6 +55,7 @@ pub struct FakeRuntimeBehavior {
     pub fail_self_test_model: Option<String>,
     pub fail_health: bool,
     pub block_inference: bool,
+    pub inference_output: Option<Vec<u8>>,
 }
 
 #[derive(Clone)]
@@ -254,7 +255,7 @@ impl ModelInstance for FakeModelInstance {
                 self.release.notified().await;
             }
             Ok(InferenceResult {
-                output: input,
+                output: self.behavior.inference_output.clone().unwrap_or(input),
                 actual_model: self.identity.actual_model(self.runtime.clone()),
             })
         })

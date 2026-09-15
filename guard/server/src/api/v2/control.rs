@@ -3631,6 +3631,12 @@ impl BusinessControl {
             actual_model_version: actual_model
                 .map(|model| model.version.clone())
                 .unwrap_or_default(),
+            actual_model_revision: actual_model
+                .map(|model| model.revision.clone())
+                .unwrap_or_default(),
+            actual_model_runtime: actual_model
+                .map(|model| model.runtime.clone())
+                .unwrap_or_default(),
             result,
             error_code: response
                 .error
