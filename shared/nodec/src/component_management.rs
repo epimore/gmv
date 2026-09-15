@@ -1,5 +1,5 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -893,41 +893,71 @@ pub async fn serve_uds<O: ComponentDrainOwner>(
     owner: Arc<O>,
     cancel: CancellationToken,
 ) -> base::exception::GlobalResult<()> {
-    use base::futures::stream;
-
-    if !socket.is_absolute()
-        || socket.components().any(|part| {
-            matches!(
-                part,
-                std::path::Component::CurDir | std::path::Component::ParentDir
-            )
-        })
-    {
-        return Err(base::exception::GlobalError::new_sys_error(
-            "component management socket must be an absolute normalized path",
-            |_| {},
-        ));
-    }
-    if let Some(parent) = socket.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
-    }
-    let listener = bind_uds_listener(socket).await?;
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
-        .map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))?;
-    let owned_socket = socket_identity(socket)?;
-    let incoming = stream::unfold(listener, |listener| async move {
-        Some((listener.accept().await.map(|(stream, _)| stream), listener))
-    });
+    let owned = OwnedUdsListener::bind(socket).await?;
+    let incoming = owned.incoming();
     let result = tonic::transport::Server::builder()
         .add_service(ComponentManagementServer::new(ComponentManagementRpc::new(
             owner,
         )))
         .serve_with_incoming_shutdown(incoming, async move { cancel.cancelled().await })
         .await;
-    remove_owned_socket(socket, owned_socket)?;
+    owned.cleanup()?;
     result.map_err(|error| base::exception::GlobalError::from_external_error(error, |_| {}))
+}
+
+/// Owns the secure lifecycle of one local management socket while allowing a
+/// service binary to install multiple typed tonic services on that endpoint.
+#[cfg(unix)]
+pub struct OwnedUdsListener {
+    socket: PathBuf,
+    identity: (u64, u64),
+    listener: Arc<base::tokio::net::UnixListener>,
+}
+
+#[cfg(unix)]
+impl OwnedUdsListener {
+    pub async fn bind(socket: &Path) -> base::exception::GlobalResult<Self> {
+        if !socket.is_absolute()
+            || socket.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err(base::exception::GlobalError::new_sys_error(
+                "management socket must be an absolute normalized path",
+                |_| {},
+            ));
+        }
+        if let Some(parent) = socket.parent() {
+            std::fs::create_dir_all(parent).map_err(io_error)?;
+        }
+        let listener = bind_uds_listener(socket).await?;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(socket, std::fs::Permissions::from_mode(0o600))
+            .map_err(io_error)?;
+        Ok(Self {
+            socket: socket.to_path_buf(),
+            identity: socket_identity(socket)?,
+            listener: Arc::new(listener),
+        })
+    }
+
+    pub fn incoming(
+        &self,
+    ) -> impl base::futures::Stream<Item = Result<base::tokio::net::UnixStream, std::io::Error>>
+    + Send
+    + 'static {
+        let listener = self.listener.clone();
+        base::futures::stream::unfold(listener, |listener| async move {
+            Some((listener.accept().await.map(|(stream, _)| stream), listener))
+        })
+    }
+
+    pub fn cleanup(self) -> base::exception::GlobalResult<()> {
+        remove_owned_socket(&self.socket, self.identity)
+    }
 }
 
 #[cfg(unix)]

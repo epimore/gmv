@@ -1,16 +1,20 @@
+use std::{future::Future, pin::Pin, sync::Arc};
+
+#[cfg(test)]
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
-    pin::Pin,
     sync::{
-        Arc, Mutex, RwLock,
+        Mutex, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 
+#[cfg(test)]
 use base::tokio::sync::Notify;
 
-use super::{InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase};
+#[cfg(test)]
+use super::ModelError;
+use super::{InstalledModel, ModelIdentity, ModelResult, SelfTestCase};
 
 pub type RuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = ModelResult<T>> + Send + 'a>>;
 
@@ -47,6 +51,7 @@ pub struct InferenceResult {
     pub actual_model: gmv_protocol::avai::v1::ModelRef,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Default)]
 pub struct FakeRuntimeBehavior {
     pub fail_preload: bool,
@@ -58,6 +63,7 @@ pub struct FakeRuntimeBehavior {
     pub inference_output: Option<Vec<u8>>,
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 pub struct FakeRuntimeProvider {
     descriptor: RuntimeDescriptor,
@@ -71,6 +77,7 @@ pub struct FakeRuntimeProvider {
     dropped: Arc<Mutex<HashMap<String, usize>>>,
 }
 
+#[cfg(test)]
 impl FakeRuntimeProvider {
     pub fn new(runtime: impl Into<String>, behavior: FakeRuntimeBehavior) -> Self {
         Self {
@@ -132,6 +139,7 @@ impl FakeRuntimeProvider {
     }
 }
 
+#[cfg(test)]
 impl RuntimeProvider for FakeRuntimeProvider {
     fn descriptor(&self) -> RuntimeDescriptor {
         self.descriptor.clone()
@@ -171,6 +179,7 @@ impl RuntimeProvider for FakeRuntimeProvider {
     }
 }
 
+#[cfg(test)]
 struct FakeModelInstance {
     identity: ModelIdentity,
     runtime: String,
@@ -185,6 +194,7 @@ struct FakeModelInstance {
     dropped: Arc<Mutex<HashMap<String, usize>>>,
 }
 
+#[cfg(test)]
 impl Drop for FakeModelInstance {
     fn drop(&mut self) {
         let mut dropped = self.dropped.lock().expect("drop state poisoned");
@@ -192,6 +202,7 @@ impl Drop for FakeModelInstance {
     }
 }
 
+#[cfg(test)]
 impl ModelInstance for FakeModelInstance {
     fn identity(&self) -> &ModelIdentity {
         &self.identity

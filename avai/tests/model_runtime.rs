@@ -22,10 +22,10 @@ static NEXT_TEMP: AtomicUsize = AtomicUsize::new(1);
 const CAPABILITY: &str = "vehicle.detect";
 const SECOND_CAPABILITY: &str = "vision.object.detect";
 
-struct TestRoot(PathBuf);
+pub(crate) struct TestRoot(PathBuf);
 
 impl TestRoot {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         let id = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
             "avai-model-runtime-{name}-{}-{id}",
@@ -35,7 +35,7 @@ impl TestRoot {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -46,11 +46,11 @@ impl Drop for TestRoot {
     }
 }
 
-fn write_package(root: &Path, model_id: &str, version: &str, revision: &str) {
+pub(crate) fn write_package(root: &Path, model_id: &str, version: &str, revision: &str) {
     write_package_with_capabilities(root, model_id, version, revision, &[CAPABILITY]);
 }
 
-fn write_package_with_capabilities(
+pub(crate) fn write_package_with_capabilities(
     root: &Path,
     model_id: &str,
     version: &str,
@@ -116,7 +116,7 @@ fn resign_manifest(manifest: &str) -> String {
     sign_manifest(&manifest.replace(signature_line, "  signature: \"\""))
 }
 
-fn policy() -> PackagePolicy {
+pub(crate) fn policy() -> PackagePolicy {
     PackagePolicy {
         available_runtimes: HashSet::from(["fake".to_string()]),
         allowed_result_schemas: HashSet::from([("gmv.vision.observation".to_string(), 1)]),
@@ -134,7 +134,7 @@ fn policy() -> PackagePolicy {
     }
 }
 
-fn identity(model_id: &str, version: &str, revision: &str) -> ModelIdentity {
+pub(crate) fn identity(model_id: &str, version: &str, revision: &str) -> ModelIdentity {
     ModelIdentity {
         model_id: model_id.to_string(),
         version: version.to_string(),
@@ -157,7 +157,7 @@ async fn repository_with_models(root: &TestRoot) -> ModelRepository {
     repository
 }
 
-async fn install_test_model(
+pub(crate) async fn install_test_model(
     repository: &ModelRepository,
     root: &TestRoot,
     model_id: &str,

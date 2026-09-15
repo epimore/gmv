@@ -4,6 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
+use avai::model::{ModelManager, ModelManagerConfig, ModelRepository, PackagePolicy};
+use avai::model_management::{AvaiModelManagementRpc, ModelManagementConfig, serve_uds};
 use avai::source::SourcePolicy;
 use avai::task::{AvaiDrainBehavior, TaskManager, TaskManagerConfig};
 use avai::upload::{UploadManager, UploadManagerConfig};
@@ -13,7 +15,7 @@ use base::daemon::Daemon;
 use base::exception::{GlobalError, GlobalResult};
 use base::serde::Deserialize;
 use base::utils::rt::{GlobalRuntime, RuntimeType};
-use gmv_nodec::component_management::{ManagedDrainOwner, serve_uds};
+use gmv_nodec::component_management::ManagedDrainOwner;
 use gmv_nodec::{NodeReporter, NodeReporterConfig, generate_instance_id};
 use gmv_protocol::avai::v1::avai_control_server::AvaiControlServer;
 
@@ -78,6 +80,86 @@ struct ServerConf {
     management_component_id: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+struct ResultSchemaConf {
+    name: String,
+    version: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(crate = "base::serde")]
+#[conf(prefix = "model", check)]
+struct ModelConf {
+    #[serde(default = "default_model_database_path")]
+    database_path: String,
+    #[serde(default = "default_model_root")]
+    root: String,
+    #[serde(default = "default_trusted_import_root")]
+    trusted_import_root: String,
+    #[serde(default = "default_model_architecture")]
+    architecture: String,
+    #[serde(default)]
+    allowed_runtime_ids: Vec<String>,
+    #[serde(default = "default_model_accelerators")]
+    allowed_accelerators: Vec<String>,
+    #[serde(default)]
+    allowed_result_schemas: Vec<ResultSchemaConf>,
+    #[serde(default)]
+    approved_spdx: Vec<String>,
+    #[serde(default)]
+    available_license_refs: Vec<String>,
+    #[serde(default)]
+    trusted_signing_keys: HashMap<String, String>,
+    #[serde(default = "default_max_manifest_bytes")]
+    max_manifest_bytes: u64,
+    #[serde(default = "default_max_model_files")]
+    max_file_count: usize,
+    #[serde(default = "default_max_package_bytes")]
+    max_package_bytes: u64,
+    #[serde(default = "default_max_model_memory_mb")]
+    max_memory_mb: u64,
+    #[serde(default = "default_max_model_vram_mb")]
+    max_vram_mb: u64,
+    #[serde(default = "default_max_loaded_models")]
+    max_loaded_models: usize,
+    #[serde(default = "default_operation_receipt_capacity")]
+    operation_receipt_capacity: usize,
+    #[serde(default = "default_operation_retention_ms")]
+    operation_retention_ms: i64,
+    #[serde(default = "default_mutation_concurrency")]
+    mutation_concurrency: usize,
+}
+
+impl CheckFromConf for ModelConf {
+    fn _field_check(&self) -> Result<(), FieldCheckError> {
+        if self.database_path.trim().is_empty()
+            || self.root.trim().is_empty()
+            || self.trusted_import_root.trim().is_empty()
+            || self.architecture.trim().is_empty()
+        {
+            return Err(FieldCheckError::BizError(
+                "model paths and architecture must not be empty".to_string(),
+            ));
+        }
+        if self.max_manifest_bytes == 0
+            || self.max_file_count == 0
+            || self.max_package_bytes == 0
+            || self.max_memory_mb == 0
+            || self.max_loaded_models == 0
+            || self.operation_receipt_capacity == 0
+            || self.operation_receipt_capacity > 4096
+            || self.operation_retention_ms < 24 * 60 * 60 * 1_000
+            || self.mutation_concurrency != 1
+        {
+            return Err(FieldCheckError::BizError(
+                "model package, runtime and operation bounds are invalid".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl CheckFromConf for ServerConf {
     fn _field_check(&self) -> Result<(), FieldCheckError> {
         if self.installation_id.trim().is_empty() || self.host_id.trim().is_empty() {
@@ -124,6 +206,7 @@ impl CheckFromConf for ServerConf {
 pub struct App {
     guard: GuardConf,
     server: ServerConf,
+    model: ModelConf,
 }
 
 pub struct Bootstrap {
@@ -140,6 +223,7 @@ impl Daemon<Bootstrap> for App {
         base::logger::Logger::init()?;
         let guard = GuardConf::try_conf().map_err(config_error)?;
         let server = ServerConf::try_conf().map_err(config_error)?;
+        let model = ModelConf::try_conf().map_err(config_error)?;
         let grpc_listener =
             TcpListener::bind(("0.0.0.0", server.grpc_port)).map_err(external_error)?;
         grpc_listener
@@ -151,7 +235,11 @@ impl Daemon<Bootstrap> for App {
             .set_nonblocking(true)
             .map_err(external_error)?;
         Ok((
-            Self { guard, server },
+            Self {
+                guard,
+                server,
+                model,
+            },
             Bootstrap {
                 grpc_listener,
                 upload_listener,
@@ -177,7 +265,11 @@ impl Daemon<Bootstrap> for App {
 }
 
 async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> GlobalResult<()> {
-    let App { guard, server } = app;
+    let App {
+        guard,
+        server,
+        model,
+    } = app;
     let capabilities = server.capabilities.clone();
     let task_database_path = PathBuf::from(&server.task_database_path);
     let object_root = PathBuf::from(&server.object_root);
@@ -192,7 +284,25 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     node.installation_id = server.installation_id;
     node.host_id = server.host_id;
     node.started_at_epoch_ms = now_epoch_ms();
-    let manager = TaskManager::open(
+    let package_policy = model.package_policy()?;
+    let model_repository = ModelRepository::open(
+        PathBuf::from(&model.database_path).as_path(),
+        PathBuf::from(&model.root).as_path(),
+    )
+    .await
+    .map_err(external_error)?;
+    let model_manager = ModelManager::open(
+        model_repository.clone(),
+        Vec::new(),
+        ModelManagerConfig {
+            max_loaded_models: model.max_loaded_models,
+            max_memory_mb: model.max_memory_mb,
+            max_vram_mb: model.max_vram_mb,
+        },
+    )
+    .await
+    .map_err(external_error)?;
+    let manager = TaskManager::open_with_model_manager(
         node.identity.clone(),
         capabilities.clone(),
         TaskManagerConfig {
@@ -209,6 +319,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             },
             max_result_bytes: server.max_result_bytes,
         },
+        Some(model_manager.clone()),
         &runtime,
     )
     .await
@@ -250,10 +361,23 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             server.management_component_id.clone(),
             Arc::new(AvaiDrainBehavior(manager.clone())),
         ));
+        let model_rpc = AvaiModelManagementRpc::new(
+            model_repository.clone(),
+            model_manager.clone(),
+            manager.clone(),
+            ModelManagementConfig {
+                trusted_import_root: PathBuf::from(&model.trusted_import_root),
+                package_policy,
+                receipt_capacity: model.operation_receipt_capacity,
+                receipt_retention_ms: model.operation_retention_ms,
+                mutation_concurrency: model.mutation_concurrency,
+            },
+        )
+        .map_err(external_error)?;
         let management_cancel = cancel.clone();
-        runtime.spawn("avai-component-management", async move {
-            if let Err(error) = serve_uds(&socket, owner, management_cancel).await {
-                base::log::error!("Avai component management failed: {error}");
+        runtime.spawn("avai-local-management", async move {
+            if let Err(error) = serve_uds(&socket, owner, model_rpc, management_cancel).await {
+                base::log::error!("Avai local management failed: {error}");
                 GlobalRuntime::request_shutdown_with_error();
             }
         })?;
@@ -335,6 +459,40 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     }
 }
 
+impl ModelConf {
+    fn package_policy(&self) -> GlobalResult<PackagePolicy> {
+        use base::base64::Engine;
+        let trusted_signing_keys = self
+            .trusted_signing_keys
+            .iter()
+            .map(|(key_id, encoded)| {
+                base::base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map(|key| (key_id.clone(), key))
+                    .map_err(external_error)
+            })
+            .collect::<GlobalResult<HashMap<_, _>>>()?;
+        Ok(PackagePolicy {
+            architecture: self.architecture.clone(),
+            available_runtimes: self.allowed_runtime_ids.iter().cloned().collect(),
+            available_accelerators: self.allowed_accelerators.iter().cloned().collect(),
+            allowed_result_schemas: self
+                .allowed_result_schemas
+                .iter()
+                .map(|schema| (schema.name.clone(), schema.version))
+                .collect(),
+            approved_spdx: self.approved_spdx.iter().cloned().collect(),
+            available_license_refs: self.available_license_refs.iter().cloned().collect(),
+            trusted_signing_keys,
+            max_manifest_bytes: self.max_manifest_bytes,
+            max_file_count: self.max_file_count,
+            max_package_bytes: self.max_package_bytes,
+            max_memory_mb: self.max_memory_mb,
+            max_vram_mb: self.max_vram_mb,
+        })
+    }
+}
+
 fn default_guard_endpoint() -> String {
     "http://127.0.0.1:18080".to_string()
 }
@@ -393,6 +551,49 @@ fn default_task_worker_count() -> usize {
 
 fn default_management_component_id() -> String {
     "avai".to_string()
+}
+
+fn default_model_database_path() -> String {
+    "./data/avai-model.db".to_string()
+}
+fn default_model_root() -> String {
+    "./data/models".to_string()
+}
+fn default_trusted_import_root() -> String {
+    "./data/model-import".to_string()
+}
+fn default_model_architecture() -> String {
+    std::env::consts::ARCH.to_string()
+}
+fn default_model_accelerators() -> Vec<String> {
+    vec!["cpu".to_string()]
+}
+fn default_max_manifest_bytes() -> u64 {
+    256 * 1024
+}
+fn default_max_model_files() -> usize {
+    256
+}
+fn default_max_package_bytes() -> u64 {
+    4 * 1024 * 1024 * 1024
+}
+fn default_max_model_memory_mb() -> u64 {
+    16 * 1024
+}
+fn default_max_model_vram_mb() -> u64 {
+    16 * 1024
+}
+fn default_max_loaded_models() -> usize {
+    8
+}
+fn default_operation_receipt_capacity() -> usize {
+    4096
+}
+fn default_operation_retention_ms() -> i64 {
+    24 * 60 * 60 * 1_000
+}
+fn default_mutation_concurrency() -> usize {
+    1
 }
 
 fn config_error(error: base::cfg_lib::conf::ConfigError) -> GlobalError {

@@ -42,6 +42,16 @@ pub struct ModelStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelObservation {
+    pub loaded: bool,
+    pub runtime_available: bool,
+    pub active_capabilities: Vec<String>,
+    pub previous_capabilities: Vec<String>,
+    pub generation: Option<u64>,
+    pub in_flight_tasks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HealthReconcile {
     Healthy,
     RolledBack {
@@ -438,13 +448,28 @@ impl ModelManager {
             .cloned()
             .ok_or_else(|| ModelError::new("model_not_ready", "model must be preloaded first"))?;
         let slots = self.slots.write().await;
-        let already_active = loaded.model.capabilities.iter().all(|capability| {
-            slots
-                .get(capability)
-                .and_then(|slot| slot.active.as_ref())
-                .is_some_and(|active| active.loaded.model.identity == *identity)
-        });
-        if already_active
+        let declared_capabilities = loaded
+            .model
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let owned_capabilities = slots
+            .iter()
+            .filter_map(|(capability, slot)| {
+                slot.active
+                    .as_ref()
+                    .filter(|active| active.loaded.model.identity == *identity)
+                    .map(|_| capability.clone())
+            })
+            .collect::<HashSet<_>>();
+        if !owned_capabilities.is_empty() && owned_capabilities != declared_capabilities {
+            return Err(ModelError::new(
+                "model_slot_conflict",
+                "model owns only part of its declared capability set",
+            ));
+        }
+        if owned_capabilities == declared_capabilities
             && let Some(existing) = loaded
                 .model
                 .capabilities
@@ -511,6 +536,117 @@ impl ModelManager {
     pub async fn rollback(&self, capability: &str, now_epoch_ms: i64) -> ModelResult<u64> {
         let _lifecycle = self.lifecycle.lock().await;
         self.rollback_locked(capability, now_epoch_ms).await
+    }
+
+    pub async fn rollback_exact(
+        &self,
+        from: &ModelIdentity,
+        to: &ModelIdentity,
+        now_epoch_ms: i64,
+    ) -> ModelResult<u64> {
+        let _lifecycle = self.lifecycle.lock().await;
+        if from == to {
+            return Err(ModelError::new(
+                "model_rollback_conflict",
+                "rollback source and target must be different revisions",
+            ));
+        }
+        let loaded = self.loaded.lock().await;
+        let from_loaded = loaded
+            .get(from)
+            .cloned()
+            .ok_or_else(|| ModelError::new("model_not_active", "rollback source is not loaded"))?;
+        let to_loaded = loaded.get(to).cloned().ok_or_else(|| {
+            ModelError::new("model_runtime_unavailable", "rollback target is not loaded")
+        })?;
+        drop(loaded);
+        let from_capabilities = from_loaded
+            .model
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let to_capabilities = to_loaded
+            .model
+            .capabilities
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        if from_capabilities != to_capabilities {
+            return Err(ModelError::new(
+                "model_rollback_conflict",
+                "rollback revisions do not declare the same capability set",
+            ));
+        }
+        let mut slots = self.slots.write().await;
+        let active_from = slot_capabilities(&slots, from, SlotRelation::Active);
+        let previous_from = slot_capabilities(&slots, from, SlotRelation::Previous);
+        let active_to = slot_capabilities(&slots, to, SlotRelation::Active);
+        let previous_to = slot_capabilities(&slots, to, SlotRelation::Previous);
+        let committed = active_to == to_capabilities
+            && previous_from == from_capabilities
+            && active_from.is_empty()
+            && previous_to.is_empty();
+        if committed {
+            let capability = from_capabilities.iter().next().ok_or_else(|| {
+                ModelError::new("model_rollback_conflict", "model has no capabilities")
+            })?;
+            return slots
+                .get(capability)
+                .and_then(|slot| slot.active.as_ref())
+                .map(|active| active.generation)
+                .ok_or_else(|| {
+                    ModelError::new("model_rollback_conflict", "rollback slot disappeared")
+                });
+        }
+        let ready = active_from == from_capabilities
+            && previous_to == to_capabilities
+            && active_to.is_empty()
+            && previous_from.is_empty();
+        if !ready {
+            return Err(ModelError::new(
+                "model_rollback_conflict",
+                "capability slots do not exactly match the requested rollback",
+            ));
+        }
+        to_loaded.instance.health().await?;
+        let generation = self.next_generation.fetch_add(1, Ordering::AcqRel);
+        let persisted = from_loaded
+            .model
+            .capabilities
+            .iter()
+            .map(|capability| PersistedCapabilitySlot {
+                capability: capability.clone(),
+                active_identity: to.clone(),
+                active_generation: generation,
+                previous_identity: Some(from.clone()),
+                previous_generation: slots
+                    .get(capability)
+                    .and_then(|slot| slot.active.as_ref())
+                    .map(|active| active.generation),
+            })
+            .collect::<Vec<_>>();
+        self.repository
+            .activate(
+                to,
+                std::slice::from_ref(from),
+                &persisted,
+                generation,
+                now_epoch_ms,
+            )
+            .await?;
+        let restored = Arc::new(ModelGeneration {
+            generation,
+            loaded: to_loaded,
+        });
+        for capability in &from_loaded.model.capabilities {
+            let slot = slots.get_mut(capability).ok_or_else(|| {
+                ModelError::new("model_rollback_conflict", "rollback slot disappeared")
+            })?;
+            let replaced = slot.active.replace(restored.clone());
+            slot.previous = replaced;
+        }
+        Ok(generation)
     }
 
     async fn rollback_locked(&self, capability: &str, now_epoch_ms: i64) -> ModelResult<u64> {
@@ -925,6 +1061,60 @@ impl ModelManager {
             .collect()
     }
 
+    pub async fn observation(&self, identity: &ModelIdentity) -> ModelObservation {
+        let loaded = self.loaded.lock().await;
+        let slots = self.slots.read().await;
+        let candidate = loaded.get(identity);
+        let mut active_capabilities = Vec::new();
+        let mut previous_capabilities = Vec::new();
+        let mut generation = None;
+        for (capability, slot) in slots.iter() {
+            if let Some(active) = &slot.active
+                && active.loaded.model.identity == *identity
+            {
+                active_capabilities.push(capability.clone());
+                generation = Some(active.generation);
+            }
+            if slot
+                .previous
+                .as_ref()
+                .is_some_and(|previous| previous.loaded.model.identity == *identity)
+            {
+                previous_capabilities.push(capability.clone());
+            }
+        }
+        active_capabilities.sort();
+        previous_capabilities.sort();
+        ModelObservation {
+            loaded: candidate.is_some(),
+            runtime_available: candidate.map_or_else(
+                || false,
+                |loaded| self.providers.contains_key(&loaded.model.runtime),
+            ),
+            active_capabilities,
+            previous_capabilities,
+            generation,
+            in_flight_tasks: candidate
+                .map(|loaded| loaded.in_flight.load(Ordering::Acquire))
+                .unwrap_or_default(),
+        }
+    }
+
+    pub fn runtime_available(&self, runtime: &str) -> bool {
+        self.providers.contains_key(runtime)
+    }
+
+    pub async fn health(&self, identity: &ModelIdentity) -> ModelResult<()> {
+        let loaded = self
+            .loaded
+            .lock()
+            .await
+            .get(identity)
+            .cloned()
+            .ok_or_else(|| ModelError::new("model_not_ready", "model is not loaded"))?;
+        loaded.instance.health().await
+    }
+
     pub async fn active_identities(&self) -> HashSet<ModelIdentity> {
         self.slots
             .read()
@@ -959,6 +1149,31 @@ impl ModelManager {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum SlotRelation {
+    Active,
+    Previous,
+}
+
+fn slot_capabilities(
+    slots: &HashMap<String, CapabilitySlot>,
+    identity: &ModelIdentity,
+    relation: SlotRelation,
+) -> HashSet<String> {
+    slots
+        .iter()
+        .filter_map(|(capability, slot)| {
+            let generation = match relation {
+                SlotRelation::Active => slot.active.as_ref(),
+                SlotRelation::Previous => slot.previous.as_ref(),
+            };
+            generation
+                .filter(|generation| generation.loaded.model.identity == *identity)
+                .map(|_| capability.clone())
+        })
+        .collect()
 }
 
 fn validate_instance(model: &InstalledModel, instance: &Arc<dyn ModelInstance>) -> ModelResult<()> {

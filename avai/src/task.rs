@@ -253,6 +253,20 @@ impl TaskManager {
         Ok(self.admission.in_flight() == 0 && self.repository.nonterminal_task_count().await? == 0)
     }
 
+    pub async fn durable_nonterminal_task_count(&self) -> Result<usize, TaskError> {
+        self.repository.nonterminal_task_count().await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn insert_nonterminal_task_for_test(
+        &self,
+        task_id: &str,
+    ) -> Result<(), TaskError> {
+        self.repository
+            .insert_nonterminal_task_for_test(task_id)
+            .await
+    }
+
     pub async fn create_task(
         &self,
         request: CreateTaskRequest,
@@ -1229,6 +1243,27 @@ impl TaskRecord {
 }
 
 impl TaskRepository {
+    #[cfg(test)]
+    async fn insert_nonterminal_task_for_test(&self, task_id: &str) -> Result<(), TaskError> {
+        base_db::sqlx::query(
+            "INSERT INTO avai_task(task_id,idempotency_key,request_hash,request,capability,\
+             route_id,state,created_at_ms,updated_at_ms) VALUES(?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(task_id)
+        .bind(format!("idempotency-{task_id}"))
+        .bind("test-request-hash")
+        .bind(Vec::<u8>::new())
+        .bind("vehicle.detect")
+        .bind("test-route")
+        .bind(AiTaskState::Pending as i32)
+        .bind(now_epoch_ms())
+        .bind(now_epoch_ms())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| TaskError::internal("insert_test_nonterminal", error))?;
+        Ok(())
+    }
+
     async fn open(path: &Path) -> Result<Self, TaskError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
