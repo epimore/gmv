@@ -31,7 +31,9 @@ use crate::{
         FakeRuntimeBehavior, FakeRuntimeProvider, ModelManager, ModelManagerConfig,
         ModelRepository, RuntimeProvider, verify_package,
     },
-    model_management::{AvaiModelManagementRpc, ModelManagementConfig, serve_uds},
+    model_management::{
+        AvaiModelManagementRpc, ModelManagementConfig, preload_request_hash_for_test, serve_uds,
+    },
     model_runtime_tests::{TestRoot, identity, install_test_model, policy, write_package},
     source::SourcePolicy,
     task::{TaskManager, TaskManagerConfig},
@@ -106,6 +108,54 @@ fn deadline() -> i64 {
         .unwrap()
         .as_millis() as i64
         + 60_000
+}
+
+fn expired_deadline() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+        - 1
+}
+
+async fn seed_expired_preload_receipt(
+    repository: &ModelRepository,
+    operation_id: &str,
+    identity: crate::model::ModelIdentity,
+    deadline_epoch_ms: i64,
+) -> PreloadModelRequest {
+    use crate::model::{ClaimOperation, OperationClaimRequest, OperationReceiptLimits};
+
+    let request_hash = preload_request_hash_for_test(identity.clone(), deadline_epoch_ms);
+    assert!(matches!(
+        repository
+            .claim_operation(
+                OperationClaimRequest {
+                    operation_id,
+                    idempotency_key: &format!("key-{operation_id}"),
+                    operation_kind: "PRELOAD",
+                    request_hash: &request_hash,
+                    deadline_epoch_ms,
+                    now_epoch_ms: deadline_epoch_ms,
+                },
+                OperationReceiptLimits {
+                    retention_ms: 24 * 60 * 60 * 1_000,
+                    capacity: 16,
+                },
+            )
+            .await
+            .unwrap(),
+        ClaimOperation::New(_)
+    ));
+    PreloadModelRequest {
+        operation: Some(operation(operation_id)),
+        deadline_epoch_ms,
+        identity: Some(rpc_identity(
+            &identity.model_id,
+            &identity.version,
+            &identity.revision,
+        )),
+    }
 }
 
 async fn uds_channel(path: std::path::PathBuf) -> Channel {
@@ -864,6 +914,159 @@ async fn delayed_terminal_activate_and_rollback_never_execute_twice_and_unload_g
             .await
             .loaded
     );
+    tasks.close_and_wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn retained_terminal_and_expired_pending_receipts_replay_or_reconcile_without_side_effects() {
+    use crate::model::{OperationClaimRequest, OperationReceiptState};
+
+    let root = TestRoot::new("receipt-deadline-replay");
+    let repository =
+        ModelRepository::open(&root.path().join("model.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    for (model_id, revision) in [("model-a", "rev-a"), ("model-b", "rev-b")] {
+        install_test_model(
+            &repository,
+            &root,
+            model_id,
+            "1",
+            revision,
+            &["vehicle.detect"],
+        )
+        .await;
+    }
+    let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
+    let manager = ModelManager::open(
+        repository.clone(),
+        vec![Arc::new(fake.clone())],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let tasks = task_manager(&root, manager.clone(), "receipt-deadline-replay").await;
+    let rpc = AvaiModelManagementRpc::new(
+        repository.clone(),
+        manager.clone(),
+        tasks.clone(),
+        management_config(&root),
+    )
+    .unwrap();
+    let expired = expired_deadline();
+    let model_a = identity("model-a", "1", "rev-a");
+    let succeeded_request =
+        seed_expired_preload_receipt(&repository, "expired-succeeded", model_a.clone(), expired)
+            .await;
+    repository
+        .finish_operation(
+            "expired-succeeded",
+            OperationReceiptState::Succeeded,
+            None,
+            expired,
+        )
+        .await
+        .unwrap();
+    let succeeded = rpc
+        .preload_model(Request::new(succeeded_request.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(succeeded.replayed);
+    assert_eq!(succeeded.error, None);
+    assert_eq!(fake.started_health_checks(), 0);
+
+    let failed_request =
+        seed_expired_preload_receipt(&repository, "expired-failed", model_a.clone(), expired).await;
+    repository
+        .finish_operation(
+            "expired-failed",
+            OperationReceiptState::Failed,
+            Some("model_forced_failure"),
+            expired,
+        )
+        .await
+        .unwrap();
+    let failed = rpc
+        .preload_model(Request::new(failed_request))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(failed.replayed);
+    assert_eq!(failed.error.unwrap().code, "model_forced_failure");
+
+    let uncommitted_request =
+        seed_expired_preload_receipt(&repository, "expired-uncommitted", model_a.clone(), expired)
+            .await;
+    let uncommitted = rpc
+        .preload_model(Request::new(uncommitted_request.clone()))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(uncommitted.replayed);
+    assert_eq!(uncommitted.error.unwrap().code, "model_deadline_exceeded");
+    assert_eq!(fake.started_health_checks(), 0);
+    let uncommitted_hash = preload_request_hash_for_test(model_a.clone(), expired);
+    assert_eq!(
+        repository
+            .find_operation(&OperationClaimRequest {
+                operation_id: "expired-uncommitted",
+                idempotency_key: "key-expired-uncommitted",
+                operation_kind: "PRELOAD",
+                request_hash: &uncommitted_hash,
+                deadline_epoch_ms: expired,
+                now_epoch_ms: expired,
+            })
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        OperationReceiptState::Failed
+    );
+
+    let model_b = identity("model-b", "1", "rev-b");
+    manager.preload(&model_b, expired).await.unwrap();
+    let health_count = fake.started_health_checks();
+    let committed_request =
+        seed_expired_preload_receipt(&repository, "expired-committed", model_b, expired).await;
+    let committed = rpc
+        .preload_model(Request::new(committed_request))
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(committed.replayed);
+    assert_eq!(committed.error, None);
+    assert_eq!(fake.started_health_checks(), health_count);
+
+    let changed_deadline = PreloadModelRequest {
+        deadline_epoch_ms: expired - 1,
+        ..succeeded_request
+    };
+    assert_eq!(
+        rpc.preload_model(Request::new(changed_deadline))
+            .await
+            .unwrap()
+            .into_inner()
+            .error
+            .unwrap()
+            .code,
+        "model_operation_conflict"
+    );
+    for (operation_id, deadline_epoch_ms) in [
+        ("new-expired", expired),
+        ("new-too-far", deadline() + 2 * 60 * 60 * 1_000),
+    ] {
+        let response = rpc
+            .preload_model(Request::new(PreloadModelRequest {
+                operation: Some(operation(operation_id)),
+                deadline_epoch_ms,
+                identity: Some(rpc_identity("model-a", "1", "rev-a")),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.error.unwrap().code, "model_deadline_invalid");
+    }
     tasks.close_and_wait().await.unwrap();
 }
 

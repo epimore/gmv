@@ -151,7 +151,7 @@ impl AvaiModelManagementRpc {
         command: MutationCommand,
     ) -> ModelMutationResponse {
         let now = now_epoch_ms();
-        let operation = match validate_operation(operation, deadline_epoch_ms, now) {
+        let operation = match validate_operation_identity(operation) {
             Ok(operation) => operation,
             Err(error) => return mutation_failure("", error.code, false, now, None),
         };
@@ -164,13 +164,13 @@ impl AvaiModelManagementRpc {
             deadline_epoch_ms,
             now_epoch_ms: now,
         };
-        match self.repository.find_operation(&claim_request()).await {
+        let existing = match self.repository.find_operation(&claim_request()).await {
             Ok(Some(receipt)) if receipt.state != OperationReceiptState::Pending => {
                 return self
                     .replay_terminal(receipt, command.observed_identity())
                     .await;
             }
-            Ok(_) => {}
+            Ok(receipt) => receipt,
             Err(error) => {
                 return mutation_failure(
                     &operation.operation_id,
@@ -180,6 +180,11 @@ impl AvaiModelManagementRpc {
                     None,
                 );
             }
+        };
+        if existing.is_none()
+            && let Err(error) = validate_new_deadline(deadline_epoch_ms, now)
+        {
+            return mutation_failure(&operation.operation_id, error.code, false, now, None);
         }
         let permit = match self.mutation_lane.clone().try_acquire_owned() {
             Ok(permit) => permit,
@@ -193,26 +198,57 @@ impl AvaiModelManagementRpc {
                 );
             }
         };
-        let (receipt, resumed) = match self
-            .repository
-            .claim_operation(
-                claim_request(),
-                OperationReceiptLimits {
-                    retention_ms: self.config.receipt_retention_ms,
-                    capacity: self.config.receipt_capacity,
-                },
-            )
-            .await
-        {
-            Ok(ClaimOperation::New(receipt)) => (receipt, false),
-            Ok(ClaimOperation::Existing(receipt)) => {
-                if receipt.state != OperationReceiptState::Pending {
+        let (receipt, resumed) = match self.repository.find_operation(&claim_request()).await {
+            Ok(Some(receipt)) if receipt.state != OperationReceiptState::Pending => {
+                drop(permit);
+                return self
+                    .replay_terminal(receipt, command.observed_identity())
+                    .await;
+            }
+            Ok(Some(receipt)) => (receipt, true),
+            Ok(None) => {
+                if let Err(error) = validate_new_deadline(deadline_epoch_ms, now_epoch_ms()) {
                     drop(permit);
-                    return self
-                        .replay_terminal(receipt, command.observed_identity())
-                        .await;
+                    return mutation_failure(
+                        &operation.operation_id,
+                        error.code,
+                        false,
+                        now_epoch_ms(),
+                        None,
+                    );
                 }
-                (receipt, true)
+                match self
+                    .repository
+                    .claim_operation(
+                        claim_request(),
+                        OperationReceiptLimits {
+                            retention_ms: self.config.receipt_retention_ms,
+                            capacity: self.config.receipt_capacity,
+                        },
+                    )
+                    .await
+                {
+                    Ok(ClaimOperation::New(receipt)) => (receipt, false),
+                    Ok(ClaimOperation::Existing(receipt))
+                        if receipt.state != OperationReceiptState::Pending =>
+                    {
+                        drop(permit);
+                        return self
+                            .replay_terminal(receipt, command.observed_identity())
+                            .await;
+                    }
+                    Ok(ClaimOperation::Existing(receipt)) => (receipt, true),
+                    Err(error) => {
+                        drop(permit);
+                        return mutation_failure(
+                            &operation.operation_id,
+                            error.code,
+                            false,
+                            now_epoch_ms(),
+                            None,
+                        );
+                    }
+                }
             }
             Err(error) => {
                 drop(permit);
@@ -231,13 +267,21 @@ impl AvaiModelManagementRpc {
         let (sender, receiver) = base::tokio::sync::oneshot::channel();
         base::tokio::spawn(async move {
             let _permit = permit;
-            let result = if deadline_epoch_ms <= now_epoch_ms() {
-                Err(ModelError::new(
-                    "model_deadline_exceeded",
-                    "model operation deadline has expired",
-                ))
+            let reconciliation = if resumed {
+                Some(command.is_committed(&service).await)
             } else {
-                command.execute(&service, deadline_epoch_ms).await
+                None
+            };
+            let result = match reconciliation {
+                Some(Ok(true)) => Ok(()),
+                Some(Err(error)) => Err(error),
+                Some(Ok(false)) | None if deadline_epoch_ms <= now_epoch_ms() => {
+                    Err(ModelError::new(
+                        "model_deadline_exceeded",
+                        "model operation deadline has expired",
+                    ))
+                }
+                Some(Ok(false)) | None => command.execute(&service, deadline_epoch_ms).await,
             };
             let terminal_at = now_epoch_ms();
             let (state, stable_error_code) = match &result {
@@ -603,6 +647,58 @@ impl MutationCommand {
         format!("{:x}", hash.finalize())
     }
 
+    async fn is_committed(&self, service: &AvaiModelManagementRpc) -> ModelResult<bool> {
+        match self {
+            Self::Import {
+                identity,
+                manifest_sha256,
+                ..
+            } => match service.repository.get(identity).await? {
+                Some(model) if model.manifest_sha256.eq_ignore_ascii_case(manifest_sha256) => {
+                    Ok(true)
+                }
+                Some(_) => Err(ModelError::new(
+                    "model_revision_conflict",
+                    "immutable model revision has different content",
+                )),
+                None => Ok(false),
+            },
+            Self::Preload(identity) => Ok(service.manager.observation(identity).await.loaded),
+            Self::Activate(identity) => {
+                let model = required_model(&service.repository, identity).await?;
+                Ok(same_capabilities(
+                    &service
+                        .manager
+                        .observation(identity)
+                        .await
+                        .active_capabilities,
+                    &model.capabilities,
+                ))
+            }
+            Self::Rollback { from, to } => {
+                let from_model = required_model(&service.repository, from).await?;
+                let to_model = required_model(&service.repository, to).await?;
+                let from_observation = service.manager.observation(from).await;
+                let to_observation = service.manager.observation(to).await;
+                Ok(
+                    same_capabilities(&to_observation.active_capabilities, &to_model.capabilities)
+                        && same_capabilities(
+                            &from_observation.previous_capabilities,
+                            &from_model.capabilities,
+                        ),
+                )
+            }
+            Self::Unload(identity) => {
+                let model = required_model(&service.repository, identity).await?;
+                let observation = service.manager.observation(identity).await;
+                Ok(!observation.loaded
+                    && observation.active_capabilities.is_empty()
+                    && observation.previous_capabilities.is_empty()
+                    && model.state == ModelState::Installed)
+            }
+        }
+    }
+
     async fn execute(
         self,
         service: &AvaiModelManagementRpc,
@@ -744,6 +840,14 @@ impl MutationCommand {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn preload_request_hash_for_test(
+    identity: ModelIdentity,
+    deadline_epoch_ms: i64,
+) -> String {
+    MutationCommand::Preload(identity).request_hash(deadline_epoch_ms)
+}
+
 async fn required_model(
     repository: &ModelRepository,
     identity: &ModelIdentity,
@@ -762,11 +866,7 @@ fn same_capabilities(left: &[String], right: &[String]) -> bool {
     left == right
 }
 
-fn validate_operation(
-    operation: Option<OperationRef>,
-    deadline: i64,
-    now: i64,
-) -> ModelResult<OperationRef> {
+fn validate_operation_identity(operation: Option<OperationRef>) -> ModelResult<OperationRef> {
     let operation = operation.ok_or_else(|| {
         ModelError::new("model_operation_invalid", "operation identity is required")
     })?;
@@ -778,13 +878,17 @@ fn validate_operation(
             "operation identifiers are invalid",
         ));
     }
+    Ok(operation)
+}
+
+fn validate_new_deadline(deadline: i64, now: i64) -> ModelResult<()> {
     if deadline <= now || deadline > now.saturating_add(MAX_DEADLINE_AHEAD_MS) {
         return Err(ModelError::new(
             "model_deadline_invalid",
             "operation deadline is outside the allowed window",
         ));
     }
-    Ok(operation)
+    Ok(())
 }
 
 fn rpc_identity(identity: Option<RpcModelIdentity>) -> ModelResult<ModelIdentity> {
