@@ -34,6 +34,7 @@ use gmv_protocol::{
 };
 use prost::Message;
 
+use crate::model::{ActiveModel, ModelError, ModelIdentity, ModelManager};
 use crate::source::{ResolvedImage, SourceError, SourcePolicy, SourceResolver};
 
 const BUILTIN_CAPABILITY: &str = "image.metadata.inspect";
@@ -44,6 +45,7 @@ pub struct TaskManagerConfig {
     pub queue_size: usize,
     pub worker_count: usize,
     pub source_policy: SourcePolicy,
+    pub max_result_bytes: usize,
 }
 
 impl Default for TaskManagerConfig {
@@ -53,6 +55,7 @@ impl Default for TaskManagerConfig {
             queue_size: 128,
             worker_count: 2,
             source_policy: SourcePolicy::default(),
+            max_result_bytes: 1024 * 1024,
         }
     }
 }
@@ -119,10 +122,20 @@ impl TaskManager {
         config: TaskManagerConfig,
         runtime: &GlobalRuntime,
     ) -> Result<Self, TaskError> {
-        if config.queue_size == 0 || config.worker_count == 0 {
+        Self::open_with_model_manager(identity, capabilities, config, None, runtime).await
+    }
+
+    pub async fn open_with_model_manager(
+        identity: NodeIdentity,
+        capabilities: Vec<String>,
+        config: TaskManagerConfig,
+        model_manager: Option<ModelManager>,
+        runtime: &GlobalRuntime,
+    ) -> Result<Self, TaskError> {
+        if config.queue_size == 0 || config.worker_count == 0 || config.max_result_bytes == 0 {
             return Err(TaskError::new(
                 "invalid_task_config",
-                "queue_size and worker_count must be greater than zero",
+                "queue_size, worker_count and max_result_bytes must be greater than zero",
             ));
         }
         let repository = TaskRepository::open(&config.database_path).await?;
@@ -130,7 +143,11 @@ impl TaskManager {
         let pending = repository.pending_task_ids().await?;
         let resolver = SourceResolver::new(identity.clone(), config.source_policy, runtime)
             .map_err(source_task_error)?;
-        let provider = Arc::new(ProviderRegistry::builtin(&capabilities)?);
+        let provider = Arc::new(ProviderRegistry::new(
+            &capabilities,
+            model_manager,
+            config.max_result_bytes,
+        )?);
         let capabilities = Arc::new(capabilities.into_iter().collect::<HashSet<_>>());
         let (queue, receiver) = mpsc::channel(config.queue_size);
         let receiver = Arc::new(Mutex::new(receiver));
@@ -531,15 +548,18 @@ async fn process_task(
     context: &WorkerContext,
     task_id: &str,
 ) -> Result<Option<TaskRecord>, TaskError> {
-    let Some(record) = context.repository.claim(task_id, now_epoch_ms()).await? else {
+    let Some(record) = context.repository.get(task_id).await? else {
         return Ok(None);
     };
+    if record.state != AiTaskState::Pending {
+        return Ok(None);
+    }
     let request = CreateTaskRequest::decode(record.request.as_slice())
         .map_err(|error| TaskError::internal("decode_request", error))?;
     if request.deadline_epoch_ms != 0 && request.deadline_epoch_ms <= now_epoch_ms() {
         return context
             .repository
-            .fail_running(
+            .fail_pending(
                 task_id,
                 "task_expired",
                 "task deadline expired while waiting for execution",
@@ -547,6 +567,45 @@ async fn process_task(
             )
             .await;
     }
+    let durable_binding = record
+        .execution_binding
+        .as_deref()
+        .map(ExecutionBinding::decode)
+        .transpose();
+    let durable_binding = match durable_binding {
+        Ok(binding) => binding,
+        Err(error) => {
+            return context
+                .repository
+                .fail_pending(task_id, error.code, &error.message, now_epoch_ms())
+                .await;
+        }
+    };
+    let capture = context
+        .provider
+        .capture(
+            &record.capability,
+            request.requested_model.as_ref(),
+            durable_binding.as_ref(),
+        )
+        .await;
+    let captured = match capture {
+        Ok(captured) => captured,
+        Err(error) => {
+            return context
+                .repository
+                .fail_pending(task_id, error.code, &error.message, now_epoch_ms())
+                .await;
+        }
+    };
+    let binding = captured.binding().encode()?;
+    let Some(_claimed) = context
+        .repository
+        .claim(task_id, &binding, now_epoch_ms())
+        .await?
+    else {
+        return Ok(None);
+    };
     let task_cancel = CancellationToken::new();
     context
         .task_cancellations
@@ -575,11 +634,7 @@ async fn process_task(
                 .resolve(source, &record.capability, now_epoch_ms())
                 .await
             {
-                Ok(image) => match context
-                    .provider
-                    .infer(&record.capability, image, request.requested_model.as_ref())
-                    .await
-                {
+                Ok(image) => match captured.infer(&record.capability, image).await {
                     Ok(output) => {
                         context
                             .repository
@@ -608,11 +663,28 @@ async fn process_task(
             }
         }
     };
+    let deadline = async {
+        if request.deadline_epoch_ms == 0 {
+            std::future::pending::<()>().await;
+        } else {
+            let remaining = request.deadline_epoch_ms.saturating_sub(now_epoch_ms());
+            base::tokio::time::sleep(std::time::Duration::from_millis(
+                u64::try_from(remaining.max(0)).unwrap_or_default(),
+            ))
+            .await;
+        }
+    };
     let terminal = base::tokio::select! {
         _ = context.cancel.cancelled() => Ok(None),
         _ = task_cancel.cancelled() => context.repository.get(task_id).await.map(|record| {
             record.filter(|record| record.state != AiTaskState::Running)
         }),
+        _ = deadline => context.repository.fail_running(
+            task_id,
+            "task_expired",
+            "task deadline expired during execution",
+            now_epoch_ms(),
+        ).await,
         terminal = execute => terminal,
     };
     context.task_cancellations.lock().await.remove(task_id);
@@ -655,7 +727,6 @@ trait ImageInferenceProvider: Send + Sync {
         &'a self,
         capability: &'a str,
         image: ResolvedImage,
-        requested_model: Option<&'a ModelRef>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<InferenceOutput, TaskError>> + Send + 'a>,
     >;
@@ -673,56 +744,180 @@ struct ProviderManifest {
 
 struct ProviderRegistry {
     providers: Vec<Arc<dyn ImageInferenceProvider>>,
+    model_manager: Option<ModelManager>,
+    max_result_bytes: usize,
 }
 
 impl ProviderRegistry {
-    fn builtin(configured_capabilities: &[String]) -> Result<Self, TaskError> {
+    fn new(
+        configured_capabilities: &[String],
+        model_manager: Option<ModelManager>,
+        max_result_bytes: usize,
+    ) -> Result<Self, TaskError> {
         let providers: Vec<Arc<dyn ImageInferenceProvider>> =
             vec![Arc::new(BuiltinImageMetadataProvider)];
-        let installed = providers
+        let builtin = providers
             .iter()
             .map(|provider| provider.manifest().capability)
             .collect::<HashSet<_>>();
-        if let Some(capability) = configured_capabilities
-            .iter()
-            .find(|capability| !installed.contains(capability.as_str()))
+        if model_manager.is_none()
+            && let Some(capability) = configured_capabilities
+                .iter()
+                .find(|capability| !builtin.contains(capability.as_str()))
         {
             return Err(TaskError::new(
                 "invalid_task_config",
                 format!("configured capability has no installed provider: {capability}"),
             ));
         }
-        Ok(Self { providers })
+        Ok(Self {
+            providers,
+            model_manager,
+            max_result_bytes,
+        })
     }
-}
 
-impl ProviderRegistry {
-    async fn infer(
+    async fn capture(
         &self,
         capability: &str,
-        image: ResolvedImage,
         requested_model: Option<&ModelRef>,
-    ) -> Result<InferenceOutput, TaskError> {
-        let provider = self
+        durable_binding: Option<&ExecutionBinding>,
+    ) -> Result<CapturedExecution, TaskError> {
+        if let Some(binding) = durable_binding {
+            return self.capture_bound(capability, binding).await;
+        }
+        let builtin = self
             .providers
             .iter()
-            .find(|provider| {
-                let manifest = provider.manifest();
-                manifest.capability == capability
-                    && requested_model.is_none_or(|requested| {
-                        requested.model_id == manifest.model_id
-                            && requested.version == manifest.model_version
-                            && (requested.runtime.is_empty()
-                                || requested.runtime == manifest.runtime)
-                    })
-            })
-            .ok_or_else(|| {
-                TaskError::new(
-                    "model_not_found",
-                    "no installed inference provider matches the requested capability and model",
-                )
+            .find(|provider| provider.manifest().capability == capability)
+            .cloned();
+        let managed_active = if let Some(manager) = &self.model_manager {
+            manager.has_active(capability).await
+        } else {
+            false
+        };
+        if builtin.is_some() && managed_active {
+            return Err(TaskError::new(
+                "model_selection_conflict",
+                "builtin and managed model both own the requested capability",
+            ));
+        }
+        if let Some(requested) = requested_model {
+            if requested.revision.is_empty() {
+                if let Some(provider) = builtin.filter(|provider| {
+                    let manifest = provider.manifest();
+                    requested.model_id == manifest.model_id
+                        && requested.version == manifest.model_version
+                        && (requested.runtime.is_empty() || requested.runtime == manifest.runtime)
+                }) {
+                    return Ok(CapturedExecution::builtin(provider));
+                }
+                return Err(TaskError::new(
+                    "model_revision_required",
+                    "managed model requests require an immutable revision",
+                ));
+            }
+            let manager = self.model_manager.as_ref().ok_or_else(|| {
+                TaskError::new("model_not_found", "managed model runtime is unavailable")
             })?;
-        provider.infer(capability, image, requested_model).await
+            let identity = ModelIdentity {
+                model_id: requested.model_id.clone(),
+                version: requested.version.clone(),
+                revision: requested.revision.clone(),
+            };
+            let model = manager
+                .capture_exact(capability, &identity, &requested.runtime)
+                .await
+                .map_err(model_task_error)?;
+            return Ok(CapturedExecution::managed(
+                model,
+                capability,
+                self.max_result_bytes,
+            ));
+        }
+        if managed_active {
+            let model = self
+                .model_manager
+                .as_ref()
+                .expect("managed_active requires manager")
+                .capture(capability)
+                .await
+                .map_err(model_task_error)?;
+            return Ok(CapturedExecution::managed(
+                model,
+                capability,
+                self.max_result_bytes,
+            ));
+        }
+        builtin
+            .map(CapturedExecution::builtin)
+            .ok_or_else(|| TaskError::new("model_not_found", "no execution owns the capability"))
+    }
+
+    async fn capture_bound(
+        &self,
+        capability: &str,
+        binding: &ExecutionBinding,
+    ) -> Result<CapturedExecution, TaskError> {
+        if binding.capability != capability {
+            return Err(TaskError::new(
+                "invalid_execution_binding",
+                "durable execution binding capability does not match the task",
+            ));
+        }
+        match binding.kind {
+            ExecutionKind::Builtin => {
+                let provider = self
+                    .providers
+                    .iter()
+                    .find(|provider| binding.matches_manifest(provider.manifest()))
+                    .cloned()
+                    .ok_or_else(|| {
+                        TaskError::new(
+                            "bound_model_unavailable",
+                            "bound builtin execution is unavailable",
+                        )
+                    })?;
+                Ok(CapturedExecution::Builtin {
+                    provider,
+                    binding: binding.clone(),
+                })
+            }
+            ExecutionKind::Managed => {
+                let manager = self.model_manager.as_ref().ok_or_else(|| {
+                    TaskError::new(
+                        "bound_model_unavailable",
+                        "bound model runtime is unavailable",
+                    )
+                })?;
+                let identity = ModelIdentity {
+                    model_id: binding.model_id.clone(),
+                    version: binding.model_version.clone(),
+                    revision: binding.revision.clone(),
+                };
+                let model = manager
+                    .capture_recovered(
+                        capability,
+                        &identity,
+                        &binding.runtime,
+                        &binding.result_schema_name,
+                        binding.result_schema_version,
+                        now_epoch_ms(),
+                    )
+                    .await
+                    .map_err(|_| {
+                        TaskError::new(
+                            "bound_model_unavailable",
+                            "bound model revision cannot be safely recovered",
+                        )
+                    })?;
+                Ok(CapturedExecution::Managed {
+                    model,
+                    binding: binding.clone(),
+                    max_result_bytes: self.max_result_bytes,
+                })
+            }
+        }
     }
 }
 
@@ -744,7 +939,6 @@ impl ImageInferenceProvider for BuiltinImageMetadataProvider {
         &'a self,
         capability: &'a str,
         image: ResolvedImage,
-        requested_model: Option<&'a ModelRef>,
     ) -> std::pin::Pin<
         Box<dyn std::future::Future<Output = Result<InferenceOutput, TaskError>> + Send + 'a>,
     > {
@@ -754,16 +948,6 @@ impl ImageInferenceProvider for BuiltinImageMetadataProvider {
                 return Err(TaskError::new(
                     "model_not_found",
                     "no installed inference provider implements the requested capability",
-                ));
-            }
-            if requested_model.is_some_and(|model| {
-                model.model_id != manifest.model_id
-                    || model.version != manifest.model_version
-                    || (!model.runtime.is_empty() && model.runtime != manifest.runtime)
-            }) {
-                return Err(TaskError::new(
-                    "model_not_found",
-                    "requested model is not installed",
                 ));
             }
             let payload = base::serde_json::to_vec(&base::serde_json::json!({
@@ -786,6 +970,7 @@ impl ImageInferenceProvider for BuiltinImageMetadataProvider {
                         model_id: manifest.model_id.to_string(),
                         version: manifest.model_version.to_string(),
                         runtime: manifest.runtime.to_string(),
+                        revision: String::new(),
                     }),
                     evidence: Vec::new(),
                     completed_at_epoch_ms: now_epoch_ms(),
@@ -797,6 +982,198 @@ impl ImageInferenceProvider for BuiltinImageMetadataProvider {
 
 struct InferenceOutput {
     result: AiTaskResult,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
+#[serde(crate = "base::serde", rename_all = "snake_case")]
+enum ExecutionKind {
+    Builtin,
+    Managed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, base::serde::Serialize, base::serde::Deserialize)]
+#[serde(crate = "base::serde", deny_unknown_fields)]
+struct ExecutionBinding {
+    version: u32,
+    kind: ExecutionKind,
+    capability: String,
+    model_id: String,
+    model_version: String,
+    revision: String,
+    runtime: String,
+    result_schema_name: String,
+    result_schema_version: u32,
+}
+
+impl ExecutionBinding {
+    const VERSION: u32 = 1;
+
+    fn builtin(manifest: ProviderManifest) -> Self {
+        Self {
+            version: Self::VERSION,
+            kind: ExecutionKind::Builtin,
+            capability: manifest.capability.to_string(),
+            model_id: manifest.model_id.to_string(),
+            model_version: manifest.model_version.to_string(),
+            revision: String::new(),
+            runtime: manifest.runtime.to_string(),
+            result_schema_name: manifest.result_schema.to_string(),
+            result_schema_version: manifest.result_schema_version,
+        }
+    }
+
+    fn managed(model: &ActiveModel, capability: &str) -> Self {
+        Self {
+            version: Self::VERSION,
+            kind: ExecutionKind::Managed,
+            capability: capability.to_string(),
+            model_id: model.identity().model_id.clone(),
+            model_version: model.identity().version.clone(),
+            revision: model.identity().revision.clone(),
+            runtime: model.runtime().to_string(),
+            result_schema_name: model.result_schema().name.clone(),
+            result_schema_version: model.result_schema().version,
+        }
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, TaskError> {
+        base::serde_json::to_vec(self)
+            .map_err(|error| TaskError::internal("encode_execution_binding", error))
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, TaskError> {
+        let binding: Self = base::serde_json::from_slice(bytes).map_err(|_| {
+            TaskError::new(
+                "invalid_execution_binding",
+                "durable execution binding is invalid",
+            )
+        })?;
+        if binding.version != Self::VERSION {
+            return Err(TaskError::new(
+                "invalid_execution_binding",
+                "durable execution binding version is unsupported",
+            ));
+        }
+        Ok(binding)
+    }
+
+    fn matches_manifest(&self, manifest: ProviderManifest) -> bool {
+        self.version == Self::VERSION
+            && self.kind == ExecutionKind::Builtin
+            && self.capability == manifest.capability
+            && self.model_id == manifest.model_id
+            && self.model_version == manifest.model_version
+            && self.revision.is_empty()
+            && self.runtime == manifest.runtime
+            && self.result_schema_name == manifest.result_schema
+            && self.result_schema_version == manifest.result_schema_version
+    }
+}
+
+enum CapturedExecution {
+    Builtin {
+        provider: Arc<dyn ImageInferenceProvider>,
+        binding: ExecutionBinding,
+    },
+    Managed {
+        model: ActiveModel,
+        binding: ExecutionBinding,
+        max_result_bytes: usize,
+    },
+}
+
+impl CapturedExecution {
+    fn builtin(provider: Arc<dyn ImageInferenceProvider>) -> Self {
+        let binding = ExecutionBinding::builtin(provider.manifest());
+        Self::Builtin { provider, binding }
+    }
+
+    fn managed(model: ActiveModel, capability: &str, max_result_bytes: usize) -> Self {
+        let binding = ExecutionBinding::managed(&model, capability);
+        Self::Managed {
+            model,
+            binding,
+            max_result_bytes,
+        }
+    }
+
+    fn binding(&self) -> &ExecutionBinding {
+        match self {
+            Self::Builtin { binding, .. } | Self::Managed { binding, .. } => binding,
+        }
+    }
+
+    async fn infer(
+        &self,
+        capability: &str,
+        image: ResolvedImage,
+    ) -> Result<InferenceOutput, TaskError> {
+        match self {
+            Self::Builtin { provider, .. } => provider.infer(capability, image).await,
+            Self::Managed {
+                model,
+                binding,
+                max_result_bytes,
+            } => {
+                let output = model
+                    .infer(image.bytes.to_vec())
+                    .await
+                    .map_err(model_task_error)?;
+                let expected = ModelRef {
+                    model_id: binding.model_id.clone(),
+                    version: binding.model_version.clone(),
+                    runtime: binding.runtime.clone(),
+                    revision: binding.revision.clone(),
+                };
+                if output.actual_model != expected {
+                    return Err(TaskError::new(
+                        "model_runtime_contract_mismatch",
+                        "runtime reported a different model identity",
+                    ));
+                }
+                if output.output.len() > *max_result_bytes {
+                    return Err(TaskError::new(
+                        "result_too_large",
+                        "model result exceeds the configured limit",
+                    ));
+                }
+                base::serde_json::from_slice::<base::serde_json::Value>(&output.output).map_err(
+                    |_| TaskError::new("invalid_result_json", "model result is not valid JSON"),
+                )?;
+                Ok(InferenceOutput {
+                    result: AiTaskResult {
+                        output: Some(VersionedPayload {
+                            schema: binding.result_schema_name.clone(),
+                            version: binding.result_schema_version,
+                            json: output.output,
+                        }),
+                        actual_model: Some(expected),
+                        evidence: Vec::new(),
+                        completed_at_epoch_ms: now_epoch_ms(),
+                    },
+                })
+            }
+        }
+    }
+}
+
+fn model_task_error(error: ModelError) -> TaskError {
+    let (code, message) = match error.code {
+        "model_not_found" => ("model_not_found", "requested model revision was not found"),
+        "model_not_ready" => ("model_not_ready", "requested model is not ready"),
+        "model_failed" => ("model_failed", "requested model has failed"),
+        "model_runtime_incompatible" => (
+            "model_runtime_incompatible",
+            "requested model runtime is incompatible",
+        ),
+        "model_capability_incompatible" => (
+            "model_capability_incompatible",
+            "requested model capability is incompatible",
+        ),
+        "model_not_active" => ("model_not_ready", "no active model is ready"),
+        _ => ("model_execution_failed", "managed model execution failed"),
+    };
+    TaskError::new(code, message)
 }
 
 #[derive(Clone)]
@@ -818,6 +1195,7 @@ struct TaskRecord {
     capability: String,
     route_id: String,
     state: AiTaskState,
+    execution_binding: Option<Vec<u8>>,
     result: Option<AiTaskResult>,
     error_code: Option<String>,
     error_message: Option<String>,
@@ -877,6 +1255,7 @@ impl TaskRepository {
              capability TEXT NOT NULL,\
              route_id TEXT NOT NULL,\
              state INTEGER NOT NULL,\
+             execution_binding BLOB NULL,\
              result BLOB NULL,\
              error_code TEXT NULL,\
              error_message TEXT NULL,\
@@ -888,6 +1267,20 @@ impl TaskRepository {
         .execute(&pool)
         .await
         .map_err(|error| TaskError::internal("initialize_schema", error))?;
+        let columns = base_db::sqlx::query("PRAGMA table_info(avai_task)")
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| TaskError::internal("inspect_schema", error))?;
+        let has_execution_binding = columns.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .is_ok_and(|name| name == "execution_binding")
+        });
+        if !has_execution_binding {
+            base_db::sqlx::query("ALTER TABLE avai_task ADD COLUMN execution_binding BLOB NULL")
+                .execute(&pool)
+                .await
+                .map_err(|error| TaskError::internal("upgrade_execution_binding", error))?;
+        }
         Ok(Self { pool })
     }
 
@@ -983,6 +1376,7 @@ impl TaskRepository {
                 capability: request_capability(request).to_string(),
                 route_id: request.route_id.clone(),
                 state: AiTaskState::Pending,
+                execution_binding: None,
                 result: None,
                 error_code: None,
                 error_message: None,
@@ -1008,14 +1402,21 @@ impl TaskRepository {
         rows.into_iter().map(decode_task_row).collect()
     }
 
-    async fn claim(&self, task_id: &str, now_ms: i64) -> Result<Option<TaskRecord>, TaskError> {
+    async fn claim(
+        &self,
+        task_id: &str,
+        execution_binding: &[u8],
+        now_ms: i64,
+    ) -> Result<Option<TaskRecord>, TaskError> {
         let updated = base_db::sqlx::query(
-            "UPDATE avai_task SET state=?, updated_at_ms=? WHERE task_id=? AND state=?",
+            "UPDATE avai_task SET state=?, execution_binding=?, updated_at_ms=? WHERE task_id=? AND state=? AND (execution_binding IS NULL OR execution_binding=?)",
         )
         .bind(AiTaskState::Running as i32)
+        .bind(execution_binding)
         .bind(now_ms)
         .bind(task_id)
         .bind(AiTaskState::Pending as i32)
+        .bind(execution_binding)
         .execute(&self.pool)
         .await
         .map_err(|error| TaskError::internal("claim_task", error))?;
@@ -1140,9 +1541,9 @@ fn existing_outcome(
     }
 }
 
-const SELECT_TASK_BY_ID: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,result,error_code,error_message FROM avai_task WHERE task_id=?";
-const SELECT_TASK_BY_IDEMPOTENCY: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,result,error_code,error_message FROM avai_task WHERE idempotency_key=?";
-const SELECT_ALL_TASKS: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,result,error_code,error_message FROM avai_task ORDER BY created_at_ms,task_id";
+const SELECT_TASK_BY_ID: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,execution_binding,result,error_code,error_message FROM avai_task WHERE task_id=?";
+const SELECT_TASK_BY_IDEMPOTENCY: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,execution_binding,result,error_code,error_message FROM avai_task WHERE idempotency_key=?";
+const SELECT_ALL_TASKS: &str = "SELECT task_id,idempotency_key,request_hash,request,capability,route_id,state,execution_binding,result,error_code,error_message FROM avai_task ORDER BY created_at_ms,task_id";
 
 fn decode_task_row(row: base_db::sqlx::sqlite::SqliteRow) -> Result<TaskRecord, TaskError> {
     let state: i32 = row
@@ -1177,6 +1578,9 @@ fn decode_task_row(row: base_db::sqlx::sqlite::SqliteRow) -> Result<TaskRecord, 
             .try_get("route_id")
             .map_err(|error| TaskError::internal("decode_route_id", error))?,
         state: AiTaskState::try_from(state).unwrap_or(AiTaskState::Failed),
+        execution_binding: row
+            .try_get("execution_binding")
+            .map_err(|error| TaskError::internal("decode_execution_binding", error))?,
         result,
         error_code: row
             .try_get("error_code")
@@ -1372,6 +1776,7 @@ mod tests {
                 database_path: root.join("avai.db"),
                 worker_count: 1,
                 queue_size: 8,
+                max_result_bytes: 1024,
                 source_policy: SourcePolicy {
                     allow_private_image_urls: false,
                     ..SourcePolicy::default()
@@ -1451,7 +1856,7 @@ mod tests {
 
     #[test]
     fn configured_capability_requires_an_installed_provider_manifest() {
-        let error = ProviderRegistry::builtin(&["asset.damage.detect".to_string()])
+        let error = ProviderRegistry::new(&["asset.damage.detect".to_string()], None, 1024)
             .err()
             .unwrap();
         assert_eq!(error.code, "invalid_task_config");
@@ -1551,7 +1956,13 @@ mod tests {
             .unwrap();
         assert_eq!(
             repository
-                .claim("task-recovery", 2)
+                .claim(
+                    "task-recovery",
+                    &ExecutionBinding::builtin(BuiltinImageMetadataProvider.manifest())
+                        .encode()
+                        .unwrap(),
+                    2,
+                )
                 .await
                 .unwrap()
                 .unwrap()
@@ -1739,6 +2150,7 @@ mod tests {
                     database_path,
                     worker_count: 1,
                     queue_size: 1,
+                    max_result_bytes: 1024,
                     source_policy: SourcePolicy {
                         allow_private_image_urls: true,
                         allowed_internal_hosts: HashSet::from(["127.0.0.1".to_string()]),
@@ -1769,7 +2181,17 @@ mod tests {
             .insert_or_get(&request, &request_hash(&request), 1)
             .await
             .unwrap();
-        repository.claim("task-race", 2).await.unwrap().unwrap();
+        repository
+            .claim(
+                "task-race",
+                &ExecutionBinding::builtin(BuiltinImageMetadataProvider.manifest())
+                    .encode()
+                    .unwrap(),
+                2,
+            )
+            .await
+            .unwrap()
+            .unwrap();
         let (cancelled, succeeded) = base::tokio::join!(
             repository.cancel("task-race", 3),
             repository.succeed(
@@ -1834,6 +2256,7 @@ mod tests {
                 database_path: root.join("avai.db"),
                 worker_count: 1,
                 queue_size: 1,
+                max_result_bytes: 1024,
                 source_policy: SourcePolicy {
                     allow_private_image_urls: true,
                     allowed_internal_hosts: HashSet::from(["127.0.0.1".to_string()]),
@@ -1937,6 +2360,7 @@ mod tests {
                 database_path: root.join("avai.db"),
                 worker_count: 2,
                 queue_size: 8,
+                max_result_bytes: 1024,
                 source_policy: SourcePolicy {
                     allow_private_image_urls: true,
                     allowed_internal_hosts: HashSet::from(["127.0.0.1".to_string()]),

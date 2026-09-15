@@ -333,6 +333,8 @@ pub struct AiTaskDetail {
     pub result_schema_version: u32,
     pub actual_model_id: String,
     pub actual_model_version: String,
+    pub actual_model_revision: String,
+    pub actual_model_runtime: String,
     pub result: Option<base::serde_json::Value>,
     pub error_code: String,
     pub error_message: String,

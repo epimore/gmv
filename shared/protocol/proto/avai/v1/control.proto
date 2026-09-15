@@ -105,6 +105,7 @@ message ModelRef {
   string model_id = 1;
   string version = 2;
   string runtime = 3;
+  string revision = 4;
 }
 
 message VersionedPayload {
