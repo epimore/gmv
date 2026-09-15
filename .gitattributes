@@ -14,3 +14,4 @@
 *.css text eol=lf
 *.sh text eol=lf
 *.sql text eol=lf
+*.onnx binary

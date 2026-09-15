@@ -1,13 +1,14 @@
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use base::{
     base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD},
     sha2::{Digest, Sha256},
     tokio::sync::Semaphore,
+    tokio_util::sync::CancellationToken,
 };
 use gmv_protocol::{
     avai::model_management::v1::{
@@ -25,7 +26,8 @@ use crate::{
     model::{
         ClaimOperation, InstalledModel, ModelError, ModelIdentity, ModelManager, ModelObservation,
         ModelRepository, ModelResult, ModelState, OperationClaimRequest, OperationReceipt,
-        OperationReceiptLimits, OperationReceiptState, PackagePolicy, verify_package,
+        OperationReceiptLimits, OperationReceiptState, PackagePolicy, RuntimeCallContext,
+        verify_package,
     },
     task::TaskManager,
 };
@@ -76,6 +78,7 @@ pub struct AvaiModelManagementRpc {
     tasks: TaskManager,
     config: Arc<ModelManagementConfig>,
     mutation_lane: Arc<Semaphore>,
+    runtime_cancellation: CancellationToken,
 }
 
 impl AvaiModelManagementRpc {
@@ -85,6 +88,16 @@ impl AvaiModelManagementRpc {
         tasks: TaskManager,
         config: ModelManagementConfig,
     ) -> ModelResult<Self> {
+        Self::new_with_cancellation(repository, manager, tasks, config, CancellationToken::new())
+    }
+
+    pub fn new_with_cancellation(
+        repository: ModelRepository,
+        manager: ModelManager,
+        tasks: TaskManager,
+        config: ModelManagementConfig,
+        runtime_cancellation: CancellationToken,
+    ) -> ModelResult<Self> {
         config.validate()?;
         let mutation_concurrency = config.mutation_concurrency;
         Ok(Self {
@@ -93,6 +106,7 @@ impl AvaiModelManagementRpc {
             tasks,
             config: Arc::new(config),
             mutation_lane: Arc::new(Semaphore::new(mutation_concurrency)),
+            runtime_cancellation,
         })
     }
 
@@ -100,7 +114,7 @@ impl AvaiModelManagementRpc {
         &self,
         model: InstalledModel,
         observe_live_health: bool,
-        deadline_epoch_ms: i64,
+        runtime_context: Option<RuntimeCallContext>,
     ) -> ModelSnapshot {
         let observed_at_epoch_ms = now_epoch_ms();
         let observation = self.manager.observation(&model.identity).await;
@@ -112,25 +126,28 @@ impl AvaiModelManagementRpc {
             )
         } else if !observe_live_health || !observation.loaded {
             (ModelHealth::Unknown, None)
-        } else if deadline_epoch_ms <= observed_at_epoch_ms {
-            (
-                ModelHealth::Unknown,
-                Some(error_detail("model_deadline_exceeded")),
-            )
         } else {
-            let remaining = Duration::from_millis(
-                u64::try_from(deadline_epoch_ms - observed_at_epoch_ms).unwrap_or_default(),
-            );
-            match base::tokio::time::timeout(remaining, self.manager.health(&model.identity)).await
+            let context = runtime_context.expect("live health has a validated runtime context");
+            match self
+                .manager
+                .health_with_context(&model.identity, context)
+                .await
             {
-                Ok(Ok(())) => (ModelHealth::Healthy, None),
-                Ok(Err(_)) => (
+                Ok(()) => (ModelHealth::Healthy, None),
+                Err(error)
+                    if matches!(
+                        error.code,
+                        "model_runtime_deadline_exceeded" | "model_runtime_cancelled"
+                    ) =>
+                {
+                    (
+                        ModelHealth::Unknown,
+                        Some(error_detail("model_deadline_exceeded")),
+                    )
+                }
+                Err(_) => (
                     ModelHealth::Unhealthy,
                     Some(error_detail("model_health_failed")),
-                ),
-                Err(_) => (
-                    ModelHealth::Unknown,
-                    Some(error_detail("model_deadline_exceeded")),
                 ),
             }
         };
@@ -265,6 +282,8 @@ impl AvaiModelManagementRpc {
         let operation_id = operation.operation_id.clone();
         let observed_identity = command.observed_identity().cloned();
         let (sender, receiver) = base::tokio::sync::oneshot::channel();
+        let runtime_context =
+            runtime_context_from_epoch(deadline_epoch_ms, self.runtime_cancellation.clone());
         base::tokio::spawn(async move {
             let _permit = permit;
             let reconciliation = if resumed {
@@ -281,7 +300,11 @@ impl AvaiModelManagementRpc {
                         "model operation deadline has expired",
                     ))
                 }
-                Some(Ok(false)) | None => command.execute(&service, deadline_epoch_ms).await,
+                Some(Ok(false)) | None => {
+                    command
+                        .execute(&service, deadline_epoch_ms, runtime_context)
+                        .await
+                }
             };
             let terminal_at = now_epoch_ms();
             let (state, stable_error_code) = match &result {
@@ -330,7 +353,7 @@ impl AvaiModelManagementRpc {
     async fn snapshot_optional(&self, identity: Option<&ModelIdentity>) -> Option<ModelSnapshot> {
         let identity = identity?;
         let model = self.repository.get(identity).await.ok().flatten()?;
-        Some(self.snapshot(model, false, 0).await)
+        Some(self.snapshot(model, false, None).await)
     }
 
     async fn replay_terminal(
@@ -392,7 +415,7 @@ impl AvaiModelManagement for AvaiModelManagementRpc {
         };
         let mut snapshots = Vec::with_capacity(models.len());
         for model in models {
-            snapshots.push(self.snapshot(model, false, 0).await);
+            snapshots.push(self.snapshot(model, false, None).await);
         }
         Ok(Response::new(ListModelsResponse {
             models: snapshots,
@@ -426,7 +449,12 @@ impl AvaiModelManagement for AvaiModelManagementRpc {
             .snapshot(
                 model,
                 request.observe_live_health,
-                request.deadline_epoch_ms,
+                request.observe_live_health.then(|| {
+                    runtime_context_from_epoch(
+                        request.deadline_epoch_ms,
+                        self.runtime_cancellation.clone(),
+                    )
+                }),
             )
             .await;
         Ok(Response::new(InspectModelResponse {
@@ -703,6 +731,7 @@ impl MutationCommand {
         self,
         service: &AvaiModelManagementRpc,
         deadline_epoch_ms: i64,
+        runtime_context: RuntimeCallContext,
     ) -> ModelResult<()> {
         match self {
             Self::Import {
@@ -768,7 +797,10 @@ impl MutationCommand {
                     return Err(runtime_unavailable());
                 }
                 ensure_before_deadline(deadline_epoch_ms)?;
-                service.manager.preload(&identity, now_epoch_ms()).await
+                service
+                    .manager
+                    .preload_with_context(&identity, now_epoch_ms(), runtime_context)
+                    .await
             }
             Self::Activate(identity) => {
                 let model = required_model(&service.repository, &identity).await?;
@@ -788,7 +820,7 @@ impl MutationCommand {
                 ensure_before_deadline(deadline_epoch_ms)?;
                 service
                     .manager
-                    .activate(&identity, now_epoch_ms())
+                    .activate_with_context(&identity, now_epoch_ms(), runtime_context)
                     .await
                     .map(|_| ())
             }
@@ -811,7 +843,7 @@ impl MutationCommand {
                 ensure_before_deadline(deadline_epoch_ms)?;
                 service
                     .manager
-                    .rollback_exact(&from, &to, now_epoch_ms())
+                    .rollback_exact_with_context(&from, &to, now_epoch_ms(), runtime_context)
                     .await
                     .map(|_| ())
             }
@@ -837,6 +869,18 @@ impl MutationCommand {
                 service.manager.unload(&identity, now_epoch_ms()).await
             }
         }
+    }
+}
+
+fn runtime_context_from_epoch(
+    deadline_epoch_ms: i64,
+    cancellation: CancellationToken,
+) -> RuntimeCallContext {
+    let remaining = deadline_epoch_ms.saturating_sub(now_epoch_ms()).max(0);
+    RuntimeCallContext {
+        deadline: Instant::now()
+            + Duration::from_millis(u64::try_from(remaining).unwrap_or_default()),
+        cancellation,
     }
 }
 

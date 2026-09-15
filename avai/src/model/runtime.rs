@@ -1,4 +1,6 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+
+use base::{bytes::Bytes, tokio_util::sync::CancellationToken};
 
 #[cfg(test)]
 use std::{
@@ -12,9 +14,7 @@ use std::{
 #[cfg(test)]
 use base::tokio::sync::Notify;
 
-#[cfg(test)]
-use super::ModelError;
-use super::{InstalledModel, ModelIdentity, ModelResult, SelfTestCase};
+use super::{InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase};
 
 pub type RuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = ModelResult<T>> + Send + 'a>>;
 
@@ -24,12 +24,59 @@ pub struct RuntimeDescriptor {
     pub version: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct RuntimeCallContext {
+    pub deadline: Instant,
+    pub cancellation: CancellationToken,
+}
+
+impl RuntimeCallContext {
+    pub fn local(maximum: std::time::Duration, cancellation: CancellationToken) -> Self {
+        Self {
+            deadline: Instant::now() + maximum,
+            cancellation,
+        }
+    }
+
+    pub fn with_local_maximum(&self, maximum: std::time::Duration) -> Self {
+        Self {
+            deadline: self.deadline.min(Instant::now() + maximum),
+            cancellation: self.cancellation.clone(),
+        }
+    }
+
+    pub fn ensure_active(&self) -> ModelResult<()> {
+        if self.cancellation.is_cancelled() {
+            return Err(ModelError::new(
+                "model_runtime_cancelled",
+                "runtime call was cancelled",
+            ));
+        }
+        if Instant::now() >= self.deadline {
+            return Err(ModelError::new(
+                "model_runtime_deadline_exceeded",
+                "runtime call deadline expired",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeInput {
+    pub encoded: Bytes,
+    pub media_type: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait RuntimeProvider: Send + Sync {
     fn descriptor(&self) -> RuntimeDescriptor;
 
     fn preload<'a>(
         &'a self,
         model: &'a InstalledModel,
+        context: RuntimeCallContext,
     ) -> RuntimeFuture<'a, Arc<dyn ModelInstance>>;
 }
 
@@ -38,11 +85,19 @@ pub trait ModelInstance: Send + Sync {
     fn runtime(&self) -> &str;
     fn capabilities(&self) -> &[String];
 
-    fn self_test<'a>(&'a self, cases: &'a [SelfTestCase]) -> RuntimeFuture<'a, ()>;
+    fn self_test<'a>(
+        &'a self,
+        cases: &'a [SelfTestCase],
+        context: RuntimeCallContext,
+    ) -> RuntimeFuture<'a, ()>;
 
-    fn health<'a>(&'a self) -> RuntimeFuture<'a, ()>;
+    fn health<'a>(&'a self, context: RuntimeCallContext) -> RuntimeFuture<'a, ()>;
 
-    fn infer<'a>(&'a self, input: Vec<u8>) -> RuntimeFuture<'a, InferenceResult>;
+    fn infer<'a>(
+        &'a self,
+        input: RuntimeInput,
+        context: RuntimeCallContext,
+    ) -> RuntimeFuture<'a, InferenceResult>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +115,7 @@ pub struct FakeRuntimeBehavior {
     pub fail_self_test_model: Option<String>,
     pub fail_health: bool,
     pub block_inference: bool,
+    pub ignore_inference_cancellation: bool,
     pub inference_output: Option<Vec<u8>>,
 }
 
@@ -148,8 +204,10 @@ impl RuntimeProvider for FakeRuntimeProvider {
     fn preload<'a>(
         &'a self,
         model: &'a InstalledModel,
+        context: RuntimeCallContext,
     ) -> RuntimeFuture<'a, Arc<dyn ModelInstance>> {
         Box::pin(async move {
+            context.ensure_active()?;
             if self.behavior.fail_preload
                 || self
                     .behavior
@@ -216,8 +274,13 @@ impl ModelInstance for FakeModelInstance {
         &self.capabilities
     }
 
-    fn self_test<'a>(&'a self, _cases: &'a [SelfTestCase]) -> RuntimeFuture<'a, ()> {
+    fn self_test<'a>(
+        &'a self,
+        _cases: &'a [SelfTestCase],
+        context: RuntimeCallContext,
+    ) -> RuntimeFuture<'a, ()> {
         Box::pin(async move {
+            context.ensure_active()?;
             if self.behavior.fail_self_test
                 || self
                     .behavior
@@ -235,12 +298,16 @@ impl ModelInstance for FakeModelInstance {
         })
     }
 
-    fn health<'a>(&'a self) -> RuntimeFuture<'a, ()> {
+    fn health<'a>(&'a self, context: RuntimeCallContext) -> RuntimeFuture<'a, ()> {
         Box::pin(async move {
+            context.ensure_active()?;
             let released = self.health_release.notified();
             self.health_started.fetch_add(1, Ordering::AcqRel);
             if self.pause_health.load(Ordering::Acquire) {
-                released.await;
+                base::tokio::select! {
+                    _ = released => {}
+                    _ = context.cancellation.cancelled() => context.ensure_active()?,
+                }
             }
             if self.behavior.fail_health
                 || self
@@ -259,14 +326,30 @@ impl ModelInstance for FakeModelInstance {
         })
     }
 
-    fn infer<'a>(&'a self, input: Vec<u8>) -> RuntimeFuture<'a, InferenceResult> {
+    fn infer<'a>(
+        &'a self,
+        input: RuntimeInput,
+        context: RuntimeCallContext,
+    ) -> RuntimeFuture<'a, InferenceResult> {
         Box::pin(async move {
+            context.ensure_active()?;
             self.started.fetch_add(1, Ordering::AcqRel);
             if self.behavior.block_inference {
-                self.release.notified().await;
+                if self.behavior.ignore_inference_cancellation {
+                    self.release.notified().await;
+                } else {
+                    base::tokio::select! {
+                        _ = self.release.notified() => {}
+                        _ = context.cancellation.cancelled() => context.ensure_active()?,
+                    }
+                }
             }
             Ok(InferenceResult {
-                output: self.behavior.inference_output.clone().unwrap_or(input),
+                output: self
+                    .behavior
+                    .inference_output
+                    .clone()
+                    .unwrap_or_else(|| input.encoded.to_vec()),
                 actual_model: self.identity.actual_model(self.runtime.clone()),
             })
         })

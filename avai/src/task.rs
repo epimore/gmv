@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use base::{
@@ -34,10 +34,13 @@ use gmv_protocol::{
 };
 use prost::Message;
 
-use crate::model::{ActiveModel, ModelError, ModelIdentity, ModelManager};
+use crate::model::{
+    ActiveModel, ModelError, ModelIdentity, ModelManager, RuntimeCallContext, RuntimeInput,
+};
 use crate::source::{ResolvedImage, SourceError, SourcePolicy, SourceResolver};
 
 const BUILTIN_CAPABILITY: &str = "image.metadata.inspect";
+const MANAGED_INFERENCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct TaskManagerConfig {
@@ -637,72 +640,123 @@ async fn process_task(
             return Err(error);
         }
     }
-    let execute = async {
-        let source = request
-            .source
-            .as_ref()
-            .ok_or_else(|| TaskError::new("invalid_source", "persisted task has no typed source"));
+    let source = request
+        .source
+        .as_ref()
+        .ok_or_else(|| TaskError::new("invalid_source", "persisted task has no typed source"));
+    let resolve = async {
         match source {
-            Ok(source) => match context
+            Ok(source) => context
                 .resolver
                 .resolve(source, &record.capability, now_epoch_ms())
                 .await
-            {
-                Ok(image) => match captured.infer(&record.capability, image).await {
-                    Ok(output) => {
-                        context
-                            .repository
-                            .succeed(task_id, output, now_epoch_ms())
-                            .await
-                    }
-                    Err(error) => {
-                        context
-                            .repository
-                            .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                            .await
-                    }
-                },
-                Err(error) => {
-                    context
-                        .repository
-                        .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                        .await
-                }
-            },
-            Err(error) => {
-                context
-                    .repository
-                    .fail_running(task_id, error.code, &error.message, now_epoch_ms())
-                    .await
-            }
+                .map_err(source_task_error),
+            Err(error) => Err(error),
         }
     };
-    let deadline = async {
-        if request.deadline_epoch_ms == 0 {
-            std::future::pending::<()>().await;
-        } else {
-            let remaining = request.deadline_epoch_ms.saturating_sub(now_epoch_ms());
-            base::tokio::time::sleep(std::time::Duration::from_millis(
-                u64::try_from(remaining.max(0)).unwrap_or_default(),
-            ))
-            .await;
+    base::tokio::pin!(resolve);
+    let image = base::tokio::select! {
+        _ = context.cancel.cancelled() => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return Ok(None);
+        },
+        _ = task_cancel.cancelled() => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return context.repository.get(task_id).await.map(|record| {
+                record.filter(|record| record.state != AiTaskState::Running)
+            });
+        },
+        _ = task_deadline(request.deadline_epoch_ms) => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return context.repository.fail_running(
+                task_id,
+                "task_expired",
+                "task deadline expired during source resolution",
+                now_epoch_ms(),
+            ).await;
+        },
+        image = &mut resolve => image,
+    };
+    let image = match image {
+        Ok(image) => image,
+        Err(error) => {
+            context.task_cancellations.lock().await.remove(task_id);
+            return context
+                .repository
+                .fail_running(task_id, error.code, &error.message, now_epoch_ms())
+                .await;
         }
     };
-    let terminal = base::tokio::select! {
-        _ = context.cancel.cancelled() => Ok(None),
-        _ = task_cancel.cancelled() => context.repository.get(task_id).await.map(|record| {
-            record.filter(|record| record.state != AiTaskState::Running)
-        }),
-        _ = deadline => context.repository.fail_running(
-            task_id,
-            "task_expired",
-            "task deadline expired during execution",
-            now_epoch_ms(),
-        ).await,
-        terminal = execute => terminal,
+    let runtime_cancel = CancellationToken::new();
+    let runtime_context = RuntimeCallContext {
+        deadline: runtime_deadline(request.deadline_epoch_ms),
+        cancellation: runtime_cancel.clone(),
     };
+    let inference = captured.infer(&record.capability, image, runtime_context);
+    base::tokio::pin!(inference);
+    let (terminal, drain_native) = base::tokio::select! {
+        _ = context.cancel.cancelled() => {
+            runtime_cancel.cancel();
+            (Ok(None), true)
+        },
+        _ = task_cancel.cancelled() => {
+            runtime_cancel.cancel();
+            (context.repository.get(task_id).await.map(|record| {
+                record.filter(|record| record.state != AiTaskState::Running)
+            }), true)
+        },
+        _ = task_deadline(request.deadline_epoch_ms) => {
+            runtime_cancel.cancel();
+            (context.repository.fail_running(
+                task_id,
+                "task_expired",
+                "task deadline expired during execution",
+                now_epoch_ms(),
+            ).await, true)
+        },
+        output = &mut inference => {
+            let terminal = match output {
+                Ok(output) => context.repository.succeed(task_id, output, now_epoch_ms()).await,
+                Err(error) => context.repository.fail_running(
+                    task_id,
+                    error.code,
+                    &error.message,
+                    now_epoch_ms(),
+                ).await,
+            };
+            (terminal, false)
+        },
+    };
+    if drain_native {
+        let _late_result = inference.await;
+    }
     context.task_cancellations.lock().await.remove(task_id);
     terminal
+}
+
+async fn task_deadline(deadline_epoch_ms: i64) {
+    if deadline_epoch_ms == 0 {
+        std::future::pending::<()>().await;
+    } else {
+        let remaining = deadline_epoch_ms.saturating_sub(now_epoch_ms());
+        base::tokio::time::sleep(Duration::from_millis(
+            u64::try_from(remaining.max(0)).unwrap_or_default(),
+        ))
+        .await;
+    }
+}
+
+fn runtime_deadline(deadline_epoch_ms: i64) -> Instant {
+    let local = Instant::now() + MANAGED_INFERENCE_TIMEOUT;
+    if deadline_epoch_ms == 0 {
+        return local;
+    }
+    let external = Instant::now()
+        + Duration::from_millis(
+            u64::try_from(deadline_epoch_ms.saturating_sub(now_epoch_ms()).max(0))
+                .unwrap_or_default(),
+        );
+    local.min(external)
 }
 
 async fn emit_terminal_event(context: &WorkerContext, record: &TaskRecord) {
@@ -1121,6 +1175,7 @@ impl CapturedExecution {
         &self,
         capability: &str,
         image: ResolvedImage,
+        context: RuntimeCallContext,
     ) -> Result<InferenceOutput, TaskError> {
         match self {
             Self::Builtin { provider, .. } => provider.infer(capability, image).await,
@@ -1130,7 +1185,15 @@ impl CapturedExecution {
                 max_result_bytes,
             } => {
                 let output = model
-                    .infer(image.bytes.to_vec())
+                    .infer(
+                        RuntimeInput {
+                            encoded: image.bytes,
+                            media_type: image.content_type,
+                            width: image.width,
+                            height: image.height,
+                        },
+                        context,
+                    )
                     .await
                     .map_err(model_task_error)?;
                 let expected = ModelRef {
