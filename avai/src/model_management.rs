@@ -29,6 +29,7 @@ use crate::{
         OperationReceiptLimits, OperationReceiptState, PackagePolicy, RuntimeCallContext,
         verify_package,
     },
+    observability::Observability,
     task::TaskManager,
 };
 
@@ -79,6 +80,7 @@ pub struct AvaiModelManagementRpc {
     config: Arc<ModelManagementConfig>,
     mutation_lane: Arc<Semaphore>,
     runtime_cancellation: CancellationToken,
+    observability: Arc<Observability>,
 }
 
 impl AvaiModelManagementRpc {
@@ -98,6 +100,24 @@ impl AvaiModelManagementRpc {
         config: ModelManagementConfig,
         runtime_cancellation: CancellationToken,
     ) -> ModelResult<Self> {
+        Self::new_with_observability(
+            repository,
+            manager,
+            tasks,
+            config,
+            runtime_cancellation,
+            Arc::new(Observability::new()),
+        )
+    }
+
+    pub fn new_with_observability(
+        repository: ModelRepository,
+        manager: ModelManager,
+        tasks: TaskManager,
+        config: ModelManagementConfig,
+        runtime_cancellation: CancellationToken,
+        observability: Arc<Observability>,
+    ) -> ModelResult<Self> {
         config.validate()?;
         let mutation_concurrency = config.mutation_concurrency;
         Ok(Self {
@@ -107,6 +127,7 @@ impl AvaiModelManagementRpc {
             config: Arc::new(config),
             mutation_lane: Arc::new(Semaphore::new(mutation_concurrency)),
             runtime_cancellation,
+            observability,
         })
     }
 
@@ -281,6 +302,8 @@ impl AvaiModelManagementRpc {
         let service = self.clone();
         let operation_id = operation.operation_id.clone();
         let observed_identity = command.observed_identity().cloned();
+        let operation_kind = command.kind();
+        let refresh_installed = matches!(command, MutationCommand::Import { .. });
         let (sender, receiver) = base::tokio::sync::oneshot::channel();
         let runtime_context =
             runtime_context_from_epoch(deadline_epoch_ms, self.runtime_cancellation.clone());
@@ -306,6 +329,15 @@ impl AvaiModelManagementRpc {
                         .await
                 }
             };
+            if result.is_ok() && refresh_installed {
+                match service.repository.count_models().await {
+                    Ok(count) => service.observability.set_installed_models(count),
+                    Err(error) => base::log::warn!(
+                        "Model telemetry refresh failed: action=model_lifecycle, stage=install, outcome=failed, error_code={}",
+                        error.code
+                    ),
+                }
+            }
             let terminal_at = now_epoch_ms();
             let (state, stable_error_code) = match &result {
                 Ok(()) => (OperationReceiptState::Succeeded, None),
@@ -324,6 +356,19 @@ impl AvaiModelManagementRpc {
                     None,
                 ),
                 Ok(()) => {
+                    match &result {
+                        Ok(()) => base::log::info!(
+                            "Model operation completed: action=model_lifecycle, stage={}, outcome=succeeded, operation_id={}",
+                            operation_kind.to_ascii_lowercase(),
+                            operation_id
+                        ),
+                        Err(error) => base::log::warn!(
+                            "Model operation failed: action=model_lifecycle, stage={}, outcome=failed, operation_id={}, error_code={}",
+                            operation_kind.to_ascii_lowercase(),
+                            operation_id,
+                            error.code
+                        ),
+                    }
                     let snapshot = service.snapshot_optional(observed_identity.as_ref()).await;
                     match result {
                         Ok(()) => mutation_success(&operation_id, resumed, terminal_at, snapshot),

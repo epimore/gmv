@@ -35,6 +35,7 @@ use crate::{
         AvaiModelManagementRpc, ModelManagementConfig, preload_request_hash_for_test, serve_uds,
     },
     model_runtime_tests::{TestRoot, identity, install_test_model, policy, write_package},
+    observability::Observability,
     source::SourcePolicy,
     task::{TaskManager, TaskManagerConfig},
 };
@@ -190,11 +191,14 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
     .await
     .unwrap();
     let tasks = task_manager(&root, manager.clone(), "uds").await;
-    let rpc = AvaiModelManagementRpc::new(
+    let telemetry = Arc::new(Observability::new());
+    let rpc = AvaiModelManagementRpc::new_with_observability(
         repository.clone(),
         manager,
         tasks.clone(),
         management_config(&root),
+        CancellationToken::new(),
+        telemetry.clone(),
     )
     .unwrap();
     let socket = root.path().join("management.sock");
@@ -252,6 +256,7 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .unwrap()
         .into_inner();
     assert_eq!(first.error, None);
+    assert_eq!(telemetry.snapshot()["installed_models"], "1");
     repository
         .reset_operation_pending_for_test("import-a")
         .await
@@ -263,6 +268,7 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .into_inner();
     assert!(replay.replayed);
     assert_eq!(replay.error, None);
+    assert_eq!(telemetry.snapshot()["installed_models"], "1");
     let mut conflict = import;
     conflict.stage_id = "stage-b".into();
     assert_eq!(
@@ -342,6 +348,7 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             .error,
         None
     );
+    assert_eq!(telemetry.snapshot()["installed_models"], "2");
     for (operation_id, response) in [
         (
             "activate-no-provider",

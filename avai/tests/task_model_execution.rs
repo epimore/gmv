@@ -14,9 +14,11 @@ use avai::{
         ModelPackageManifest, ModelRepository, PackagePolicy, RuntimeProvider,
         model_package_signing_payload, verify_package,
     },
+    observability::Observability,
     source::SourcePolicy,
     task::{TaskManager, TaskManagerConfig},
 };
+use base::tokio_util::sync::CancellationToken;
 use base::{
     base64::Engine,
     sha2::{Digest, Sha256},
@@ -350,10 +352,13 @@ async fn dispatch_capture_survives_activation_switch_and_releases_old_revision()
             ..Default::default()
         },
     );
-    let manager = ModelManager::open(
+    let telemetry = Arc::new(Observability::new());
+    let manager = ModelManager::open_with_observability(
         repository.clone(),
         vec![Arc::new(fake.clone()) as Arc<dyn RuntimeProvider>],
         ModelManagerConfig::default(),
+        CancellationToken::new(),
+        telemetry.clone(),
     )
     .await
     .unwrap();
@@ -363,12 +368,13 @@ async fn dispatch_capture_survives_activation_switch_and_releases_old_revision()
     manager.preload(&model_b, 11).await.unwrap();
     manager.activate(&model_a, 12).await.unwrap();
     let task_runtime = runtime("dispatch-switch");
-    let tasks = TaskManager::open_with_model_manager(
+    let tasks = TaskManager::open_with_model_manager_and_observability(
         node_identity(),
         vec![CAPABILITY.to_string()],
         task_config(&root, 1, 1024),
         Some(manager.clone()),
         &task_runtime,
+        telemetry.clone(),
     )
     .await
     .unwrap();
@@ -409,12 +415,71 @@ async fn dispatch_capture_survives_activation_switch_and_releases_old_revision()
     let second = wait_terminal(&tasks, "task-b").await;
     let second_model = second.typed_result.unwrap().actual_model.unwrap();
     assert_eq!(second_model, model_ref("model-b", "2", "rev-b", "fake"));
+    let task_metrics = telemetry.snapshot();
+    assert_eq!(task_metrics["tasks_actual_model_slot_00_succeeded"], "1");
+    assert!(task_metrics["tasks_actual_model_slot_00_identity"].contains("model-a"));
+    assert_eq!(task_metrics["tasks_actual_model_slot_01_succeeded"], "1");
+    assert!(task_metrics["tasks_actual_model_slot_01_identity"].contains("model-b"));
+    tasks
+        .cancel_task(CancelTaskRequest {
+            task_id: "task-a".to_string(),
+            ..Default::default()
+        })
+        .await;
+    let after_duplicate = telemetry.snapshot();
+    assert_eq!(after_duplicate["tasks_actual_model_slot_00_succeeded"], "1");
+    assert_eq!(after_duplicate["tasks_actual_model_slot_00_cancelled"], "0");
 
     assert_eq!(wait_retired(&manager, CAPABILITY, 15).await, model_a);
     manager.unload(&model_a, 16).await.unwrap();
     assert_eq!(fake.dropped_instances("model-a"), 1);
     tasks.close_and_wait().await.unwrap();
     repository.close().await;
+}
+
+#[tokio::test]
+async fn terminal_before_binding_is_counted_once_without_actual_model() {
+    let root = TestRoot::new("terminal-without-binding");
+    let task_runtime = runtime("terminal-without-binding");
+    let telemetry = Arc::new(Observability::new());
+    let tasks = TaskManager::open_with_model_manager_and_observability(
+        node_identity(),
+        vec![BUILTIN_CAPABILITY.to_string()],
+        task_config(&root, 1, 1024),
+        None,
+        &task_runtime,
+        telemetry.clone(),
+    )
+    .await
+    .unwrap();
+    tasks
+        .create_task(
+            task_request(
+                &root,
+                "task-unbound",
+                BUILTIN_CAPABILITY,
+                Some(model_ref("missing", "1", "rev-a", "fake")),
+                0,
+            ),
+            now_epoch_ms(),
+        )
+        .await;
+    let terminal = wait_terminal(&tasks, "task-unbound").await;
+    assert_eq!(terminal.state, AiTaskState::Failed as i32);
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot["tasks_without_actual_model_total"], "1");
+    assert!(!snapshot.keys().any(|key| key.contains("slot_00")));
+    tasks
+        .cancel_task(CancelTaskRequest {
+            task_id: "task-unbound".to_string(),
+            ..Default::default()
+        })
+        .await;
+    assert_eq!(
+        telemetry.snapshot()["tasks_without_actual_model_total"],
+        "1"
+    );
+    tasks.close_and_wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -597,10 +662,13 @@ async fn recovered_binding_reacquires_exact_unloaded_revision_and_never_falls_ba
             ..Default::default()
         },
     );
-    let restarted = ModelManager::open(
+    let recovery_telemetry = Arc::new(Observability::new());
+    let restarted = ModelManager::open_with_observability(
         repository.clone(),
         vec![Arc::new(replay) as Arc<dyn RuntimeProvider>],
         ModelManagerConfig::default(),
+        CancellationToken::new(),
+        recovery_telemetry.clone(),
     )
     .await
     .unwrap();
@@ -609,12 +677,13 @@ async fn recovered_binding_reacquires_exact_unloaded_revision_and_never_falls_ba
         &model_b
     );
     let second_runtime = runtime("recovery-second");
-    let second_tasks = TaskManager::open_with_model_manager(
+    let second_tasks = TaskManager::open_with_model_manager_and_observability(
         node_identity(),
         vec![CAPABILITY.to_string()],
         task_config(&root, 1, 1024),
         Some(restarted),
         &second_runtime,
+        recovery_telemetry.clone(),
     )
     .await
     .unwrap();
@@ -623,6 +692,9 @@ async fn recovered_binding_reacquires_exact_unloaded_revision_and_never_falls_ba
         replayed.typed_result.unwrap().actual_model.unwrap(),
         model_ref("model-a", "1", "rev-a", "fake")
     );
+    let recovery_metrics = recovery_telemetry.snapshot();
+    assert_eq!(recovery_metrics["ready_models"], "2");
+    assert_eq!(recovery_metrics["preload_seconds_count"], "2");
 
     let pool = open_sqlite(&root.database_path()).await;
     let missing = task_request(&root, "bound-missing", CAPABILITY, None, 0);

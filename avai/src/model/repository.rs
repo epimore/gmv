@@ -378,6 +378,15 @@ impl ModelRepository {
         rows.into_iter().map(decode_model).collect()
     }
 
+    pub async fn count_models(&self) -> ModelResult<usize> {
+        let count: i64 = base_db::sqlx::query_scalar("SELECT COUNT(*) FROM avai_model_revision")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|error| ModelError::io("count installed models", error))?;
+        usize::try_from(count)
+            .map_err(|_| ModelError::new("model_count_invalid", "model count does not fit usize"))
+    }
+
     pub async fn list_page(
         &self,
         after: Option<&ModelIdentity>,

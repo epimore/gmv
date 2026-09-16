@@ -9,6 +9,7 @@ use avai::model::{
     OnnxCpuConfig, OnnxCpuProvider, PackagePolicy, RuntimeProvider,
 };
 use avai::model_management::{AvaiModelManagementRpc, ModelManagementConfig, serve_uds};
+use avai::observability::Observability;
 use avai::source::SourcePolicy;
 use avai::task::{AvaiDrainBehavior, TaskManager, TaskManagerConfig};
 use avai::upload::{UploadManager, UploadManagerConfig};
@@ -332,6 +333,14 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     )
     .await
     .map_err(external_error)?;
+    let observability = Arc::new(Observability::new());
+    match model_repository.count_models().await {
+        Ok(count) => observability.set_installed_models(count),
+        Err(error) => base::log::warn!(
+            "Model telemetry startup reconstruction failed: action=model_lifecycle, stage=startup_restore, outcome=failed, error_code={}",
+            error.code
+        ),
+    }
     let mut providers: Vec<Arc<dyn RuntimeProvider>> = Vec::new();
     let mut onnx_cpu_provider = None;
     if model
@@ -359,7 +368,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             ),
         }
     }
-    let model_manager = ModelManager::open_with_cancellation(
+    let model_manager = ModelManager::open_with_observability(
         model_repository.clone(),
         providers,
         ModelManagerConfig {
@@ -368,10 +377,11 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             max_vram_mb: model.max_vram_mb,
         },
         runtime.cancel.clone(),
+        observability.clone(),
     )
     .await
     .map_err(external_error)?;
-    let manager = TaskManager::open_with_model_manager(
+    let manager = TaskManager::open_with_model_manager_and_observability(
         node.identity.clone(),
         capabilities.clone(),
         TaskManagerConfig {
@@ -390,6 +400,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         },
         Some(model_manager.clone()),
         &runtime,
+        observability.clone(),
     )
     .await
     .map_err(external_error)?;
@@ -408,13 +419,16 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     let snapshot = manager.resource_snapshot().await;
     let rpc = AvaiControlRpc::new_managed(manager.clone(), uploads.clone(), capabilities);
     let metrics_rpc = rpc.clone();
+    let metrics_observability = observability.clone();
     let mut reporter =
         NodeReporterConfig::new(node.guard_channel.clone(), node.register_request(snapshot));
     reporter.business_metrics = Arc::new(move || {
-        HashMap::from([(
+        let mut metrics = metrics_observability.snapshot();
+        metrics.insert(
             "running_tasks".to_string(),
             metrics_rpc.running_task_count().to_string(),
-        )])
+        );
+        metrics
     });
     let snapshot_rpc = rpc.clone();
     reporter.resource_snapshot = Some(Arc::new(move || {
@@ -430,7 +444,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
             server.management_component_id.clone(),
             Arc::new(AvaiDrainBehavior(manager.clone())),
         ));
-        let model_rpc = AvaiModelManagementRpc::new_with_cancellation(
+        let model_rpc = AvaiModelManagementRpc::new_with_observability(
             model_repository.clone(),
             model_manager.clone(),
             manager.clone(),
@@ -442,6 +456,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
                 mutation_concurrency: model.mutation_concurrency,
             },
             cancel.clone(),
+            observability.clone(),
         )
         .map_err(external_error)?;
         let management_cancel = cancel.clone();
