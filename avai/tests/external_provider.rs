@@ -54,6 +54,9 @@ const RESULT: &[u8] =
     br#"{"outputs":[{"name":"output","dtype":"f32","shape":[1,3,1,1],"data":[1.0,2.0,3.0]}]}"#;
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(1);
+const PROVIDER_MAX_CALL_BUDGET: Duration = Duration::from_millis(250);
+const SESSION_REPLACEMENT_BUDGET: Duration = Duration::from_millis(100);
+const PROVIDER_MAX_CALLS: usize = 8;
 
 struct TestRoot(PathBuf);
 
@@ -80,13 +83,21 @@ impl Drop for TestRoot {
     }
 }
 
+#[derive(Clone)]
+struct ActiveCall {
+    client_session_id: String,
+    cancellation: CancellationToken,
+}
+
 #[derive(Default)]
 struct FakeState {
     session: Mutex<Option<String>>,
+    session_transition: Mutex<()>,
+    replacing_session: AtomicBool,
     handles: Mutex<HashSet<String>>,
     handle_models: Mutex<HashMap<String, String>>,
     unloaded: Mutex<HashSet<String>>,
-    calls: Mutex<HashMap<String, CancellationToken>>,
+    calls: Mutex<HashMap<String, ActiveCall>>,
     busy_handles: Mutex<HashSet<String>>,
     next_handle: AtomicUsize,
     load_calls: AtomicUsize,
@@ -94,14 +105,18 @@ struct FakeState {
     infer_calls: AtomicUsize,
     block_load: AtomicBool,
     block_infer: AtomicBool,
+    block_health: AtomicBool,
+    block_unload: AtomicBool,
     ignore_cancel: AtomicBool,
     hold_after_cancel: AtomicBool,
-    wrong_fence: AtomicBool,
+    wrong_fence: AtomicUsize,
+    oversized_response: AtomicBool,
     wrong_protocol: AtomicBool,
     unhealthy: AtomicBool,
     force_already_unloaded: AtomicBool,
     unhealthy_models: Mutex<HashSet<String>>,
     call_started: Notify,
+    calls_changed: Notify,
     cancel_seen: Notify,
     release: Notify,
     last_load: Mutex<Option<wire::LoadModelRequest>>,
@@ -123,6 +138,9 @@ impl FakeProvider {
             })
             .cloned()
             .ok_or_else(|| Status::failed_precondition("stale provider fence"))?;
+        if self.state.replacing_session.load(Ordering::Acquire) {
+            return Err(Status::unavailable("provider session is being replaced"));
+        }
         if self.state.session.lock().await.as_deref() != Some(&fence.client_session_id) {
             return Err(Status::failed_precondition("stale client session"));
         }
@@ -130,8 +148,12 @@ impl FakeProvider {
     }
 
     fn response_fence(&self, mut fence: wire::Fence) -> wire::Fence {
-        if self.state.wrong_fence.swap(false, Ordering::AcqRel) {
-            fence.provider_instance_id = "wrong-instance".to_string();
+        match self.state.wrong_fence.swap(0, Ordering::AcqRel) {
+            1 => fence.call_id = "wrong-call".to_string(),
+            2 => fence.client_session_id = "wrong-session".to_string(),
+            3 => fence.provider_instance_id = "wrong-instance".to_string(),
+            4 => fence.load_handle_id = "wrong-handle".to_string(),
+            _ => {}
         }
         fence
     }
@@ -151,6 +173,64 @@ impl FakeProvider {
         }
         Ok(())
     }
+
+    async fn begin_call(&self, fence: &wire::Fence) -> Result<CancellationToken, Status> {
+        if self.state.replacing_session.load(Ordering::Acquire) {
+            return Err(Status::unavailable("provider session is being replaced"));
+        }
+        let cancellation = CancellationToken::new();
+        let mut calls = self.state.calls.lock().await;
+        if calls.len() >= PROVIDER_MAX_CALLS || calls.contains_key(&fence.call_id) {
+            return Err(Status::resource_exhausted(
+                "provider call capacity exhausted",
+            ));
+        }
+        calls.insert(
+            fence.call_id.clone(),
+            ActiveCall {
+                client_session_id: fence.client_session_id.clone(),
+                cancellation: cancellation.clone(),
+            },
+        );
+        Ok(cancellation)
+    }
+
+    async fn finish_call(&self, call_id: &str) {
+        self.state.calls.lock().await.remove(call_id);
+        self.state.calls_changed.notify_waiters();
+    }
+
+    fn call_deadline(timeout_ms: u64) -> Result<base::tokio::time::Instant, Status> {
+        if timeout_ms == 0 {
+            return Err(Status::invalid_argument("timeout_ms must be positive"));
+        }
+        Ok(base::tokio::time::Instant::now()
+            + Duration::from_millis(timeout_ms).min(PROVIDER_MAX_CALL_BUDGET))
+    }
+
+    async fn wait_for_blocked_work(
+        &self,
+        cancellation: &CancellationToken,
+        deadline: base::tokio::time::Instant,
+    ) -> Result<(), Status> {
+        if self.state.ignore_cancel.load(Ordering::Acquire) {
+            return base::tokio::time::timeout_at(deadline, self.state.release.notified())
+                .await
+                .map_err(|_| Status::deadline_exceeded("provider-local deadline expired"));
+        }
+        base::tokio::select! {
+            _ = cancellation.cancelled() => {}
+            _ = base::tokio::time::sleep_until(deadline) => {
+                return Err(Status::deadline_exceeded("provider-local deadline expired"));
+            }
+        }
+        if self.state.hold_after_cancel.load(Ordering::Acquire) {
+            base::tokio::time::timeout_at(deadline, self.state.release.notified())
+                .await
+                .map_err(|_| Status::deadline_exceeded("provider-local deadline expired"))?;
+        }
+        Ok(())
+    }
 }
 
 #[tonic::async_trait]
@@ -163,13 +243,45 @@ impl ProviderService for FakeProvider {
         if request.protocol_major != 1 || request.min_minor > 0 {
             return Err(Status::failed_precondition("protocol mismatch"));
         }
-        let mut session = self.state.session.lock().await;
-        if session.as_deref() != Some(&request.client_session_id) {
+        let _transition = self.state.session_transition.lock().await;
+        let current = self.state.session.lock().await.clone();
+        if current.as_deref() != Some(&request.client_session_id) {
+            self.state.replacing_session.store(true, Ordering::Release);
+            if let Some(previous_session) = current.as_deref() {
+                let drain_deadline = base::tokio::time::Instant::now() + SESSION_REPLACEMENT_BUDGET;
+                loop {
+                    let active = {
+                        let calls = self.state.calls.lock().await;
+                        calls
+                            .values()
+                            .filter(|call| call.client_session_id == previous_session)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    };
+                    if active.is_empty() {
+                        break;
+                    }
+                    for call in active {
+                        call.cancellation.cancel();
+                    }
+                    if base::tokio::time::timeout_at(
+                        drain_deadline,
+                        self.state.calls_changed.notified(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        self.state.replacing_session.store(false, Ordering::Release);
+                        return Err(Status::unavailable("previous provider session is busy"));
+                    }
+                }
+            }
             self.state.handles.lock().await.clear();
             self.state.handle_models.lock().await.clear();
             self.state.unloaded.lock().await.clear();
-            self.state.calls.lock().await.clear();
-            *session = Some(request.client_session_id.clone());
+            self.state.busy_handles.lock().await.clear();
+            *self.state.session.lock().await = Some(request.client_session_id.clone());
+            self.state.replacing_session.store(false, Ordering::Release);
         }
         Ok(Response::new(wire::DescribeResponse {
             selected_major: if self.state.wrong_protocol.load(Ordering::Acquire) {
@@ -200,18 +312,15 @@ impl ProviderService for FakeProvider {
         request: Request<wire::LoadModelRequest>,
     ) -> Result<Response<wire::LoadModelResponse>, Status> {
         let request = request.into_inner();
+        let deadline = Self::call_deadline(request.timeout_ms)?;
         let mut fence = self.validate_fence(request.fence.as_ref()).await?;
         validate_load_artifact(&self.packages_root, &request)?;
+        let cancel = self.begin_call(&fence).await?;
+        self.state.call_started.notify_waiters();
         if self.state.block_load.load(Ordering::Acquire) {
-            let cancel = CancellationToken::new();
-            self.state
-                .calls
-                .lock()
-                .await
-                .insert(fence.call_id.clone(), cancel.clone());
-            self.state.call_started.notify_waiters();
-            cancel.cancelled().await;
-            self.state.calls.lock().await.remove(&fence.call_id);
+            let result = self.wait_for_blocked_work(&cancel, deadline).await;
+            self.finish_call(&fence.call_id).await;
+            result?;
             return Ok(Response::new(wire::LoadModelResponse {
                 fence: Some(self.response_fence(fence)),
                 outcome: LoadOutcome::Unspecified as i32,
@@ -222,7 +331,16 @@ impl ProviderService for FakeProvider {
             "handle-{}",
             self.state.next_handle.fetch_add(1, Ordering::AcqRel)
         );
-        self.state.handles.lock().await.insert(handle.clone());
+        let mut handles = self.state.handles.lock().await;
+        if handles.len() >= PROVIDER_MAX_CALLS {
+            drop(handles);
+            self.finish_call(&fence.call_id).await;
+            return Err(Status::resource_exhausted(
+                "provider handle capacity exhausted",
+            ));
+        }
+        handles.insert(handle.clone());
+        drop(handles);
         self.state.handle_models.lock().await.insert(
             handle.clone(),
             request.model.as_ref().unwrap().model_id.clone(),
@@ -230,6 +348,7 @@ impl ProviderService for FakeProvider {
         fence.load_handle_id = handle;
         self.state.load_calls.fetch_add(1, Ordering::AcqRel);
         *self.state.last_load.lock().await = Some(request);
+        self.finish_call(&fence.call_id).await;
         Ok(Response::new(wire::LoadModelResponse {
             fence: Some(self.response_fence(fence)),
             outcome: LoadOutcome::Loaded as i32,
@@ -242,6 +361,7 @@ impl ProviderService for FakeProvider {
         request: Request<wire::UnloadModelRequest>,
     ) -> Result<Response<wire::UnloadModelResponse>, Status> {
         let request = request.into_inner();
+        let deadline = Self::call_deadline(request.timeout_ms)?;
         let fence = self.validate_fence(request.fence.as_ref()).await?;
         if self
             .state
@@ -251,6 +371,24 @@ impl ProviderService for FakeProvider {
             .contains(&fence.load_handle_id)
         {
             return Err(Status::resource_exhausted("handle busy"));
+        }
+        let cancel = self.begin_call(&fence).await?;
+        self.state.call_started.notify_waiters();
+        if self.state.block_unload.load(Ordering::Acquire) {
+            let result = self.wait_for_blocked_work(&cancel, deadline).await;
+            self.finish_call(&fence.call_id).await;
+            result?;
+            if cancel.is_cancelled() {
+                return Ok(Response::new(wire::UnloadModelResponse {
+                    fence: Some(self.response_fence(fence)),
+                    outcome: UnloadOutcome::Unspecified as i32,
+                    error: None,
+                }));
+            }
+        }
+        if base::tokio::time::Instant::now() >= deadline {
+            self.finish_call(&fence.call_id).await;
+            return Err(Status::deadline_exceeded("provider-local deadline expired"));
         }
         let removed = self
             .state
@@ -277,6 +415,7 @@ impl ProviderService for FakeProvider {
                 .insert(fence.load_handle_id.clone());
         }
         self.state.unload_calls.fetch_add(1, Ordering::AcqRel);
+        self.finish_call(&fence.call_id).await;
         Ok(Response::new(wire::UnloadModelResponse {
             fence: Some(self.response_fence(fence)),
             outcome: if self
@@ -301,27 +440,34 @@ impl ProviderService for FakeProvider {
         request: Request<wire::InferRequest>,
     ) -> Result<Response<wire::InferResponse>, Status> {
         let request = request.into_inner();
+        let deadline = Self::call_deadline(request.timeout_ms)?;
         let fence = self.validate_fence(request.fence.as_ref()).await?;
         self.acquire_handle(&fence.load_handle_id).await?;
-        let cancel = CancellationToken::new();
-        self.state
-            .calls
-            .lock()
-            .await
-            .insert(fence.call_id.clone(), cancel.clone());
+        let cancel = match self.begin_call(&fence).await {
+            Ok(cancel) => cancel,
+            Err(error) => {
+                self.state
+                    .busy_handles
+                    .lock()
+                    .await
+                    .remove(&fence.load_handle_id);
+                return Err(error);
+            }
+        };
         self.state.infer_calls.fetch_add(1, Ordering::AcqRel);
         self.state.call_started.notify_waiters();
-        if self.state.block_infer.load(Ordering::Acquire) {
-            if self.state.ignore_cancel.load(Ordering::Acquire) {
-                self.state.release.notified().await;
-            } else {
-                cancel.cancelled().await;
-                if self.state.hold_after_cancel.load(Ordering::Acquire) {
-                    self.state.release.notified().await;
-                }
-            }
+        if self.state.block_infer.load(Ordering::Acquire)
+            && let Err(error) = self.wait_for_blocked_work(&cancel, deadline).await
+        {
+            self.finish_call(&fence.call_id).await;
+            self.state
+                .busy_handles
+                .lock()
+                .await
+                .remove(&fence.load_handle_id);
+            return Err(error);
         }
-        self.state.calls.lock().await.remove(&fence.call_id);
+        self.finish_call(&fence.call_id).await;
         self.state
             .busy_handles
             .lock()
@@ -334,7 +480,11 @@ impl ProviderService for FakeProvider {
             } else {
                 CallOutcome::Succeeded as i32
             },
-            tensor_json: RESULT.to_vec(),
+            tensor_json: if self.state.oversized_response.load(Ordering::Acquire) {
+                vec![b'x'; 129]
+            } else {
+                RESULT.to_vec()
+            },
             error: None,
         }))
     }
@@ -344,8 +494,50 @@ impl ProviderService for FakeProvider {
         request: Request<wire::HealthRequest>,
     ) -> Result<Response<wire::HealthResponse>, Status> {
         let request = request.into_inner();
+        let deadline = Self::call_deadline(request.timeout_ms)?;
         let fence = self.validate_fence(request.fence.as_ref()).await?;
         self.acquire_handle(&fence.load_handle_id).await?;
+        let cancel = match self.begin_call(&fence).await {
+            Ok(cancel) => cancel,
+            Err(error) => {
+                self.state
+                    .busy_handles
+                    .lock()
+                    .await
+                    .remove(&fence.load_handle_id);
+                return Err(error);
+            }
+        };
+        self.state.call_started.notify_waiters();
+        if self.state.block_health.load(Ordering::Acquire) {
+            if let Err(error) = self.wait_for_blocked_work(&cancel, deadline).await {
+                self.finish_call(&fence.call_id).await;
+                self.state
+                    .busy_handles
+                    .lock()
+                    .await
+                    .remove(&fence.load_handle_id);
+                return Err(error);
+            }
+            if cancel.is_cancelled() {
+                self.finish_call(&fence.call_id).await;
+                self.state
+                    .busy_handles
+                    .lock()
+                    .await
+                    .remove(&fence.load_handle_id);
+                return Err(Status::cancelled("provider call cancelled"));
+            }
+        }
+        if base::tokio::time::Instant::now() >= deadline {
+            self.finish_call(&fence.call_id).await;
+            self.state
+                .busy_handles
+                .lock()
+                .await
+                .remove(&fence.load_handle_id);
+            return Err(Status::deadline_exceeded("provider-local deadline expired"));
+        }
         self.state
             .busy_handles
             .lock()
@@ -363,6 +555,7 @@ impl ProviderService for FakeProvider {
         } else {
             false
         };
+        self.finish_call(&fence.call_id).await;
         Ok(Response::new(wire::HealthResponse {
             fence: Some(self.response_fence(fence)),
             outcome: if self.state.unhealthy.load(Ordering::Acquire) || unhealthy_model {
@@ -386,7 +579,7 @@ impl ProviderService for FakeProvider {
             .lock()
             .await
             .get(&request.target_call_id)
-            .cloned();
+            .map(|call| call.cancellation.clone());
         let outcome = if let Some(call) = call {
             call.cancel();
             self.state.cancel_seen.notify_waiters();
@@ -412,6 +605,15 @@ struct TestServer {
 impl TestServer {
     async fn start(root: &TestRoot, name: &str, packages_root: PathBuf) -> Self {
         let socket = root.path().join(format!("{name}.sock"));
+        Self::start_at(root, socket, format!("instance-{name}"), packages_root).await
+    }
+
+    async fn start_at(
+        root: &TestRoot,
+        socket: PathBuf,
+        provider_instance_id: String,
+        packages_root: PathBuf,
+    ) -> Self {
         let owned = OwnedUdsListener::bind(&socket).await.unwrap();
         let expected_uid = std::fs::metadata(root.path()).unwrap().uid();
         let incoming = owned.incoming().map(move |result| {
@@ -428,7 +630,7 @@ impl TestServer {
         });
         let state = Arc::new(FakeState::default());
         let service = FakeProvider {
-            provider_instance_id: format!("instance-{name}"),
+            provider_instance_id,
             packages_root,
             state: state.clone(),
         };
@@ -461,6 +663,14 @@ impl TestServer {
         self.join.await.unwrap();
         assert!(!self.socket.exists());
     }
+
+    async fn crash(self) {
+        self.join.abort();
+        let _ = self.join.await;
+        if self.socket.exists() {
+            std::fs::remove_file(&self.socket).unwrap();
+        }
+    }
 }
 
 fn validate_load_artifact(root: &Path, request: &wire::LoadModelRequest) -> Result<(), Status> {
@@ -486,11 +696,33 @@ fn validate_load_artifact(root: &Path, request: &wire::LoadModelRequest) -> Resu
     {
         return Err(Status::invalid_argument("unconfined artifact path"));
     }
-    let path = root
-        .join(&model.model_id)
-        .join(&model.version)
-        .join(&model.revision)
-        .join(relative);
+    let root_metadata = std::fs::symlink_metadata(root)
+        .map_err(|_| Status::invalid_argument("packages root missing"))?;
+    if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
+        return Err(Status::invalid_argument("unsafe packages root"));
+    }
+    let mut components = vec![
+        model.model_id.as_str(),
+        model.version.as_str(),
+        model.revision.as_str(),
+    ];
+    components.extend(relative.components().map(|part| match part {
+        Component::Normal(value) => value.to_str().unwrap_or_default(),
+        _ => unreachable!("relative path was validated above"),
+    }));
+    let mut path = root.to_path_buf();
+    for (index, component) in components.iter().enumerate() {
+        path.push(component);
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|_| Status::invalid_argument("artifact component missing"))?;
+        let final_component = index + 1 == components.len();
+        if metadata.file_type().is_symlink()
+            || (!final_component && !metadata.is_dir())
+            || (final_component && !metadata.is_file())
+        {
+            return Err(Status::invalid_argument("unsafe artifact component"));
+        }
+    }
     let metadata = std::fs::symlink_metadata(&path)
         .map_err(|_| Status::invalid_argument("artifact missing"))?;
     if !metadata.is_file()
@@ -898,6 +1130,123 @@ async fn provider_independently_rejects_unconfined_or_changed_artifacts() {
         client.load_model(symlink_request).await.unwrap_err().code(),
         tonic::Code::InvalidArgument
     );
+    let outside = root.path().join("outside-artifacts");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("model.bin"), b"external-model").unwrap();
+    std::fs::remove_dir_all(installed.installed_path.join("model")).unwrap();
+    symlink(&outside, installed.installed_path.join("model")).unwrap();
+    let mut intermediate_symlink = server.state.last_load.lock().await.clone().unwrap();
+    reset_fence(&mut intermediate_symlink, "load-intermediate-symlink");
+    assert_eq!(
+        client
+            .load_model(intermediate_symlink)
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::InvalidArgument
+    );
+    repository.close().await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn provider_enforces_wire_deadline_without_cancel() {
+    let root = TestRoot::new("provider-deadline");
+    let repository = setup_repository(&root).await;
+    let server = TestServer::start(
+        &root,
+        "provider-deadline",
+        root.path().join("models/packages"),
+    )
+    .await;
+    let provider = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
+        .await
+        .unwrap();
+    let _instance = preload_instance(&repository, &provider).await;
+    let mut request = server.state.last_load.lock().await.clone().unwrap();
+    let mut client = raw_client(&server.socket).await;
+    let session = "deadline-session".to_string();
+    let describe = client
+        .describe(wire::DescribeRequest {
+            protocol_major: 1,
+            min_minor: 0,
+            max_minor: 0,
+            provider_id: PROVIDER_ID.to_string(),
+            client_session_id: session.clone(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    let fence = |call_id: &str, load_handle_id: &str| wire::Fence {
+        provider_id: PROVIDER_ID.to_string(),
+        provider_instance_id: describe.provider_instance_id.clone(),
+        client_session_id: session.clone(),
+        call_id: call_id.to_string(),
+        load_handle_id: load_handle_id.to_string(),
+    };
+    request.fence = Some(fence("provider-local-initial-load", ""));
+    request.timeout_ms = 100;
+    let handle = client
+        .load_model(request.clone())
+        .await
+        .unwrap()
+        .into_inner()
+        .fence
+        .unwrap()
+        .load_handle_id;
+    request.fence = Some(fence("provider-local-load-timeout", ""));
+    request.timeout_ms = 30;
+    server.state.block_load.store(true, Ordering::Release);
+    assert_eq!(
+        client.load_model(request).await.unwrap_err().code(),
+        tonic::Code::DeadlineExceeded
+    );
+    server.state.block_load.store(false, Ordering::Release);
+    server.state.block_infer.store(true, Ordering::Release);
+    assert_eq!(
+        client
+            .infer(wire::InferRequest {
+                fence: Some(fence("provider-local-infer-timeout", &handle)),
+                timeout_ms: 30,
+                input: Some(wire::RuntimeInput {
+                    encoded: vec![1],
+                    media_type: "image/png".to_string(),
+                    width: 1,
+                    height: 1,
+                }),
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::DeadlineExceeded
+    );
+    server.state.block_infer.store(false, Ordering::Release);
+    server.state.block_health.store(true, Ordering::Release);
+    assert_eq!(
+        client
+            .health(wire::HealthRequest {
+                fence: Some(fence("provider-local-health-timeout", &handle)),
+                timeout_ms: 30,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::DeadlineExceeded
+    );
+    server.state.block_health.store(false, Ordering::Release);
+    server.state.block_unload.store(true, Ordering::Release);
+    assert_eq!(
+        client
+            .unload_model(wire::UnloadModelRequest {
+                fence: Some(fence("provider-local-unload-timeout", &handle)),
+                timeout_ms: 30,
+            })
+            .await
+            .unwrap_err()
+            .code(),
+        tonic::Code::DeadlineExceeded
+    );
+    assert!(server.state.calls.lock().await.is_empty());
     repository.close().await;
     server.stop().await;
 }
@@ -1066,39 +1415,100 @@ async fn startup_recovery_without_provider_fails_closed_and_preserves_active_tru
 }
 
 #[tokio::test]
-async fn response_fence_mismatch_makes_handle_stale() {
+async fn response_fence_independently_rejects_every_ephemeral_identity() {
     let root = TestRoot::new("fence");
     let repository = setup_repository(&root).await;
     let server = TestServer::start(&root, "fence", root.path().join("models/packages")).await;
-    let provider = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
-        .await
-        .unwrap();
-    let instance = preload_instance(&repository, &provider).await;
-    server.state.wrong_fence.store(true, Ordering::Release);
-    assert_eq!(
-        instance
-            .health(RuntimeCallContext::local(
-                Duration::from_secs(1),
-                CancellationToken::new(),
-            ))
+    for mismatch in 1..=4 {
+        let provider = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
             .await
-            .unwrap_err()
-            .code,
-        "model_runtime_stale_handle"
-    );
-    assert_eq!(
-        instance
-            .health(RuntimeCallContext::local(
-                Duration::from_secs(1),
-                CancellationToken::new(),
-            ))
-            .await
-            .unwrap_err()
-            .code,
-        "model_runtime_stale_handle"
-    );
+            .unwrap();
+        let instance = preload_instance(&repository, &provider).await;
+        server.state.wrong_fence.store(mismatch, Ordering::Release);
+        assert_eq!(
+            instance
+                .health(RuntimeCallContext::local(
+                    Duration::from_secs(1),
+                    CancellationToken::new(),
+                ))
+                .await
+                .unwrap_err()
+                .code,
+            "model_runtime_stale_handle"
+        );
+        assert_eq!(
+            instance
+                .health(RuntimeCallContext::local(
+                    Duration::from_secs(1),
+                    CancellationToken::new(),
+                ))
+                .await
+                .unwrap_err()
+                .code,
+            "model_runtime_stale_handle"
+        );
+    }
     repository.close().await;
     server.stop().await;
+}
+
+#[tokio::test]
+async fn provider_boot_id_change_stales_old_handles_without_reload_or_truth_rewrite() {
+    let root = TestRoot::new("provider-restart");
+    let repository = setup_repository(&root).await;
+    let packages = root.path().join("models/packages");
+    let server = TestServer::start(&root, "provider-restart", packages.clone()).await;
+    let socket = server.socket.clone();
+    let provider = ExternalRuntimeProvider::connect(config(&root, socket.clone()))
+        .await
+        .unwrap();
+    let old = preload_instance(&repository, &provider).await;
+    server.crash().await;
+    let restarted = TestServer::start_at(
+        &root,
+        socket.clone(),
+        "instance-after-restart".to_string(),
+        packages,
+    )
+    .await;
+    assert!(matches!(
+        old.health(RuntimeCallContext::local(
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap_err()
+        .code,
+        "model_runtime_provider_unavailable" | "model_runtime_stale_handle"
+    ));
+    assert_eq!(
+        old.health(RuntimeCallContext::local(
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap_err()
+        .code,
+        "model_runtime_stale_handle"
+    );
+    let replacement = ExternalRuntimeProvider::connect(config(&root, socket))
+        .await
+        .unwrap();
+    assert_eq!(restarted.state.load_calls.load(Ordering::Acquire), 0);
+    assert_eq!(
+        repository.get(&identity()).await.unwrap().unwrap().state,
+        ModelState::Installed
+    );
+    let fresh = preload_instance(&repository, &replacement).await;
+    fresh
+        .health(RuntimeCallContext::local(
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap();
+    repository.close().await;
+    restarted.stop().await;
 }
 
 #[tokio::test]
@@ -1137,6 +1547,63 @@ async fn replacement_session_stales_old_handle_without_auto_reload() {
         .await
         .unwrap();
     assert_eq!(server.state.load_calls.load(Ordering::Acquire), 2);
+    repository.close().await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn replacement_session_is_busy_until_previous_work_is_terminal() {
+    let root = TestRoot::new("session-drain");
+    let repository = setup_repository(&root).await;
+    let server =
+        TestServer::start(&root, "session-drain", root.path().join("models/packages")).await;
+    let first = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
+        .await
+        .unwrap();
+    let old = preload_instance(&repository, &first).await;
+    server.state.block_infer.store(true, Ordering::Release);
+    server.state.ignore_cancel.store(true, Ordering::Release);
+    let running = {
+        let old = old.clone();
+        base::tokio::spawn(async move {
+            old.infer(
+                RuntimeInput {
+                    encoded: vec![1].into(),
+                    media_type: "image/png".to_string(),
+                    width: 1,
+                    height: 1,
+                },
+                RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+            )
+            .await
+        })
+    };
+    server.state.call_started.notified().await;
+    assert_eq!(
+        ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
+            .await
+            .err()
+            .unwrap()
+            .code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(server.state.calls.lock().await.len(), 1);
+    server.state.release.notify_waiters();
+    assert_eq!(
+        running.await.unwrap().unwrap_err().code,
+        "model_runtime_cancelled"
+    );
+    let replacement = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
+        .await
+        .unwrap();
+    let fresh = preload_instance(&repository, &replacement).await;
+    fresh
+        .health(RuntimeCallContext::local(
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        ))
+        .await
+        .unwrap();
     repository.close().await;
     server.stop().await;
 }
@@ -1204,6 +1671,142 @@ async fn per_handle_lane_fences_health_and_unload_while_infer_is_admitted() {
         ))
         .await
         .unwrap();
+    repository.close().await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn global_execution_saturation_is_busy_while_cancel_control_remains_available() {
+    let root = TestRoot::new("global-capacity");
+    let repository = setup_repository(&root).await;
+    let second = ModelIdentity {
+        model_id: "model-b".to_string(),
+        version: "1".to_string(),
+        revision: "rev-b".to_string(),
+    };
+    install_model(&repository, &root, &second).await;
+    let server = TestServer::start(
+        &root,
+        "global-capacity",
+        root.path().join("models/packages"),
+    )
+    .await;
+    let mut provider_config = config(&root, server.socket.clone());
+    provider_config.max_execution_calls = 1;
+    let provider = ExternalRuntimeProvider::connect(provider_config)
+        .await
+        .unwrap();
+    let first_instance = preload_instance(&repository, &provider).await;
+    let second_installed = repository.get(&second).await.unwrap().unwrap();
+    let second_instance = provider
+        .preload(
+            &second_installed,
+            RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+        )
+        .await
+        .unwrap();
+    server.state.block_infer.store(true, Ordering::Release);
+    let cancellation = CancellationToken::new();
+    let running = {
+        let first_instance = first_instance.clone();
+        let cancellation = cancellation.clone();
+        base::tokio::spawn(async move {
+            first_instance
+                .infer(
+                    RuntimeInput {
+                        encoded: vec![1].into(),
+                        media_type: "image/png".to_string(),
+                        width: 1,
+                        height: 1,
+                    },
+                    RuntimeCallContext::local(Duration::from_secs(2), cancellation),
+                )
+                .await
+        })
+    };
+    server.state.call_started.notified().await;
+    assert_eq!(
+        second_instance
+            .health(RuntimeCallContext::local(
+                Duration::from_secs(1),
+                CancellationToken::new(),
+            ))
+            .await
+            .unwrap_err()
+            .code,
+        "model_runtime_busy"
+    );
+    assert!(server.state.calls.lock().await.len() <= PROVIDER_MAX_CALLS);
+    let cancel_seen = server.state.cancel_seen.notified();
+    cancellation.cancel();
+    base::tokio::time::timeout(Duration::from_secs(1), cancel_seen)
+        .await
+        .unwrap();
+    assert_eq!(
+        running.await.unwrap().unwrap_err().code,
+        "model_runtime_cancelled"
+    );
+    assert!(server.state.calls.lock().await.is_empty());
+    repository.close().await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn oversized_request_and_response_fail_closed_without_truth_mutation() {
+    let root = TestRoot::new("oversized");
+    let repository = setup_repository(&root).await;
+    let server = TestServer::start(&root, "oversized", root.path().join("models/packages")).await;
+    let mut provider_config = config(&root, server.socket.clone());
+    provider_config.max_result_bytes = 128;
+    let provider = ExternalRuntimeProvider::connect(provider_config)
+        .await
+        .unwrap();
+    let instance = preload_instance(&repository, &provider).await;
+    let calls_before = server.state.infer_calls.load(Ordering::Acquire);
+    assert_eq!(
+        instance
+            .infer(
+                RuntimeInput {
+                    encoded: vec![0; 1024 * 1024 + 1].into(),
+                    media_type: "image/png".to_string(),
+                    width: 1,
+                    height: 1,
+                },
+                RuntimeCallContext::local(Duration::from_secs(1), CancellationToken::new()),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "model_runtime_contract_mismatch"
+    );
+    assert_eq!(
+        server.state.infer_calls.load(Ordering::Acquire),
+        calls_before
+    );
+    server
+        .state
+        .oversized_response
+        .store(true, Ordering::Release);
+    assert_eq!(
+        instance
+            .infer(
+                RuntimeInput {
+                    encoded: vec![1].into(),
+                    media_type: "image/png".to_string(),
+                    width: 1,
+                    height: 1,
+                },
+                RuntimeCallContext::local(Duration::from_secs(1), CancellationToken::new()),
+            )
+            .await
+            .unwrap_err()
+            .code,
+        "model_runtime_response_invalid"
+    );
+    assert_eq!(
+        repository.get(&identity()).await.unwrap().unwrap().state,
+        ModelState::Installed
+    );
     repository.close().await;
     server.stop().await;
 }
@@ -1319,6 +1922,193 @@ async fn provider_disconnect_fails_closed_without_rewriting_repository_truth() {
 }
 
 #[tokio::test]
+async fn disconnect_during_each_execution_rpc_never_invents_success() {
+    let load_root = TestRoot::new("disconnect-load");
+    let load_repository = setup_repository(&load_root).await;
+    let load_server = TestServer::start(
+        &load_root,
+        "disconnect-load",
+        load_root.path().join("models/packages"),
+    )
+    .await;
+    let load_state = load_server.state.clone();
+    load_state.block_load.store(true, Ordering::Release);
+    let load_provider =
+        ExternalRuntimeProvider::connect(config(&load_root, load_server.socket.clone()))
+            .await
+            .unwrap();
+    let load_manager = ModelManager::open(
+        load_repository.clone(),
+        vec![Arc::new(load_provider) as Arc<dyn RuntimeProvider>],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let load_manager_call = load_manager.clone();
+    let load = base::tokio::spawn(async move {
+        load_manager_call
+            .preload_with_context(
+                &identity(),
+                2,
+                RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+            )
+            .await
+    });
+    load_state.call_started.notified().await;
+    load_server.crash().await;
+    assert_eq!(
+        load.await.unwrap().err().unwrap().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert!(!matches!(
+        load_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Ready | ModelState::Active
+    ));
+    drop(load_manager);
+    load_repository.close().await;
+
+    let infer_root = TestRoot::new("disconnect-infer");
+    let infer_repository = setup_repository(&infer_root).await;
+    let infer_server = TestServer::start(
+        &infer_root,
+        "disconnect-infer",
+        infer_root.path().join("models/packages"),
+    )
+    .await;
+    let infer_state = infer_server.state.clone();
+    let infer_provider =
+        ExternalRuntimeProvider::connect(config(&infer_root, infer_server.socket.clone()))
+            .await
+            .unwrap();
+    let infer_instance = preload_instance(&infer_repository, &infer_provider).await;
+    infer_state.block_infer.store(true, Ordering::Release);
+    let infer = base::tokio::spawn(async move {
+        infer_instance
+            .infer(
+                RuntimeInput {
+                    encoded: vec![1].into(),
+                    media_type: "image/png".to_string(),
+                    width: 1,
+                    height: 1,
+                },
+                RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+            )
+            .await
+    });
+    infer_state.call_started.notified().await;
+    infer_server.crash().await;
+    assert_eq!(
+        infer.await.unwrap().unwrap_err().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(
+        infer_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Installed
+    );
+    infer_repository.close().await;
+
+    let health_root = TestRoot::new("disconnect-health");
+    let health_repository = setup_repository(&health_root).await;
+    let health_server = TestServer::start(
+        &health_root,
+        "disconnect-health",
+        health_root.path().join("models/packages"),
+    )
+    .await;
+    let health_state = health_server.state.clone();
+    let health_provider =
+        ExternalRuntimeProvider::connect(config(&health_root, health_server.socket.clone()))
+            .await
+            .unwrap();
+    let health_instance = preload_instance(&health_repository, &health_provider).await;
+    health_state.block_health.store(true, Ordering::Release);
+    let health = base::tokio::spawn(async move {
+        health_instance
+            .health(RuntimeCallContext::local(
+                Duration::from_secs(2),
+                CancellationToken::new(),
+            ))
+            .await
+    });
+    health_state.call_started.notified().await;
+    health_server.crash().await;
+    assert_eq!(
+        health.await.unwrap().unwrap_err().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(
+        health_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Installed
+    );
+    health_repository.close().await;
+
+    let unload_root = TestRoot::new("disconnect-unload");
+    let unload_repository = setup_repository(&unload_root).await;
+    let unload_server = TestServer::start(
+        &unload_root,
+        "disconnect-unload",
+        unload_root.path().join("models/packages"),
+    )
+    .await;
+    let unload_state = unload_server.state.clone();
+    let unload_provider =
+        ExternalRuntimeProvider::connect(config(&unload_root, unload_server.socket.clone()))
+            .await
+            .unwrap();
+    let unload_manager = ModelManager::open(
+        unload_repository.clone(),
+        vec![Arc::new(unload_provider) as Arc<dyn RuntimeProvider>],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    unload_manager.preload(&identity(), 2).await.unwrap();
+    unload_state.block_unload.store(true, Ordering::Release);
+    let unload_manager_call = unload_manager.clone();
+    let unload = base::tokio::spawn(async move {
+        unload_manager_call
+            .unload_with_context(
+                &identity(),
+                3,
+                RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+            )
+            .await
+    });
+    unload_state.call_started.notified().await;
+    unload_server.crash().await;
+    assert_eq!(
+        unload.await.unwrap().unwrap_err().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(
+        unload_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Ready
+    );
+    drop(unload_manager);
+    unload_repository.close().await;
+}
+
+#[tokio::test]
 async fn cancel_ack_is_not_completion_and_original_call_is_drained() {
     let root = TestRoot::new("cancel-drain");
     let repository = setup_repository(&root).await;
@@ -1423,19 +2213,30 @@ async fn ignored_cancel_fences_session_but_preserves_deadline_cause() {
     let instance = preload_instance(&repository, &provider).await;
     server.state.block_infer.store(true, Ordering::Release);
     server.state.ignore_cancel.store(true, Ordering::Release);
-    let error = instance
-        .infer(
-            RuntimeInput {
-                encoded: vec![1].into(),
-                media_type: "image/png".to_string(),
-                width: 1,
-                height: 1,
-            },
-            RuntimeCallContext::local(Duration::from_millis(30), CancellationToken::new()),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(error.code, "model_runtime_deadline_exceeded");
+    let cancellation = CancellationToken::new();
+    let call = {
+        let instance = instance.clone();
+        let cancellation = cancellation.clone();
+        base::tokio::spawn(async move {
+            instance
+                .infer(
+                    RuntimeInput {
+                        encoded: vec![1].into(),
+                        media_type: "image/png".to_string(),
+                        width: 1,
+                        height: 1,
+                    },
+                    RuntimeCallContext::local(Duration::from_secs(2), cancellation),
+                )
+                .await
+        })
+    };
+    server.state.call_started.notified().await;
+    cancellation.cancel();
+    assert_eq!(
+        call.await.unwrap().unwrap_err().code,
+        "model_runtime_cancelled"
+    );
     assert_eq!(
         instance
             .health(RuntimeCallContext::local(
