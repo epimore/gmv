@@ -96,6 +96,12 @@ struct ModelGeneration {
     loaded: Arc<LoadedModel>,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoadFailureEvidence {
+    IntrinsicModel,
+    RuntimeAvailability,
+}
+
 #[derive(Default)]
 struct CapabilitySlot {
     active: Option<Arc<ModelGeneration>>,
@@ -441,8 +447,7 @@ impl ModelManager {
         let execution_contract = match load_installed_execution_contract(&model) {
             Ok(contract) => contract,
             Err(error) => {
-                self.repository
-                    .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                self.record_load_failure(identity, &error, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
@@ -454,16 +459,14 @@ impl ModelManager {
         {
             Ok(instance) => instance,
             Err(error) => {
-                self.repository
-                    .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                self.record_load_failure(identity, &error, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
         };
         if let Err(error) = validate_instance(&model, &instance) {
             self.cleanup_rejected_instance(&instance).await;
-            self.repository
-                .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+            self.record_load_failure(identity, &error, now_epoch_ms)
                 .await?;
             return Err(error);
         }
@@ -475,8 +478,7 @@ impl ModelManager {
             .await
         {
             self.cleanup_rejected_instance(&instance).await;
-            self.repository
-                .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+            self.record_load_failure(identity, &error, now_epoch_ms)
                 .await?;
             return Err(error);
         }
@@ -485,8 +487,7 @@ impl ModelManager {
             .await
         {
             self.cleanup_rejected_instance(&instance).await;
-            self.repository
-                .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+            self.record_load_failure(identity, &error, now_epoch_ms)
                 .await?;
             return Err(error);
         }
@@ -934,8 +935,7 @@ impl ModelManager {
             let execution_contract = match load_installed_execution_contract(&model) {
                 Ok(contract) => contract,
                 Err(error) => {
-                    self.repository
-                        .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                    self.record_load_failure(identity, &error, now_epoch_ms)
                         .await?;
                     return Err(error);
                 }
@@ -946,16 +946,14 @@ impl ModelManager {
             {
                 Ok(instance) => instance,
                 Err(error) => {
-                    self.repository
-                        .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                    self.record_load_failure(identity, &error, now_epoch_ms)
                         .await?;
                     return Err(error);
                 }
             };
             if let Err(error) = validate_instance(&model, &instance) {
                 self.cleanup_rejected_instance(&instance).await;
-                self.repository
-                    .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                self.record_load_failure(identity, &error, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
@@ -964,15 +962,13 @@ impl ModelManager {
                 .await
             {
                 self.cleanup_rejected_instance(&instance).await;
-                self.repository
-                    .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                self.record_load_failure(identity, &error, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
             if let Err(error) = instance.health(self.runtime_context(HEALTH_TIMEOUT)).await {
                 self.cleanup_rejected_instance(&instance).await;
-                self.repository
-                    .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                self.record_load_failure(identity, &error, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
@@ -1064,6 +1060,20 @@ impl ModelManager {
                 error.code
             );
         }
+    }
+
+    async fn record_load_failure(
+        &self,
+        identity: &ModelIdentity,
+        error: &ModelError,
+        now_epoch_ms: i64,
+    ) -> ModelResult<()> {
+        if classify_load_failure(error) == LoadFailureEvidence::IntrinsicModel {
+            self.repository
+                .set_state(identity, ModelState::Failed, None, now_epoch_ms)
+                .await?;
+        }
+        Ok(())
     }
 
     pub async fn retire_previous(
@@ -1357,6 +1367,22 @@ fn slot_capabilities(
         .collect()
 }
 
+fn classify_load_failure(error: &ModelError) -> LoadFailureEvidence {
+    match error.code {
+        "invalid_model_runtime_config"
+        | "model_runtime_unavailable"
+        | "model_runtime_provider_unavailable"
+        | "model_runtime_protocol_mismatch"
+        | "model_runtime_protocol_violation"
+        | "model_runtime_stale_handle"
+        | "model_runtime_busy"
+        | "model_runtime_deadline_exceeded"
+        | "model_runtime_cancelled"
+        | "model_runtime_response_invalid" => LoadFailureEvidence::RuntimeAvailability,
+        _ => LoadFailureEvidence::IntrinsicModel,
+    }
+}
+
 fn validate_instance(model: &InstalledModel, instance: &Arc<dyn ModelInstance>) -> ModelResult<()> {
     if instance.identity() != &model.identity
         || instance.runtime() != model.runtime
@@ -1429,4 +1455,39 @@ fn current_epoch_ms() -> ModelResult<i64> {
         .as_millis();
     i64::try_from(millis)
         .map_err(|_| ModelError::new("model_time_invalid", "current time is too large"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LoadFailureEvidence, ModelError, classify_load_failure};
+
+    #[test]
+    fn load_failure_classification_separates_runtime_availability_from_model_evidence() {
+        for code in [
+            "model_runtime_provider_unavailable",
+            "model_runtime_stale_handle",
+            "model_runtime_busy",
+            "model_runtime_deadline_exceeded",
+            "model_runtime_cancelled",
+            "model_runtime_protocol_mismatch",
+            "model_runtime_protocol_violation",
+            "model_runtime_response_invalid",
+        ] {
+            assert!(matches!(
+                classify_load_failure(&ModelError::new(code, "test")),
+                LoadFailureEvidence::RuntimeAvailability
+            ));
+        }
+        for code in [
+            "model_runtime_contract_mismatch",
+            "model_preload_failed",
+            "model_self_test_failed",
+            "model_health_failed",
+        ] {
+            assert!(matches!(
+                classify_load_failure(&ModelError::new(code, "test")),
+                LoadFailureEvidence::IntrinsicModel
+            ));
+        }
+    }
 }

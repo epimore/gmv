@@ -103,6 +103,7 @@ struct FakeState {
     load_calls: AtomicUsize,
     unload_calls: AtomicUsize,
     infer_calls: AtomicUsize,
+    health_calls: AtomicUsize,
     block_load: AtomicBool,
     block_infer: AtomicBool,
     block_health: AtomicBool,
@@ -508,6 +509,7 @@ impl ProviderService for FakeProvider {
                 return Err(error);
             }
         };
+        self.state.health_calls.fetch_add(1, Ordering::AcqRel);
         self.state.call_started.notify_waiters();
         if self.state.block_health.load(Ordering::Acquire) {
             if let Err(error) = self.wait_for_blocked_work(&cancel, deadline).await {
@@ -1960,15 +1962,15 @@ async fn disconnect_during_each_execution_rpc_never_invents_success() {
         load.await.unwrap().err().unwrap().code,
         "model_runtime_provider_unavailable"
     );
-    assert!(!matches!(
+    assert_eq!(
         load_repository
             .get(&identity())
             .await
             .unwrap()
             .unwrap()
             .state,
-        ModelState::Ready | ModelState::Active
-    ));
+        ModelState::Installed
+    );
     drop(load_manager);
     load_repository.close().await;
 
@@ -2106,6 +2108,126 @@ async fn disconnect_during_each_execution_rpc_never_invents_success() {
     );
     drop(unload_manager);
     unload_repository.close().await;
+}
+
+#[tokio::test]
+async fn preload_validation_transport_loss_preserves_installed_truth() {
+    let self_test_root = TestRoot::new("preload-self-test-disconnect");
+    let self_test_repository = setup_repository(&self_test_root).await;
+    let self_test_server = TestServer::start(
+        &self_test_root,
+        "preload-self-test-disconnect",
+        self_test_root.path().join("models/packages"),
+    )
+    .await;
+    let self_test_state = self_test_server.state.clone();
+    self_test_state.block_infer.store(true, Ordering::Release);
+    let self_test_provider =
+        ExternalRuntimeProvider::connect(config(&self_test_root, self_test_server.socket.clone()))
+            .await
+            .unwrap();
+    let self_test_manager = ModelManager::open(
+        self_test_repository.clone(),
+        vec![Arc::new(self_test_provider) as Arc<dyn RuntimeProvider>],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let self_test_call = {
+        let manager = self_test_manager.clone();
+        base::tokio::spawn(async move {
+            manager
+                .preload_with_context(
+                    &identity(),
+                    2,
+                    RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+                )
+                .await
+        })
+    };
+    for _ in 0..100 {
+        if self_test_state.infer_calls.load(Ordering::Acquire) > 0 {
+            break;
+        }
+        base::tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(self_test_state.load_calls.load(Ordering::Acquire), 1);
+    assert_eq!(self_test_state.infer_calls.load(Ordering::Acquire), 1);
+    self_test_server.crash().await;
+    assert_eq!(
+        self_test_call.await.unwrap().unwrap_err().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(
+        self_test_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Installed
+    );
+    drop(self_test_manager);
+    self_test_repository.close().await;
+
+    let health_root = TestRoot::new("preload-health-disconnect");
+    let health_repository = setup_repository(&health_root).await;
+    let health_server = TestServer::start(
+        &health_root,
+        "preload-health-disconnect",
+        health_root.path().join("models/packages"),
+    )
+    .await;
+    let health_state = health_server.state.clone();
+    health_state.block_health.store(true, Ordering::Release);
+    let health_provider =
+        ExternalRuntimeProvider::connect(config(&health_root, health_server.socket.clone()))
+            .await
+            .unwrap();
+    let health_manager = ModelManager::open(
+        health_repository.clone(),
+        vec![Arc::new(health_provider) as Arc<dyn RuntimeProvider>],
+        ModelManagerConfig::default(),
+    )
+    .await
+    .unwrap();
+    let health_call = {
+        let manager = health_manager.clone();
+        base::tokio::spawn(async move {
+            manager
+                .preload_with_context(
+                    &identity(),
+                    2,
+                    RuntimeCallContext::local(Duration::from_secs(2), CancellationToken::new()),
+                )
+                .await
+        })
+    };
+    for _ in 0..100 {
+        if health_state.health_calls.load(Ordering::Acquire) > 0 {
+            break;
+        }
+        base::tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(health_state.load_calls.load(Ordering::Acquire), 1);
+    assert_eq!(health_state.infer_calls.load(Ordering::Acquire), 1);
+    assert_eq!(health_state.health_calls.load(Ordering::Acquire), 1);
+    health_server.crash().await;
+    assert_eq!(
+        health_call.await.unwrap().unwrap_err().code,
+        "model_runtime_provider_unavailable"
+    );
+    assert_eq!(
+        health_repository
+            .get(&identity())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ModelState::Installed
+    );
+    drop(health_manager);
+    health_repository.close().await;
 }
 
 #[tokio::test]
