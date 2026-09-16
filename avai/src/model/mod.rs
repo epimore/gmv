@@ -1,9 +1,13 @@
+#[cfg(unix)]
+mod external_provider;
 mod manager;
 mod onnx_cpu;
 mod package;
 mod repository;
 mod runtime;
 
+#[cfg(unix)]
+pub use external_provider::{ExternalProviderConfig, ExternalRuntimeProvider};
 pub use manager::{
     ActiveModel, HealthReconcile, ModelManager, ModelManagerConfig, ModelObservation, ModelStatus,
     RecoveredCapability,

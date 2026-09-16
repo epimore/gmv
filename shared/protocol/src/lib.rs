@@ -35,6 +35,12 @@ pub mod avai {
             tonic::include_proto!("gmv.avai.model_management.v1");
         }
     }
+
+    pub mod external_provider {
+        pub mod v1 {
+            tonic::include_proto!("gmv.avai.external_provider.v1");
+        }
+    }
 }
 
 pub mod gmv_center_agent {
