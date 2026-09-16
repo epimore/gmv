@@ -37,6 +37,7 @@ use prost::Message;
 use crate::model::{
     ActiveModel, ModelError, ModelIdentity, ModelManager, RuntimeCallContext, RuntimeInput,
 };
+use crate::observability::{ActualModelIdentity, Observability, TaskTerminalOutcome};
 use crate::source::{ResolvedImage, SourceError, SourcePolicy, SourceResolver};
 
 const BUILTIN_CAPABILITY: &str = "image.metadata.inspect";
@@ -135,13 +136,33 @@ impl TaskManager {
         model_manager: Option<ModelManager>,
         runtime: &GlobalRuntime,
     ) -> Result<Self, TaskError> {
+        Self::open_with_model_manager_and_observability(
+            identity,
+            capabilities,
+            config,
+            model_manager,
+            runtime,
+            Arc::new(Observability::new()),
+        )
+        .await
+    }
+
+    pub async fn open_with_model_manager_and_observability(
+        identity: NodeIdentity,
+        capabilities: Vec<String>,
+        config: TaskManagerConfig,
+        model_manager: Option<ModelManager>,
+        runtime: &GlobalRuntime,
+        observability: Arc<Observability>,
+    ) -> Result<Self, TaskError> {
         if config.queue_size == 0 || config.worker_count == 0 || config.max_result_bytes == 0 {
             return Err(TaskError::new(
                 "invalid_task_config",
                 "queue_size, worker_count and max_result_bytes must be greater than zero",
             ));
         }
-        let repository = TaskRepository::open(&config.database_path).await?;
+        let repository =
+            TaskRepository::open_with_observability(&config.database_path, observability).await?;
         repository.recover_interrupted().await?;
         let pending = repository.pending_task_ids().await?;
         let resolver = SourceResolver::new(identity.clone(), config.source_policy, runtime)
@@ -623,6 +644,20 @@ async fn process_task(
     else {
         return Ok(None);
     };
+    base::log::debug!(
+        "AVAI task dispatched: action=ai_task, stage=dispatch, outcome=succeeded, task_id={}, capability={}, requested_model={}, actual_model={}, generation={}",
+        task_id,
+        record.capability,
+        request
+            .requested_model
+            .as_ref()
+            .map(model_ref_value)
+            .unwrap_or_else(|| "default".to_string()),
+        captured.binding().metric_identity().metric_value(),
+        captured
+            .generation()
+            .map_or_else(|| "none".to_string(), |value| value.to_string())
+    );
     let task_cancel = CancellationToken::new();
     context
         .task_cancellations
@@ -1136,6 +1171,15 @@ impl ExecutionBinding {
             && self.result_schema_name == manifest.result_schema
             && self.result_schema_version == manifest.result_schema_version
     }
+
+    fn metric_identity(&self) -> ActualModelIdentity {
+        ActualModelIdentity {
+            model_id: self.model_id.clone(),
+            version: self.model_version.clone(),
+            revision: self.revision.clone(),
+            runtime: self.runtime.clone(),
+        }
+    }
 }
 
 enum CapturedExecution {
@@ -1168,6 +1212,13 @@ impl CapturedExecution {
     fn binding(&self) -> &ExecutionBinding {
         match self {
             Self::Builtin { binding, .. } | Self::Managed { binding, .. } => binding,
+        }
+    }
+
+    fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Builtin { .. } => None,
+            Self::Managed { model, .. } => Some(model.generation()),
         }
     }
 
@@ -1256,6 +1307,7 @@ fn model_task_error(error: ModelError) -> TaskError {
 #[derive(Clone)]
 struct TaskRepository {
     pool: SqlitePool,
+    observability: Arc<Observability>,
 }
 
 struct InsertOutcome {
@@ -1327,7 +1379,15 @@ impl TaskRepository {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn open(path: &Path) -> Result<Self, TaskError> {
+        Self::open_with_observability(path, Arc::new(Observability::new())).await
+    }
+
+    async fn open_with_observability(
+        path: &Path,
+        observability: Arc<Observability>,
+    ) -> Result<Self, TaskError> {
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -1379,7 +1439,10 @@ impl TaskRepository {
                 .await
                 .map_err(|error| TaskError::internal("upgrade_execution_binding", error))?;
         }
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            observability,
+        })
     }
 
     async fn recover_interrupted(&self) -> Result<(), TaskError> {
@@ -1546,7 +1609,11 @@ impl TaskRepository {
         if updated.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get(task_id).await
+        let record = self.get(task_id).await?;
+        if let Some(record) = &record {
+            self.observe_terminal(record, TaskTerminalOutcome::Succeeded);
+        }
+        Ok(record)
     }
 
     async fn fail_pending(
@@ -1595,11 +1662,15 @@ impl TaskRepository {
         if updated.rows_affected() == 0 {
             return Ok(None);
         }
-        self.get(task_id).await
+        let record = self.get(task_id).await?;
+        if let Some(record) = &record {
+            self.observe_terminal(record, TaskTerminalOutcome::Failed);
+        }
+        Ok(record)
     }
 
     async fn cancel(&self, task_id: &str, now_ms: i64) -> Result<Option<TaskRecord>, TaskError> {
-        base_db::sqlx::query(
+        let updated = base_db::sqlx::query(
             "UPDATE avai_task SET state=?, updated_at_ms=?, terminal_at_ms=? WHERE task_id=? AND state IN (?,?)",
         )
         .bind(AiTaskState::Cancelled as i32)
@@ -1611,7 +1682,43 @@ impl TaskRepository {
         .execute(&self.pool)
         .await
         .map_err(|error| TaskError::internal("cancel_task", error))?;
-        self.get(task_id).await
+        if updated.rows_affected() == 0 {
+            return Ok(None);
+        }
+        let record = self.get(task_id).await?;
+        if let Some(record) = &record {
+            self.observe_terminal(record, TaskTerminalOutcome::Cancelled);
+        }
+        Ok(record)
+    }
+
+    fn observe_terminal(&self, record: &TaskRecord, outcome: TaskTerminalOutcome) {
+        let binding = record
+            .execution_binding
+            .as_deref()
+            .and_then(|bytes| ExecutionBinding::decode(bytes).ok());
+        let actual_model = binding.as_ref().map(ExecutionBinding::metric_identity);
+        self.observability
+            .observe_task_terminal(actual_model.clone(), outcome);
+        let requested_model = CreateTaskRequest::decode(record.request.as_slice())
+            .ok()
+            .and_then(|request| request.requested_model)
+            .as_ref()
+            .map(model_ref_value)
+            .unwrap_or_else(|| "default".to_string());
+        let actual_model = actual_model
+            .as_ref()
+            .map(ActualModelIdentity::metric_value)
+            .unwrap_or_else(|| "none".to_string());
+        base::log::debug!(
+            "AVAI task terminal: action=ai_task, stage=terminal, outcome={}, task_id={}, capability={}, requested_model={}, actual_model={}, generation=none, error_code={}",
+            terminal_outcome_name(outcome),
+            record.task_id,
+            record.capability,
+            requested_model,
+            actual_model,
+            record.error_code.as_deref().unwrap_or("none")
+        );
     }
 
     async fn close(&self) {
@@ -1785,6 +1892,21 @@ fn state_name(state: AiTaskState) -> &'static str {
         AiTaskState::Failed => "failed",
         AiTaskState::Cancelled => "cancelled",
     }
+}
+
+fn terminal_outcome_name(outcome: TaskTerminalOutcome) -> &'static str {
+    match outcome {
+        TaskTerminalOutcome::Succeeded => "succeeded",
+        TaskTerminalOutcome::Failed => "failed",
+        TaskTerminalOutcome::Cancelled => "cancelled",
+    }
+}
+
+fn model_ref_value(model: &ModelRef) -> String {
+    format!(
+        "{}@{}#{}:{}",
+        model.model_id, model.version, model.revision, model.runtime
+    )
 }
 
 fn now_epoch_ms() -> i64 {

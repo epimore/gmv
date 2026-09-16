@@ -161,6 +161,11 @@ impl ExternalRuntimeProvider {
         if execution_limit == 0 || max_input_bytes == 0 || max_result_bytes == 0 {
             return Err(protocol_mismatch());
         }
+        base::log::info!(
+            "External provider connected: action=model_runtime, stage=connect, outcome=succeeded, runtime={}, provider={}",
+            config.runtime_id,
+            config.provider_id
+        );
         Ok(Self {
             config: config.clone(),
             session: Arc::new(Session {
@@ -257,7 +262,8 @@ impl RuntimeProvider for ExternalRuntimeProvider {
             self.session
                 .validate_fence(response.fence.as_ref(), &call_id, handle)?;
             if !is_safe_id(handle) {
-                self.session.fenced.store(true, Ordering::Release);
+                self.session
+                    .mark_fenced("load", "model_runtime_protocol_violation");
                 return Err(ModelError::new(
                     "model_runtime_protocol_violation",
                     "external provider returned an invalid load handle",
@@ -552,6 +558,28 @@ impl ExternalModelInstance {
 }
 
 impl Session {
+    fn mark_fenced(&self, stage: &str, error_code: &str) {
+        if self
+            .fenced
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            base::log::warn!(
+                "External provider session fenced: action=model_runtime, stage={}, outcome=failed, provider={}, error_code={}",
+                stage,
+                self.provider_id,
+                error_code
+            );
+        } else {
+            base::log::debug!(
+                "External provider session remains fenced: action=model_runtime, stage={}, outcome=replayed, provider={}, error_code={}",
+                stage,
+                self.provider_id,
+                error_code
+            );
+        }
+    }
+
     fn client(&self) -> AvaiExternalRuntimeProviderClient<Channel> {
         rpc_client(
             self.channel.clone(),
@@ -597,7 +625,7 @@ impl Session {
         if valid {
             Ok(())
         } else {
-            self.fenced.store(true, Ordering::Release);
+            self.mark_fenced("validate_fence", "model_runtime_stale_handle");
             Err(ModelError::new(
                 "model_runtime_stale_handle",
                 "external provider response identity mismatch",
@@ -636,14 +664,14 @@ impl Session {
             .await
             .is_err()
         {
-            self.fenced.store(true, Ordering::Release);
+            self.mark_fenced("cancel_drain", "model_runtime_stale_handle");
         }
         Err(primary)
     }
 
     async fn cancel_call(&self, target_call_id: &str, load_handle_id: &str) {
         let Ok(_permit) = self.control.clone().try_acquire_owned() else {
-            self.fenced.store(true, Ordering::Release);
+            self.mark_fenced("cancel_admission", "model_runtime_stale_handle");
             return;
         };
         let call_id = new_call_id();
@@ -655,7 +683,7 @@ impl Session {
         let response =
             base::tokio::time::timeout(self.cancel_rpc_budget, client.cancel(request)).await;
         let Ok(Ok(response)) = response else {
-            self.fenced.store(true, Ordering::Release);
+            self.mark_fenced("cancel", "model_runtime_stale_handle");
             return;
         };
         let response = response.into_inner();
@@ -667,19 +695,20 @@ impl Session {
                 Ok(CancelOutcome::Accepted | CancelOutcome::AlreadyTerminal)
             )
         {
-            self.fenced.store(true, Ordering::Release);
+            self.mark_fenced("cancel_response", "model_runtime_stale_handle");
         }
     }
 
     fn map_transport<T>(&self, response: Result<Response<T>, Status>) -> ModelResult<Response<T>> {
         response.map_err(|status| {
-            self.fenced.store(true, Ordering::Release);
             if status.code() == tonic::Code::FailedPrecondition {
+                self.mark_fenced("transport", "model_runtime_stale_handle");
                 ModelError::new(
                     "model_runtime_stale_handle",
                     "external provider rejected a stale session or handle",
                 )
             } else {
+                self.mark_fenced("transport", "model_runtime_provider_unavailable");
                 provider_unavailable()
             }
         })

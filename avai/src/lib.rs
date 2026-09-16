@@ -3,6 +3,7 @@ extern crate self as avai;
 pub mod guard_integration;
 pub mod model;
 pub mod model_management;
+pub mod observability;
 pub mod source;
 pub mod task;
 pub mod upload;

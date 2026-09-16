@@ -14,9 +14,11 @@ use avai::model::{
     RuntimeCallContext, RuntimeInput, RuntimeProvider, model_package_signing_payload,
     verify_package,
 };
+use avai::observability::Observability;
 use base::{
     base64::Engine,
     sha2::{Digest, Sha256},
+    tokio_util::sync::CancellationToken,
 };
 use base_db::{
     dbx::{DatabasePoolConfig, sqlitex::SqliteConnectionConfig},
@@ -161,6 +163,94 @@ async fn repository_with_models(root: &TestRoot) -> ModelRepository {
         repository.install(&package, 1).await.unwrap();
     }
     repository
+}
+
+#[tokio::test]
+async fn observability_reconstructs_exact_repository_and_loaded_truth() {
+    let root = TestRoot::new("observability-reconstruction");
+    let repository = repository_with_models(&root).await;
+    assert_eq!(repository.count_models().await.unwrap(), 2);
+    let duplicate_root = root.path().join("source-rev-a");
+    let duplicate = verify_package(&duplicate_root, &policy()).unwrap();
+    repository.install(&duplicate, 2).await.unwrap();
+    assert_eq!(repository.count_models().await.unwrap(), 2);
+
+    let telemetry = Arc::new(Observability::new());
+    telemetry.set_installed_models(repository.count_models().await.unwrap());
+    let manager = ModelManager::open_with_observability(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior {
+                fail_self_test_model: Some("model-b".to_string()),
+                ..Default::default()
+            },
+        ))],
+        ModelManagerConfig::default(),
+        CancellationToken::new(),
+        telemetry.clone(),
+    )
+    .await
+    .unwrap();
+    let model_a = identity("model-a", "1", "rev-a");
+    let model_b = identity("model-b", "2", "rev-b");
+    manager.preload(&model_a, 3).await.unwrap();
+    assert_eq!(telemetry.snapshot()["ready_models"], "1");
+    assert_eq!(telemetry.snapshot()["preload_seconds_count"], "1");
+    manager.preload(&model_a, 3).await.unwrap();
+    assert_eq!(telemetry.snapshot()["preload_seconds_count"], "1");
+    assert_eq!(
+        manager.preload(&model_b, 4).await.unwrap_err().code,
+        "model_self_test_failed"
+    );
+    let snapshot = telemetry.snapshot();
+    assert_eq!(snapshot["installed_models"], "2");
+    assert_eq!(snapshot["ready_models"], "1");
+    assert_eq!(snapshot["preload_seconds_count"], "2");
+    assert_eq!(snapshot["self_test_failures_total"], "1");
+    manager.activate(&model_a, 5).await.unwrap();
+    manager.activate(&model_a, 5).await.unwrap();
+    assert_eq!(telemetry.snapshot()["activation_failures_total"], "0");
+    assert_eq!(
+        manager.activate(&model_b, 6).await.unwrap_err().code,
+        "model_not_ready"
+    );
+    assert_eq!(telemetry.snapshot()["activation_failures_total"], "1");
+    let first_epoch = telemetry.snapshot()["telemetry_process_start_epoch_ms"]
+        .parse::<u64>()
+        .unwrap();
+    drop(manager);
+    std::thread::sleep(Duration::from_millis(2));
+    let restarted_telemetry = Arc::new(Observability::new());
+    restarted_telemetry.set_installed_models(repository.count_models().await.unwrap());
+    let restarted = ModelManager::open_with_observability(
+        repository.clone(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
+        ModelManagerConfig::default(),
+        CancellationToken::new(),
+        restarted_telemetry.clone(),
+    )
+    .await
+    .unwrap();
+    let restarted_snapshot = restarted_telemetry.snapshot();
+    assert_eq!(restarted_snapshot["installed_models"], "2");
+    assert_eq!(restarted_snapshot["ready_models"], "1");
+    assert_eq!(restarted_snapshot["self_test_failures_total"], "0");
+    assert_eq!(restarted_snapshot["activation_failures_total"], "0");
+    assert!(
+        restarted_snapshot["telemetry_process_start_epoch_ms"]
+            .parse::<u64>()
+            .unwrap()
+            > first_epoch
+    );
+    assert_eq!(
+        restarted.capture(CAPABILITY).await.unwrap().identity(),
+        &model_a
+    );
+    repository.close().await;
 }
 
 pub(crate) async fn install_test_model(
@@ -829,10 +919,13 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
     let root = TestRoot::new("health-rollback");
     let repository = repository_with_models(&root).await;
     let fake = FakeRuntimeProvider::new("fake", FakeRuntimeBehavior::default());
-    let manager = ModelManager::open(
+    let telemetry = Arc::new(Observability::new());
+    let manager = ModelManager::open_with_observability(
         repository.clone(),
         vec![Arc::new(fake.clone())],
         ModelManagerConfig::default(),
+        CancellationToken::new(),
+        telemetry.clone(),
     )
     .await
     .unwrap();
@@ -868,6 +961,8 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
         ModelState::Failed
     );
     assert!(!manager.active_identities().await.contains(&model_b));
+    assert_eq!(telemetry.snapshot()["ready_models"], "1");
+    assert!(!manager.observation(&model_b).await.loaded);
     drop(manager);
     let restarted = ModelManager::open(
         repository.clone(),

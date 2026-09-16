@@ -16,6 +16,7 @@ use avai::{
         PackagePolicy, RuntimeCallContext, RuntimeInput, RuntimeProvider,
         model_package_signing_payload, verify_package,
     },
+    observability::Observability,
     source::SourcePolicy,
     task::{TaskManager, TaskManagerConfig},
 };
@@ -1010,6 +1011,44 @@ async fn real_uds_handshake_enforces_socket_and_peer_credentials() {
     assert!(
         server.socket.exists(),
         "AVAI client must not unlink the socket"
+    );
+    repository.close().await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn telemetry_snapshot_performs_zero_external_provider_calls() {
+    let root = TestRoot::new("passive-telemetry");
+    let repository = setup_repository(&root).await;
+    let server = TestServer::start(
+        &root,
+        "passive-telemetry",
+        root.path().join("models/packages"),
+    )
+    .await;
+    let provider = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
+        .await
+        .unwrap();
+    let _instance = preload_instance(&repository, &provider).await;
+    let before = (
+        server.state.load_calls.load(Ordering::Acquire),
+        server.state.unload_calls.load(Ordering::Acquire),
+        server.state.infer_calls.load(Ordering::Acquire),
+        server.state.health_calls.load(Ordering::Acquire),
+    );
+    let telemetry = Observability::new();
+    for _ in 0..10 {
+        let snapshot = telemetry.snapshot();
+        assert_eq!(snapshot["preload_seconds_count"], "0");
+    }
+    assert_eq!(
+        before,
+        (
+            server.state.load_calls.load(Ordering::Acquire),
+            server.state.unload_calls.load(Ordering::Acquire),
+            server.state.infer_calls.load(Ordering::Acquire),
+            server.state.health_calls.load(Ordering::Acquire),
+        )
     );
     repository.close().await;
     server.stop().await;
