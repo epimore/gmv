@@ -1906,10 +1906,13 @@ async fn external_health_failure_uses_existing_manager_fallback_authority() {
     let provider = ExternalRuntimeProvider::connect(config(&root, server.socket.clone()))
         .await
         .unwrap();
-    let manager = ModelManager::open(
+    let telemetry = Arc::new(Observability::new());
+    let manager = ModelManager::open_with_observability(
         repository.clone(),
         vec![Arc::new(provider) as Arc<dyn RuntimeProvider>],
         ModelManagerConfig::default(),
+        CancellationToken::new(),
+        telemetry.clone(),
     )
     .await
     .unwrap();
@@ -1917,6 +1920,9 @@ async fn external_health_failure_uses_existing_manager_fallback_authority() {
     manager.preload(&active, 3).await.unwrap();
     manager.activate(&previous, 4).await.unwrap();
     manager.activate(&active, 5).await.unwrap();
+    let held_active = manager.capture(CAPABILITY).await.unwrap();
+    assert_eq!(held_active.identity(), &active);
+    let unloads_before_fallback = server.state.unload_calls.load(Ordering::Acquire);
     server
         .state
         .unhealthy_models
@@ -1930,6 +1936,38 @@ async fn external_health_failure_uses_existing_manager_fallback_authority() {
     let restored = manager.capture(CAPABILITY).await.unwrap();
     assert_eq!(restored.identity(), &previous);
     drop(restored);
+    assert_eq!(
+        repository.get(&active).await.unwrap().unwrap().state,
+        ModelState::Failed
+    );
+    assert_eq!(telemetry.snapshot()["ready_models"], "1");
+    let failed_observation = manager.observation(&active).await;
+    assert!(failed_observation.loaded);
+    assert_eq!(failed_observation.in_flight_tasks, 1);
+    assert_eq!(
+        server.state.unload_calls.load(Ordering::Acquire),
+        unloads_before_fallback
+    );
+    assert_eq!(
+        manager.unload(&active, 7).await.unwrap_err().code,
+        "model_in_use"
+    );
+    assert_eq!(
+        server.state.unload_calls.load(Ordering::Acquire),
+        unloads_before_fallback
+    );
+    drop(held_active);
+    manager.unload(&active, 8).await.unwrap();
+    assert_eq!(
+        server.state.unload_calls.load(Ordering::Acquire),
+        unloads_before_fallback + 1
+    );
+    assert!(!manager.observation(&active).await.loaded);
+    manager.unload(&active, 9).await.unwrap();
+    assert_eq!(
+        server.state.unload_calls.load(Ordering::Acquire),
+        unloads_before_fallback + 1
+    );
     repository.close().await;
     server.stop().await;
 }

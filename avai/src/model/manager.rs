@@ -1409,7 +1409,6 @@ impl ModelManager {
         }
         clear_failed_previous_references(&mut slots, &failed);
         drop(slots);
-        self.loaded.lock().await.remove(&failed);
         self.refresh_ready_models().await;
         restored.sort_by(|left, right| left.capability.cmp(&right.capability));
         cleared_capabilities.sort();
@@ -1530,8 +1529,26 @@ impl ModelManager {
     }
 
     async fn refresh_ready_models(&self) {
-        self.observability
-            .set_ready_models(self.loaded.lock().await.len());
+        let loaded = self.loaded.lock().await.keys().cloned().collect::<Vec<_>>();
+        let mut ready = 0;
+        for identity in loaded {
+            match self.repository.get(&identity).await {
+                Ok(Some(model))
+                    if matches!(model.state, ModelState::Ready | ModelState::Active) =>
+                {
+                    ready += 1;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    base::log::warn!(
+                        "Ready-model telemetry refresh failed: action=telemetry_refresh, stage=ready_models, outcome=failed, error_code={}",
+                        error.code
+                    );
+                    return;
+                }
+            }
+        }
+        self.observability.set_ready_models(ready);
     }
 
     pub async fn active_identities(&self) -> HashSet<ModelIdentity> {

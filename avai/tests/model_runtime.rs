@@ -935,6 +935,8 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
     manager.preload(&model_b, 41).await.unwrap();
     manager.activate(&model_a, 42).await.unwrap();
     manager.activate(&model_b, 43).await.unwrap();
+    let held_b = manager.capture(CAPABILITY).await.unwrap();
+    assert_eq!(held_b.identity(), &model_b);
     fake.set_model_unhealthy("model-b", true);
 
     let result = manager
@@ -962,7 +964,21 @@ async fn unhealthy_active_model_rolls_back_to_healthy_previous() {
     );
     assert!(!manager.active_identities().await.contains(&model_b));
     assert_eq!(telemetry.snapshot()["ready_models"], "1");
+    let failed_observation = manager.observation(&model_b).await;
+    assert!(failed_observation.loaded);
+    assert_eq!(failed_observation.in_flight_tasks, 1);
+    assert_eq!(
+        manager.unload(&model_b, 45).await.unwrap_err().code,
+        "model_in_use"
+    );
+    assert_eq!(fake.dropped_instances("model-b"), 0);
+    drop(held_b);
+    manager.unload(&model_b, 46).await.unwrap();
+    assert_eq!(fake.dropped_instances("model-b"), 1);
     assert!(!manager.observation(&model_b).await.loaded);
+    manager.unload(&model_b, 47).await.unwrap();
+    assert_eq!(fake.dropped_instances("model-b"), 1);
+    assert_eq!(telemetry.snapshot()["ready_models"], "1");
     drop(manager);
     let restarted = ModelManager::open(
         repository.clone(),
