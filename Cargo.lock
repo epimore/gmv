@@ -213,6 +213,7 @@ dependencies = [
  "gmv-domain",
  "gmv-nodec",
  "gmv-protocol",
+ "hyper-util",
  "image",
  "ort",
  "prost",

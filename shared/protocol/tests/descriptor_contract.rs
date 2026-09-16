@@ -148,10 +148,100 @@ fn descriptor_contains_versioned_packages() {
         "gmv.session.v1",
         "gmv.stream.v1",
         "gmv.avai.v1",
+        "gmv.avai.external_provider.v1",
         "gmv.center_agent.v1",
         "gmv.component_management.v1",
     ] {
         assert!(packages.contains(&package), "missing package {package}");
+    }
+}
+
+#[test]
+fn avai_external_provider_v1_contract_is_exact_and_fenced() {
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.avai.external_provider.v1");
+    let service = file
+        .service
+        .iter()
+        .find(|service| service.name.as_deref() == Some("AvaiExternalRuntimeProvider"))
+        .unwrap();
+    assert_eq!(
+        service
+            .method
+            .iter()
+            .filter_map(|method| method.name.as_deref())
+            .collect::<Vec<_>>(),
+        [
+            "Describe",
+            "LoadModel",
+            "UnloadModel",
+            "Infer",
+            "Health",
+            "Cancel",
+        ]
+    );
+
+    let describe = descriptor_message(file, "DescribeRequest");
+    for (name, number) in [
+        ("protocol_major", 1),
+        ("min_minor", 2),
+        ("max_minor", 3),
+        ("provider_id", 4),
+        ("client_session_id", 5),
+    ] {
+        assert_eq!(descriptor_field_number(describe, name), Some(number));
+    }
+    let fence = descriptor_message(file, "Fence");
+    for (name, number) in [
+        ("provider_id", 1),
+        ("provider_instance_id", 2),
+        ("client_session_id", 3),
+        ("call_id", 4),
+        ("load_handle_id", 5),
+    ] {
+        assert_eq!(descriptor_field_number(fence, name), Some(number));
+    }
+    let load = descriptor_message(file, "LoadModelRequest");
+    for (name, number) in [
+        ("fence", 1),
+        ("timeout_ms", 2),
+        ("model", 3),
+        ("runtime_id", 4),
+        ("runtime_contract_version", 5),
+        ("artifact_relative_path", 6),
+        ("artifact_sha256", 7),
+        ("artifact_size", 8),
+        ("execution", 9),
+        ("result", 10),
+    ] {
+        assert_eq!(descriptor_field_number(load, name), Some(number));
+    }
+    let infer_response = descriptor_message(file, "InferResponse");
+    assert_eq!(
+        descriptor_field_number(infer_response, "tensor_json"),
+        Some(3)
+    );
+    assert_eq!(
+        descriptor_field_number(infer_response, "actual_model"),
+        None
+    );
+
+    for enum_name in [
+        "LoadOutcome",
+        "UnloadOutcome",
+        "CallOutcome",
+        "HealthOutcome",
+        "CancelOutcome",
+        "ProviderErrorKind",
+    ] {
+        let first = file
+            .enum_type
+            .iter()
+            .find(|item| item.name.as_deref() == Some(enum_name))
+            .and_then(|item| item.value.first())
+            .unwrap();
+        assert_eq!(first.number, Some(0));
+        assert!(first.name.as_deref().unwrap().ends_with("_UNSPECIFIED"));
     }
 }
 

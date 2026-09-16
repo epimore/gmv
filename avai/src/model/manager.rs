@@ -135,6 +135,7 @@ impl ActiveModel {
 const PRELOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const SELF_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
+const UNLOAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Clone for ActiveModel {
     fn clone(&self) -> Self {
@@ -380,13 +381,21 @@ impl ModelManager {
         let instance = provider
             .preload(&model, self.runtime_context(PRELOAD_TIMEOUT))
             .await?;
-        validate_instance(&model, &instance)?;
-        instance
+        if let Err(error) = validate_instance(&model, &instance) {
+            self.cleanup_rejected_instance(&instance).await;
+            return Err(error);
+        }
+        if let Err(error) = instance
             .self_test(&model.self_tests, self.runtime_context(SELF_TEST_TIMEOUT))
-            .await?;
-        instance
-            .health(self.runtime_context(HEALTH_TIMEOUT))
-            .await?;
+            .await
+        {
+            self.cleanup_rejected_instance(&instance).await;
+            return Err(error);
+        }
+        if let Err(error) = instance.health(self.runtime_context(HEALTH_TIMEOUT)).await {
+            self.cleanup_rejected_instance(&instance).await;
+            return Err(error);
+        }
         let loaded = Arc::new(LoadedModel {
             model,
             instance,
@@ -452,6 +461,7 @@ impl ModelManager {
             }
         };
         if let Err(error) = validate_instance(&model, &instance) {
+            self.cleanup_rejected_instance(&instance).await;
             self.repository
                 .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                 .await?;
@@ -464,6 +474,7 @@ impl ModelManager {
             )
             .await
         {
+            self.cleanup_rejected_instance(&instance).await;
             self.repository
                 .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                 .await?;
@@ -473,6 +484,7 @@ impl ModelManager {
             .health(context.with_local_maximum(HEALTH_TIMEOUT))
             .await
         {
+            self.cleanup_rejected_instance(&instance).await;
             self.repository
                 .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                 .await?;
@@ -941,6 +953,7 @@ impl ModelManager {
                 }
             };
             if let Err(error) = validate_instance(&model, &instance) {
+                self.cleanup_rejected_instance(&instance).await;
                 self.repository
                     .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                     .await?;
@@ -950,12 +963,14 @@ impl ModelManager {
                 .self_test(&model.self_tests, self.runtime_context(SELF_TEST_TIMEOUT))
                 .await
             {
+                self.cleanup_rejected_instance(&instance).await;
                 self.repository
                     .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                     .await?;
                 return Err(error);
             }
             if let Err(error) = instance.health(self.runtime_context(HEALTH_TIMEOUT)).await {
+                self.cleanup_rejected_instance(&instance).await;
                 self.repository
                     .set_state(identity, ModelState::Failed, None, now_epoch_ms)
                     .await?;
@@ -996,6 +1011,16 @@ impl ModelManager {
     }
 
     pub async fn unload(&self, identity: &ModelIdentity, now_epoch_ms: i64) -> ModelResult<()> {
+        self.unload_with_context(identity, now_epoch_ms, self.runtime_context(UNLOAD_TIMEOUT))
+            .await
+    }
+
+    pub async fn unload_with_context(
+        &self,
+        identity: &ModelIdentity,
+        now_epoch_ms: i64,
+        context: RuntimeCallContext,
+    ) -> ModelResult<()> {
         let _lifecycle = self.lifecycle.lock().await;
         let referenced_by_slot = self.slots.read().await.values().any(|slot| {
             slot.active
@@ -1012,8 +1037,7 @@ impl ModelManager {
                 "active or previous model cannot be unloaded",
             ));
         }
-        let mut loaded = self.loaded.lock().await;
-        let Some(candidate) = loaded.get(identity) else {
+        let Some(candidate) = self.loaded.lock().await.get(identity).cloned() else {
             return Ok(());
         };
         if candidate.in_flight.load(Ordering::Acquire) != 0 {
@@ -1022,11 +1046,24 @@ impl ModelManager {
                 "model still has in-flight tasks",
             ));
         }
+        candidate
+            .instance
+            .unload(context.with_local_maximum(UNLOAD_TIMEOUT))
+            .await?;
         self.repository
             .set_state(identity, ModelState::Installed, None, now_epoch_ms)
             .await?;
-        loaded.remove(identity);
+        self.loaded.lock().await.remove(identity);
         Ok(())
+    }
+
+    async fn cleanup_rejected_instance(&self, instance: &Arc<dyn ModelInstance>) {
+        if let Err(error) = instance.unload(self.runtime_context(UNLOAD_TIMEOUT)).await {
+            base::log::warn!(
+                "model instance cleanup failed: action=unload_rejected_instance, error_code={}",
+                error.code
+            );
+        }
     }
 
     pub async fn retire_previous(

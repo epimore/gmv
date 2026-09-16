@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package gmv.avai.external_provider.v1;
+
+service AvaiExternalRuntimeProvider {
+  rpc Describe(DescribeRequest) returns (DescribeResponse);
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
+  rpc Infer(InferRequest) returns (InferResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+message DescribeRequest {
+  uint32 protocol_major = 1;
+  uint32 min_minor = 2;
+  uint32 max_minor = 3;
+  string provider_id = 4;
+  string client_session_id = 5;
+}
+
+message DescribeResponse {
+  uint32 selected_major = 1;
+  uint32 selected_minor = 2;
+  string provider_id = 3;
+  string provider_instance_id = 4;
+  string client_session_id = 5;
+  string implementation_version = 6;
+  repeated RuntimeSupport supported_runtimes = 7;
+  ProviderBounds bounds = 8;
+}
+
+message RuntimeSupport {
+  string runtime_id = 1;
+  uint32 runtime_contract_version = 2;
+}
+
+message ProviderBounds {
+  uint32 max_in_flight = 1;
+  uint64 max_input_bytes = 2;
+  uint64 max_result_bytes = 3;
+  uint32 max_loaded_handles = 4;
+}
+
+message Fence {
+  string provider_id = 1;
+  string provider_instance_id = 2;
+  string client_session_id = 3;
+  string call_id = 4;
+  string load_handle_id = 5;
+}
+
+message ModelIdentity {
+  string model_id = 1;
+  string version = 2;
+  string revision = 3;
+}
+
+message TensorContract {
+  string name = 1;
+  string dtype = 2;
+  repeated uint64 shape = 3;
+  string layout = 4;
+}
+
+message PreprocessContract {
+  string resize = 1;
+  string interpolation = 2;
+  string color = 3;
+  float scale = 4;
+  repeated float mean = 5;
+  repeated float std = 6;
+}
+
+message ExecutionInputContract {
+  string kind = 1;
+  repeated string accepted_media_types = 2;
+  uint64 max_bytes = 3;
+  uint32 max_width = 4;
+  uint32 max_height = 5;
+  TensorContract tensor = 6;
+  PreprocessContract preprocess = 7;
+}
+
+message ExecutionContractV1 {
+  uint32 version = 1;
+  ExecutionInputContract input = 2;
+  repeated TensorContract outputs = 3;
+  string postprocess_kind = 4;
+}
+
+message ResultContract {
+  string schema_name = 1;
+  uint32 schema_version = 2;
+  uint64 max_result_bytes = 3;
+}
+
+message LoadModelRequest {
+  Fence fence = 1;
+  uint64 timeout_ms = 2;
+  ModelIdentity model = 3;
+  string runtime_id = 4;
+  uint32 runtime_contract_version = 5;
+  string artifact_relative_path = 6;
+  string artifact_sha256 = 7;
+  uint64 artifact_size = 8;
+  ExecutionContractV1 execution = 9;
+  ResultContract result = 10;
+}
+
+message LoadModelResponse {
+  Fence fence = 1;
+  LoadOutcome outcome = 2;
+  ProviderError error = 3;
+}
+
+enum LoadOutcome {
+  LOAD_OUTCOME_UNSPECIFIED = 0;
+  LOAD_OUTCOME_LOADED = 1;
+}
+
+message UnloadModelRequest {
+  Fence fence = 1;
+  uint64 timeout_ms = 2;
+}
+
+message UnloadModelResponse {
+  Fence fence = 1;
+  UnloadOutcome outcome = 2;
+  ProviderError error = 3;
+}
+
+enum UnloadOutcome {
+  UNLOAD_OUTCOME_UNSPECIFIED = 0;
+  UNLOAD_OUTCOME_UNLOADED = 1;
+  UNLOAD_OUTCOME_ALREADY_UNLOADED = 2;
+}
+
+message RuntimeInput {
+  bytes encoded = 1;
+  string media_type = 2;
+  uint32 width = 3;
+  uint32 height = 4;
+}
+
+message InferRequest {
+  Fence fence = 1;
+  uint64 timeout_ms = 2;
+  RuntimeInput input = 3;
+}
+
+message InferResponse {
+  Fence fence = 1;
+  CallOutcome outcome = 2;
+  bytes tensor_json = 3;
+  ProviderError error = 4;
+}
+
+message HealthRequest {
+  Fence fence = 1;
+  uint64 timeout_ms = 2;
+}
+
+message HealthResponse {
+  Fence fence = 1;
+  HealthOutcome outcome = 2;
+  ProviderError error = 3;
+}
+
+enum CallOutcome {
+  CALL_OUTCOME_UNSPECIFIED = 0;
+  CALL_OUTCOME_SUCCEEDED = 1;
+  CALL_OUTCOME_FAILED = 2;
+  CALL_OUTCOME_CANCELLED = 3;
+  CALL_OUTCOME_BUSY = 4;
+}
+
+enum HealthOutcome {
+  HEALTH_OUTCOME_UNSPECIFIED = 0;
+  HEALTH_OUTCOME_HEALTHY = 1;
+  HEALTH_OUTCOME_UNHEALTHY = 2;
+  HEALTH_OUTCOME_BUSY = 3;
+}
+
+message CancelRequest {
+  Fence fence = 1;
+  string target_call_id = 2;
+}
+
+message CancelResponse {
+  Fence fence = 1;
+  CancelOutcome outcome = 2;
+  ProviderError error = 3;
+}
+
+enum CancelOutcome {
+  CANCEL_OUTCOME_UNSPECIFIED = 0;
+  CANCEL_OUTCOME_ACCEPTED = 1;
+  CANCEL_OUTCOME_ALREADY_TERMINAL = 2;
+  CANCEL_OUTCOME_NOT_FOUND = 3;
+}
+
+message ProviderError {
+  ProviderErrorKind kind = 1;
+  string safe_message = 2;
+}
+
+enum ProviderErrorKind {
+  PROVIDER_ERROR_KIND_UNSPECIFIED = 0;
+  PROVIDER_ERROR_KIND_FAILED = 1;
+  PROVIDER_ERROR_KIND_BUSY = 2;
+  PROVIDER_ERROR_KIND_CONTRACT_MISMATCH = 3;
+  PROVIDER_ERROR_KIND_INVALID_REQUEST = 4;
+}

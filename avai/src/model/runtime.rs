@@ -14,7 +14,9 @@ use std::{
 #[cfg(test)]
 use base::tokio::sync::Notify;
 
-use super::{InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase};
+use super::{
+    ExecutionContract, InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase,
+};
 
 pub type RuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = ModelResult<T>> + Send + 'a>>;
 
@@ -85,6 +87,8 @@ pub trait ModelInstance: Send + Sync {
     fn runtime(&self) -> &str;
     fn capabilities(&self) -> &[String];
 
+    fn unload<'a>(&'a self, context: RuntimeCallContext) -> RuntimeFuture<'a, ()>;
+
     fn self_test<'a>(
         &'a self,
         cases: &'a [SelfTestCase],
@@ -104,6 +108,137 @@ pub trait ModelInstance: Send + Sync {
 pub struct InferenceResult {
     pub output: Vec<u8>,
     pub actual_model: gmv_protocol::avai::v1::ModelRef,
+}
+
+pub(crate) fn compare_json_numeric(
+    actual: &[u8],
+    expected: &[u8],
+    oracle: &super::SelfTestOracle,
+) -> ModelResult<()> {
+    let actual: base::serde_json::Value = base::serde_json::from_slice(actual)
+        .map_err(|error| ModelError::new("model_runtime_response_invalid", error.to_string()))?;
+    let expected: base::serde_json::Value = base::serde_json::from_slice(expected)
+        .map_err(|error| ModelError::new("model_self_test_failed", error.to_string()))?;
+    if json_numeric_equal(
+        &actual,
+        &expected,
+        oracle.abs_tolerance,
+        oracle.rel_tolerance,
+    ) {
+        Ok(())
+    } else {
+        Err(ModelError::new(
+            "model_self_test_failed",
+            "model output does not match the signed numeric oracle",
+        ))
+    }
+}
+
+fn json_numeric_equal(
+    actual: &base::serde_json::Value,
+    expected: &base::serde_json::Value,
+    abs_tolerance: f64,
+    rel_tolerance: f64,
+) -> bool {
+    match (actual, expected) {
+        (base::serde_json::Value::Number(actual), base::serde_json::Value::Number(expected)) => {
+            let (Some(actual), Some(expected)) = (actual.as_f64(), expected.as_f64()) else {
+                return false;
+            };
+            actual.is_finite()
+                && expected.is_finite()
+                && (actual - expected).abs() <= abs_tolerance + rel_tolerance * expected.abs()
+        }
+        (base::serde_json::Value::Array(actual), base::serde_json::Value::Array(expected)) => {
+            actual.len() == expected.len()
+                && actual.iter().zip(expected).all(|(actual, expected)| {
+                    json_numeric_equal(actual, expected, abs_tolerance, rel_tolerance)
+                })
+        }
+        (base::serde_json::Value::Object(actual), base::serde_json::Value::Object(expected)) => {
+            actual.len() == expected.len()
+                && actual.iter().all(|(key, actual)| {
+                    expected.get(key).is_some_and(|expected| {
+                        json_numeric_equal(actual, expected, abs_tolerance, rel_tolerance)
+                    })
+                })
+        }
+        _ => actual == expected,
+    }
+}
+
+pub(crate) fn validate_tensor_json(
+    encoded: &[u8],
+    execution: &ExecutionContract,
+) -> ModelResult<()> {
+    let value: base::serde_json::Value = base::serde_json::from_slice(encoded)
+        .map_err(|error| ModelError::new("model_runtime_response_invalid", error.to_string()))?;
+    let outputs = value
+        .as_object()
+        .and_then(|root| (root.len() == 1).then(|| root.get("outputs")).flatten())
+        .and_then(base::serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ModelError::new(
+                "model_runtime_response_invalid",
+                "provider result is not tensor_json_v1",
+            )
+        })?;
+    if outputs.len() != execution.outputs.len() {
+        return Err(ModelError::new(
+            "model_runtime_response_invalid",
+            "provider result tensor count does not match the signed contract",
+        ));
+    }
+    for (actual, expected) in outputs.iter().zip(&execution.outputs) {
+        let actual = actual.as_object().ok_or_else(|| {
+            ModelError::new(
+                "model_runtime_response_invalid",
+                "provider tensor result is not an object",
+            )
+        })?;
+        let shape = actual
+            .get("shape")
+            .and_then(base::serde_json::Value::as_array)
+            .ok_or_else(|| {
+                ModelError::new(
+                    "model_runtime_response_invalid",
+                    "provider shape is invalid",
+                )
+            })?;
+        let data = actual
+            .get("data")
+            .and_then(base::serde_json::Value::as_array)
+            .ok_or_else(|| {
+                ModelError::new("model_runtime_response_invalid", "provider data is invalid")
+            })?;
+        let expected_elements = expected
+            .shape
+            .iter()
+            .try_fold(1_u64, |count, dimension| count.checked_mul(*dimension));
+        if actual.len() != 4
+            || actual.get("name").and_then(base::serde_json::Value::as_str)
+                != Some(expected.name.as_str())
+            || actual
+                .get("dtype")
+                .and_then(base::serde_json::Value::as_str)
+                != Some("f32")
+            || shape.len() != expected.shape.len()
+            || !shape
+                .iter()
+                .zip(&expected.shape)
+                .all(|(actual, expected)| actual.as_u64().is_some_and(|actual| actual == *expected))
+            || expected_elements.is_none_or(|count| data.len() as u64 != count)
+            || data
+                .iter()
+                .any(|value| value.as_f64().is_none_or(|value| !value.is_finite()))
+        {
+            return Err(ModelError::new(
+                "model_runtime_response_invalid",
+                "provider tensor result does not match the signed contract",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -272,6 +407,10 @@ impl ModelInstance for FakeModelInstance {
 
     fn capabilities(&self) -> &[String] {
         &self.capabilities
+    }
+
+    fn unload<'a>(&'a self, context: RuntimeCallContext) -> RuntimeFuture<'a, ()> {
+        Box::pin(async move { context.ensure_active() })
     }
 
     fn self_test<'a>(

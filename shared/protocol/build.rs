@@ -13,6 +13,7 @@ fn main() -> io::Result<()> {
         proto_root.join("stream/v1/control.proto"),
         proto_root.join("avai/v1/control.proto"),
         proto_root.join("avai/model_management/v1/management.proto"),
+        proto_root.join("avai/external_provider/v1/provider.proto"),
         proto_root.join("center_agent/v1/control.proto"),
         proto_root.join("component_management/v1/management.proto"),
     ];

@@ -27,7 +27,7 @@ use super::{
     package::{
         checked_element_count, load_installed_execution_contract, validate_execution_contract,
     },
-    runtime::RuntimeFuture,
+    runtime::{RuntimeFuture, compare_json_numeric},
 };
 
 pub const ONNX_CPU_RUNTIME: &str = "onnx-cpu";
@@ -299,6 +299,10 @@ impl ModelInstance for OnnxCpuInstance {
 
     fn capabilities(&self) -> &[String] {
         &self.capabilities
+    }
+
+    fn unload<'a>(&'a self, context: RuntimeCallContext) -> RuntimeFuture<'a, ()> {
+        Box::pin(async move { context.ensure_active() })
     }
 
     fn self_test<'a>(
@@ -601,63 +605,6 @@ fn encode_outputs(
         ));
     }
     Ok(encoded)
-}
-
-fn compare_json_numeric(
-    actual: &[u8],
-    expected: &[u8],
-    oracle: &super::SelfTestOracle,
-) -> ModelResult<()> {
-    let actual: base::serde_json::Value = base::serde_json::from_slice(actual)
-        .map_err(|error| runtime_error("decode actual self-test JSON", error))?;
-    let expected: base::serde_json::Value = base::serde_json::from_slice(expected)
-        .map_err(|error| runtime_error("decode expected self-test JSON", error))?;
-    if json_numeric_equal(
-        &actual,
-        &expected,
-        oracle.abs_tolerance,
-        oracle.rel_tolerance,
-    ) {
-        Ok(())
-    } else {
-        Err(ModelError::new(
-            "model_self_test_failed",
-            "model output does not match the signed numeric oracle",
-        ))
-    }
-}
-
-fn json_numeric_equal(
-    actual: &base::serde_json::Value,
-    expected: &base::serde_json::Value,
-    abs_tolerance: f64,
-    rel_tolerance: f64,
-) -> bool {
-    match (actual, expected) {
-        (base::serde_json::Value::Number(actual), base::serde_json::Value::Number(expected)) => {
-            let (Some(actual), Some(expected)) = (actual.as_f64(), expected.as_f64()) else {
-                return false;
-            };
-            actual.is_finite()
-                && expected.is_finite()
-                && (actual - expected).abs() <= abs_tolerance + rel_tolerance * expected.abs()
-        }
-        (base::serde_json::Value::Array(actual), base::serde_json::Value::Array(expected)) => {
-            actual.len() == expected.len()
-                && actual.iter().zip(expected).all(|(actual, expected)| {
-                    json_numeric_equal(actual, expected, abs_tolerance, rel_tolerance)
-                })
-        }
-        (base::serde_json::Value::Object(actual), base::serde_json::Value::Object(expected)) => {
-            actual.len() == expected.len()
-                && actual.iter().all(|(key, actual)| {
-                    expected.get(key).is_some_and(|expected| {
-                        json_numeric_equal(actual, expected, abs_tolerance, rel_tolerance)
-                    })
-                })
-        }
-        _ => actual == expected,
-    }
 }
 
 fn media_type_from_path(path: &str) -> ModelResult<&'static str> {
