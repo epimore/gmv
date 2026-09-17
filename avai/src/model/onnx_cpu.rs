@@ -25,7 +25,8 @@ use super::{
     ModelInstance, ModelResult, RuntimeCallContext, RuntimeDescriptor, RuntimeInput,
     RuntimeProvider, SelfTestCase, TensorContract,
     package::{
-        checked_element_count, load_installed_execution_contract, validate_execution_contract,
+        actual_model, checked_element_count, load_installed_execution_contract,
+        validate_execution_contract,
     },
     runtime::{RuntimeFuture, compare_json_numeric},
 };
@@ -369,7 +370,7 @@ impl ModelInstance for OnnxCpuInstance {
             let output = self.run(input, context).await?;
             Ok(InferenceResult {
                 output,
-                actual_model: self.identity.actual_model(ONNX_CPU_RUNTIME),
+                actual_model: actual_model(&self.identity, ONNX_CPU_RUNTIME),
             })
         })
     }

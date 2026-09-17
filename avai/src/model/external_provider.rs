@@ -22,7 +22,7 @@ use super::{
     ExecutionContract, InferenceResult, InstalledModel, ModelError, ModelIdentity, ModelInstance,
     ModelResult, RuntimeCallContext, RuntimeDescriptor, RuntimeInput, RuntimeProvider,
     SelfTestCase,
-    package::{load_installed_execution_contract, safe_relative_path},
+    package::{actual_model, load_installed_execution_contract, safe_relative_path},
     runtime::{RuntimeFuture, compare_json_numeric, validate_tensor_json},
 };
 
@@ -511,7 +511,7 @@ impl ModelInstance for ExternalModelInstance {
                     validate_tensor_json(&response.tensor_json, &self.execution)?;
                     Ok(InferenceResult {
                         output: response.tensor_json,
-                        actual_model: self.identity.actual_model(self.runtime.clone()),
+                        actual_model: actual_model(&self.identity, self.runtime.clone()),
                     })
                 }
                 Ok(CallOutcome::Busy) => Err(runtime_busy()),

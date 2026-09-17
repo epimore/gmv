@@ -1,175 +1,36 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
 use base::{
-    base64::Engine,
     serde::{Deserialize, Serialize},
     sha2::{Digest, Sha256},
+};
+use gmv_model_package::{
+    BundleLimits, safe_relative_path as shared_safe_relative_path, validate_model_package_manifest,
+    verify_model_package_signature,
+};
+pub use gmv_model_package::{
+    ExecutionContract, ExecutionInput, LicenseSpec, ModelFile, ModelIdentity, ModelPackageManifest,
+    PostprocessContract, PreprocessContract, ResourceHints, ResultSchema, RuntimeVariant,
+    SelfTestCase, SelfTestOracle, SigningSpec, TensorContract, model_package_signing_payload,
 };
 
 use super::{InstalledModel, ModelError, ModelResult};
 
 const MANIFEST_FILE: &str = "manifest.yaml";
-const API_VERSION: &str = "gmv.ai/v1";
-const PACKAGE_KIND: &str = "ModelPlugin";
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ModelIdentity {
-    pub model_id: String,
-    pub version: String,
-    pub revision: String,
-}
-
-impl ModelIdentity {
-    pub fn actual_model(&self, runtime: impl Into<String>) -> gmv_protocol::avai::v1::ModelRef {
-        gmv_protocol::avai::v1::ModelRef {
-            model_id: self.model_id.clone(),
-            version: self.version.clone(),
-            runtime: runtime.into(),
-            revision: self.revision.clone(),
-        }
+pub(crate) fn actual_model(
+    identity: &ModelIdentity,
+    runtime: impl Into<String>,
+) -> gmv_protocol::avai::v1::ModelRef {
+    gmv_protocol::avai::v1::ModelRef {
+        model_id: identity.model_id.clone(),
+        version: identity.version.clone(),
+        runtime: runtime.into(),
+        revision: identity.revision.clone(),
     }
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ModelPackageManifest {
-    pub api_version: String,
-    pub kind: String,
-    pub metadata: ModelIdentity,
-    pub capabilities: Vec<String>,
-    pub result_schema: ResultSchema,
-    pub variants: Vec<RuntimeVariant>,
-    #[serde(default)]
-    pub execution: Option<ExecutionContract>,
-    pub resources: ResourceHints,
-    pub license: LicenseSpec,
-    #[serde(default)]
-    pub self_test: Vec<SelfTestCase>,
-    pub files: Vec<ModelFile>,
-    pub signing: SigningSpec,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ResultSchema {
-    pub name: String,
-    pub version: u32,
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct RuntimeVariant {
-    pub runtime: String,
-    #[serde(default)]
-    pub runtime_contract_version: u32,
-    pub architecture: String,
-    #[serde(default)]
-    pub accelerator: String,
-    pub artifact: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ExecutionContract {
-    pub version: u32,
-    pub input: ExecutionInput,
-    pub outputs: Vec<TensorContract>,
-    pub postprocess: PostprocessContract,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ExecutionInput {
-    pub kind: String,
-    pub accepted_media_types: Vec<String>,
-    pub max_bytes: u64,
-    pub max_width: u32,
-    pub max_height: u32,
-    pub tensor: TensorContract,
-    pub preprocess: PreprocessContract,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct TensorContract {
-    pub name: String,
-    pub dtype: String,
-    pub shape: Vec<u64>,
-    #[serde(default)]
-    pub layout: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct PreprocessContract {
-    pub resize: String,
-    pub interpolation: String,
-    pub color: String,
-    pub scale: f32,
-    pub mean: [f32; 3],
-    pub std: [f32; 3],
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct PostprocessContract {
-    pub kind: String,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ResourceHints {
-    pub memory_mb: u64,
-    #[serde(default)]
-    pub vram_mb: u64,
-    pub max_batch: u32,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct LicenseSpec {
-    pub spdx: String,
-    pub commercial_use: bool,
-    pub redistribution: String,
-    #[serde(default)]
-    pub license_ref: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct SelfTestCase {
-    pub input: String,
-    pub expected: String,
-    #[serde(default)]
-    pub oracle: Option<SelfTestOracle>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct SelfTestOracle {
-    pub kind: String,
-    pub abs_tolerance: f64,
-    pub rel_tolerance: f64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct ModelFile {
-    pub path: String,
-    pub sha256: String,
-    pub size: u64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[serde(crate = "base::serde", deny_unknown_fields)]
-pub struct SigningSpec {
-    pub key_id: String,
-    pub signature: String,
 }
 
 #[derive(Debug, Clone)]
@@ -615,32 +476,8 @@ pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<Verifi
 }
 
 fn validate_manifest(manifest: &ModelPackageManifest, policy: &PackagePolicy) -> ModelResult<()> {
-    if manifest.api_version != API_VERSION || manifest.kind != PACKAGE_KIND {
-        return Err(ModelError::new(
-            "unsupported_model_schema",
-            "unsupported model package api_version or kind",
-        ));
-    }
-    for value in [
-        &manifest.metadata.model_id,
-        &manifest.metadata.version,
-        &manifest.metadata.revision,
-    ] {
-        validate_identifier(value)?;
-    }
-    if manifest.capabilities.is_empty()
-        || manifest
-            .capabilities
-            .iter()
-            .any(|value| value.trim().is_empty())
-        || manifest.variants.is_empty()
-        || manifest.files.is_empty()
-    {
-        return Err(ModelError::new(
-            "invalid_model_manifest",
-            "capabilities, variants and files must not be empty",
-        ));
-    }
+    validate_model_package_manifest(manifest)
+        .map_err(|error| ModelError::new(error.code, error.message))?;
     if !policy.allowed_result_schemas.contains(&(
         manifest.result_schema.name.clone(),
         manifest.result_schema.version,
@@ -854,13 +691,6 @@ pub(crate) fn checked_element_count(shape: &[u64]) -> ModelResult<usize> {
     })
 }
 
-pub fn model_package_signing_payload(manifest: &ModelPackageManifest) -> ModelResult<Vec<u8>> {
-    let mut unsigned = manifest.clone();
-    unsigned.signing.signature.clear();
-    base::serde_json::to_vec(&unsigned)
-        .map_err(|error| ModelError::new("invalid_model_manifest", error.to_string()))
-}
-
 fn verify_signature(manifest: &ModelPackageManifest, policy: &PackagePolicy) -> ModelResult<()> {
     let public_key = policy
         .trusted_signing_keys
@@ -871,52 +701,13 @@ fn verify_signature(manifest: &ModelPackageManifest, policy: &PackagePolicy) -> 
                 "model package signing key is not trusted",
             )
         })?;
-    let signature = base::base64::engine::general_purpose::STANDARD
-        .decode(&manifest.signing.signature)
-        .map_err(|_| {
-            ModelError::new(
-                "model_signature_invalid",
-                "model package signature is not valid base64",
-            )
-        })?;
-    let payload = model_package_signing_payload(manifest)?;
-    base::artifact::verify_ed25519(&payload, public_key, &signature).map_err(|_| {
-        ModelError::new(
-            "model_signature_invalid",
-            "model package signature verification failed",
-        )
-    })
-}
-
-fn validate_identifier(value: &str) -> ModelResult<()> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
-    {
-        return Err(ModelError::new(
-            "invalid_model_manifest",
-            "model identity contains an unsafe value",
-        ));
-    }
-    Ok(())
+    verify_model_package_signature(manifest, public_key)
+        .map_err(|error| ModelError::new(error.code, error.message))
 }
 
 pub(crate) fn safe_relative_path(value: &str) -> ModelResult<PathBuf> {
-    let path = Path::new(value);
-    if path.as_os_str().is_empty()
-        || path.is_absolute()
-        || path
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(ModelError::new(
-            "model_path_invalid",
-            format!("model package path is not confined: {value}"),
-        ));
-    }
-    Ok(path.to_path_buf())
+    shared_safe_relative_path(value, &BundleLimits::default())
+        .map_err(|error| ModelError::new(error.code, error.message))
 }
 
 fn regular_file_metadata(path: &Path) -> ModelResult<std::fs::Metadata> {
