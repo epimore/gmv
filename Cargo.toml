@@ -6,6 +6,7 @@ members = [
     "session/core",
     "session/onvif",
     "shared/domain",
+    "shared/model-package",
     "shared/protocol",
     "shared/nodec",
     "stream",

@@ -1,0 +1,12 @@
+[package]
+name = "gmv-model-package"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+base = { path = "../../../pigs/base" }
+tar = "0.4"
+
+[dev-dependencies]
+ed25519-dalek = "2"

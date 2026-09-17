@@ -14,6 +14,8 @@ use std::{
 #[cfg(test)]
 use base::tokio::sync::Notify;
 
+#[cfg(test)]
+use super::package::actual_model;
 use super::{
     ExecutionContract, InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase,
 };
@@ -489,7 +491,7 @@ impl ModelInstance for FakeModelInstance {
                     .inference_output
                     .clone()
                     .unwrap_or_else(|| input.encoded.to_vec()),
-                actual_model: self.identity.actual_model(self.runtime.clone()),
+                actual_model: actual_model(&self.identity, self.runtime.clone()),
             })
         })
     }
