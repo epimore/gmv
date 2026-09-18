@@ -310,11 +310,23 @@ pub fn validate_model_package_manifest(manifest: &ModelPackageManifest) -> Model
             ));
         }
     }
+    let mut selectors = HashSet::new();
     for variant in &manifest.variants {
-        if variant.runtime.trim().is_empty() || variant.architecture.trim().is_empty() {
+        validate_identifier(&variant.runtime)?;
+        validate_identifier(&variant.architecture)?;
+        if variant.runtime_contract_version == 0
+            || (!variant.accelerator.is_empty()
+                && validate_identifier(&variant.accelerator).is_err())
+            || !selectors.insert((
+                variant.runtime.as_str(),
+                variant.runtime_contract_version,
+                variant.architecture.as_str(),
+                variant.accelerator.as_str(),
+            ))
+        {
             return Err(ModelPackageError::new(
                 "invalid_model_manifest",
-                "model package variant contains an invalid selector",
+                "model package variant contains an invalid or duplicate selector",
             ));
         }
         safe_relative_path(&variant.artifact, &BundleLimits::default())?;
@@ -848,6 +860,34 @@ mod tests {
                 .code,
             "model_package_too_large"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_and_duplicate_exact_variant_selectors() {
+        let mut value = manifest();
+        value.variants[0].runtime_contract_version = 0;
+        assert_eq!(
+            validate_model_package_manifest(&value).unwrap_err().code,
+            "invalid_model_manifest"
+        );
+
+        let mut value = manifest();
+        value.variants[0].accelerator = "gpu wildcard".to_string();
+        assert_eq!(
+            validate_model_package_manifest(&value).unwrap_err().code,
+            "invalid_model_manifest"
+        );
+
+        let mut value = manifest();
+        value.variants.push(value.variants[0].clone());
+        assert_eq!(
+            validate_model_package_manifest(&value).unwrap_err().code,
+            "invalid_model_manifest"
+        );
+
+        let mut value = manifest();
+        value.variants[0].accelerator.clear();
+        assert!(validate_model_package_manifest(&value).is_ok());
     }
 
     #[test]

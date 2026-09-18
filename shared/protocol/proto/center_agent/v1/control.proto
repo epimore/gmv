@@ -79,6 +79,12 @@ message ComponentObservation {
   string actual_revision = 7;
   ComponentActualRevisionState actual_revision_state = 8;
   string actual_revision_reason = 9;
+  uint32 avai_model_import_contract_version = 10;
+}
+
+message AiModelDesired {
+  gmv.common.v1.ModelDeliveryCorrelation correlation = 1;
+  gmv.common.v1.ModelVariantSelector selector = 2;
 }
 
 enum ComponentActualRevisionState {
@@ -171,6 +177,7 @@ message DesiredState {
   ArtifactManifest artifact = 3;
   int64 deadline_epoch_ms = 4;
   string target_component_id = 5;
+  AiModelDesired ai_model = 6;
 }
 
 message UpgradeRequest {

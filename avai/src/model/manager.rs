@@ -17,6 +17,7 @@ use crate::observability::Observability;
 use super::{
     InferenceResult, InstalledModel, ModelError, ModelIdentity, ModelInstance, ModelRepository,
     ModelResult, ModelState, ResultSchema, RuntimeCallContext, RuntimeInput, RuntimeProvider,
+    RuntimeVariant,
     package::load_installed_execution_contract,
     repository::{CapabilityRecovery, PersistedCapabilitySlot},
 };
@@ -1499,6 +1500,18 @@ impl ModelManager {
 
     pub fn runtime_available(&self, runtime: &str) -> bool {
         self.providers.contains_key(runtime)
+    }
+
+    pub fn validate_selector(&self, selector: &RuntimeVariant) -> ModelResult<()> {
+        self.providers
+            .get(&selector.runtime)
+            .ok_or_else(|| {
+                ModelError::new(
+                    "model_runtime_unavailable",
+                    "requested runtime provider is not registered",
+                )
+            })?
+            .validate_selector(selector)
     }
 
     pub async fn health(&self, identity: &ModelIdentity) -> ModelResult<()> {

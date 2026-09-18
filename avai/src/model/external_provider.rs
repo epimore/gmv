@@ -187,12 +187,35 @@ impl ExternalRuntimeProvider {
     }
 }
 
+fn validate_external_selector(
+    selector: &super::RuntimeVariant,
+    runtime_contract_version: u32,
+) -> ModelResult<()> {
+    if selector.runtime_contract_version != runtime_contract_version {
+        return Err(ModelError::new(
+            "model_runtime_contract_unsupported",
+            "external provider does not support the requested runtime contract",
+        ));
+    }
+    if !selector.accelerator.is_empty() {
+        return Err(ModelError::new(
+            "model_accelerator_unavailable",
+            "external provider v1 cannot prove accelerator support",
+        ));
+    }
+    Ok(())
+}
+
 impl RuntimeProvider for ExternalRuntimeProvider {
     fn descriptor(&self) -> RuntimeDescriptor {
         RuntimeDescriptor {
             runtime: self.config.runtime_id.clone(),
             version: format!("external-v{PROTOCOL_MAJOR}.{PROTOCOL_MINOR}"),
         }
+    }
+
+    fn validate_selector(&self, selector: &super::RuntimeVariant) -> ModelResult<()> {
+        validate_external_selector(selector, self.config.runtime_contract_version)
     }
 
     fn preload<'a>(
@@ -937,4 +960,33 @@ fn runtime_busy() -> ModelError {
         "model_runtime_busy",
         "external provider execution capacity is full",
     )
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+
+    #[test]
+    fn external_v1_requires_exact_contract_and_unclaimed_accelerator() {
+        let mut selector = super::super::RuntimeVariant {
+            runtime: "external-test".into(),
+            runtime_contract_version: 7,
+            architecture: std::env::consts::ARCH.into(),
+            accelerator: String::new(),
+            artifact: "model.bin".into(),
+        };
+        validate_external_selector(&selector, 7).unwrap();
+
+        selector.runtime_contract_version = 8;
+        assert_eq!(
+            validate_external_selector(&selector, 7).unwrap_err().code,
+            "model_runtime_contract_unsupported"
+        );
+        selector.runtime_contract_version = 7;
+        selector.accelerator = "gpu".into();
+        assert_eq!(
+            validate_external_selector(&selector, 7).unwrap_err().code,
+            "model_accelerator_unavailable"
+        );
+    }
 }

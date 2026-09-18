@@ -5,6 +5,7 @@ package gmv.avai.model_management.v1;
 import "common/v1/types.proto";
 
 service AvaiModelManagement {
+  rpc GetManagementCapabilities(GetManagementCapabilitiesRequest) returns (GetManagementCapabilitiesResponse);
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc InspectModel(InspectModelRequest) returns (InspectModelResponse);
   rpc ImportStagedModel(ImportStagedModelRequest) returns (ModelMutationResponse);
@@ -12,6 +13,12 @@ service AvaiModelManagement {
   rpc ActivateModel(ActivateModelRequest) returns (ModelMutationResponse);
   rpc RollbackModel(RollbackModelRequest) returns (ModelMutationResponse);
   rpc UnloadModel(UnloadModelRequest) returns (ModelMutationResponse);
+}
+
+message GetManagementCapabilitiesRequest {}
+
+message GetManagementCapabilitiesResponse {
+  uint32 exact_model_import_contract_version = 1;
 }
 
 message ModelIdentity {
@@ -67,6 +74,8 @@ message ImportStagedModelRequest {
   string stage_id = 3;
   ModelIdentity expected_identity = 4;
   string expected_manifest_sha256 = 5;
+  gmv.common.v1.ModelDeliveryCorrelation correlation = 6;
+  gmv.common.v1.ModelVariantSelector expected_selector = 7;
 }
 
 message PreloadModelRequest {

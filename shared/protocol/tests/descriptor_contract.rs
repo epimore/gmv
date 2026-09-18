@@ -77,6 +77,20 @@ struct LegacyDesiredState {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct LegacyImportStagedModelRequest {
+    #[prost(message, optional, tag = "1")]
+    operation: Option<gmv_protocol::common::v1::OperationRef>,
+    #[prost(int64, tag = "2")]
+    deadline_epoch_ms: i64,
+    #[prost(string, tag = "3")]
+    stage_id: String,
+    #[prost(message, optional, tag = "4")]
+    expected_identity: Option<gmv_protocol::avai::model_management::v1::ModelIdentity>,
+    #[prost(string, tag = "5")]
+    expected_manifest_sha256: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct LegacyModelRef {
     #[prost(string, tag = "1")]
     model_id: String,
@@ -800,6 +814,7 @@ fn artifact_compatibility_extension_is_wire_compatible() {
         }),
         deadline_epoch_ms: 20_000,
         target_component_id: "stream".to_string(),
+        ai_model: None,
     };
     let legacy_view = LegacyDesiredState::decode(current.encode_to_vec().as_slice()).unwrap();
     assert_eq!(legacy_view.assignment_id, "assignment-current");
@@ -820,6 +835,77 @@ fn artifact_compatibility_extension_is_wire_compatible() {
     assert_eq!(decoded.target_architecture, 99_997);
     assert_eq!(decoded.package_layout, 99_996);
     assert_eq!(decoded.config_compatibility, 99_995);
+}
+
+#[test]
+fn model_delivery_selector_and_correlation_are_additive_and_wire_compatible() {
+    use gmv_protocol::{
+        common::v1::{ModelDeliveryCorrelation, ModelVariantSelector},
+        gmv_center_agent::v1::{AiModelDesired, DesiredState},
+    };
+
+    let descriptor = descriptor();
+    let common = descriptor_file(&descriptor, "gmv.common.v1");
+    let selector = descriptor_message(common, "ModelVariantSelector");
+    assert_eq!(descriptor_field_number(selector, "runtime"), Some(1));
+    assert_eq!(
+        descriptor_field_number(selector, "runtime_contract_version"),
+        Some(2)
+    );
+    assert_eq!(descriptor_field_number(selector, "architecture"), Some(3));
+    assert_eq!(descriptor_field_number(selector, "accelerator"), Some(4));
+    let correlation = descriptor_message(common, "ModelDeliveryCorrelation");
+    for (name, number) in [
+        ("deployment_id", 1),
+        ("target_ordinal", 2),
+        ("installation_id", 3),
+        ("host_id", 4),
+        ("component_id", 5),
+        ("assignment_id", 6),
+    ] {
+        assert_eq!(descriptor_field_number(correlation, name), Some(number));
+    }
+    let center = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    assert_eq!(
+        descriptor_field_number(descriptor_message(center, "DesiredState"), "ai_model"),
+        Some(6)
+    );
+    assert_eq!(
+        descriptor_field_number(
+            descriptor_message(center, "ComponentObservation"),
+            "avai_model_import_contract_version"
+        ),
+        Some(10)
+    );
+
+    let current = DesiredState {
+        assignment_id: "assignment-1".into(),
+        channel: "model".into(),
+        artifact: None,
+        deadline_epoch_ms: 42,
+        target_component_id: "avai-1".into(),
+        ai_model: Some(AiModelDesired {
+            correlation: Some(ModelDeliveryCorrelation {
+                deployment_id: "deployment-1".into(),
+                target_ordinal: 7,
+                installation_id: "installation-1".into(),
+                host_id: "host-1".into(),
+                component_id: "avai-1".into(),
+                assignment_id: "assignment-1".into(),
+            }),
+            selector: Some(ModelVariantSelector {
+                runtime: "onnx-cpu".into(),
+                runtime_contract_version: 1,
+                architecture: "x86_64".into(),
+                accelerator: String::new(),
+            }),
+        }),
+    };
+    let decoded = DesiredState::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded, current);
+    let legacy = LegacyDesiredState::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy.assignment_id, "assignment-1");
+    assert_eq!(legacy.deadline_epoch_ms, 42);
 }
 
 #[test]
@@ -1867,6 +1953,7 @@ fn avai_local_model_management_is_typed_bounded_and_not_public_avai_control() {
             .filter_map(|method| method.name.as_deref())
             .collect::<Vec<_>>(),
         [
+            "GetManagementCapabilities",
             "ListModels",
             "InspectModel",
             "ImportStagedModel",
@@ -1897,6 +1984,45 @@ fn avai_local_model_management_is_typed_bounded_and_not_public_avai_control() {
         descriptor_field_number(import, "expected_manifest_sha256"),
         Some(5)
     );
+    assert_eq!(descriptor_field_number(import, "correlation"), Some(6));
+    assert_eq!(
+        descriptor_field_number(import, "expected_selector"),
+        Some(7)
+    );
+    assert_eq!(
+        descriptor_field_number(
+            descriptor_message(file, "GetManagementCapabilitiesResponse"),
+            "exact_model_import_contract_version"
+        ),
+        Some(1)
+    );
+
+    let current = gmv_protocol::avai::model_management::v1::ImportStagedModelRequest {
+        operation: None,
+        deadline_epoch_ms: 42,
+        stage_id: "stage-1".into(),
+        expected_identity: None,
+        expected_manifest_sha256: "ab".repeat(32),
+        correlation: Some(gmv_protocol::common::v1::ModelDeliveryCorrelation {
+            deployment_id: "deployment-1".into(),
+            target_ordinal: 1,
+            installation_id: "installation-1".into(),
+            host_id: "host-1".into(),
+            component_id: "avai-1".into(),
+            assignment_id: "assignment-1".into(),
+        }),
+        expected_selector: Some(gmv_protocol::common::v1::ModelVariantSelector {
+            runtime: "onnx-cpu".into(),
+            runtime_contract_version: 1,
+            architecture: "x86_64".into(),
+            accelerator: "cpu".into(),
+        }),
+    };
+    let legacy =
+        LegacyImportStagedModelRequest::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(legacy.stage_id, "stage-1");
+    assert_eq!(legacy.deadline_epoch_ms, 42);
+    assert_eq!(legacy.expected_manifest_sha256, "ab".repeat(32));
 
     let forbidden = [
         "path",

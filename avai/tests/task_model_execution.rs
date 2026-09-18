@@ -151,7 +151,7 @@ fn write_package(
         .collect::<Vec<_>>()
         .join("\n");
     let unsigned = format!(
-        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n{capabilities_yaml}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
+        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n{capabilities_yaml}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    runtime_contract_version: 1\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
         std::env::consts::ARCH
     );
     let manifest: ModelPackageManifest = base::serde_yaml::from_str(&unsigned).unwrap();
