@@ -20,7 +20,7 @@ pub use package::{
     ModelPackageManifest, PackagePolicy, PostprocessContract, PreprocessContract, ResourceHints,
     ResultSchema, RuntimeVariant, SelectedRuntimeVariant, SelfTestCase, SelfTestOracle,
     SigningSpec, TensorContract, VerifiedModelPackage, model_package_signing_payload,
-    verify_package,
+    verify_package, verify_package_for_selector,
 };
 pub(crate) use repository::{
     ClaimOperation, OperationClaimRequest, OperationReceipt, OperationReceiptLimits,

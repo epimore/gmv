@@ -12,13 +12,14 @@ use base::{
 };
 use gmv_protocol::{
     avai::model_management::v1::{
-        ActivateModelRequest, ImportStagedModelRequest, InspectModelRequest, InspectModelResponse,
-        ListModelsRequest, ListModelsResponse, ModelHealth, ModelIdentity as RpcModelIdentity,
-        ModelLifecycleState, ModelMutationResponse, ModelOperationOutcome, ModelSnapshot,
-        PreloadModelRequest, RollbackModelRequest, UnloadModelRequest,
+        ActivateModelRequest, GetManagementCapabilitiesRequest, GetManagementCapabilitiesResponse,
+        ImportStagedModelRequest, InspectModelRequest, InspectModelResponse, ListModelsRequest,
+        ListModelsResponse, ModelHealth, ModelIdentity as RpcModelIdentity, ModelLifecycleState,
+        ModelMutationResponse, ModelOperationOutcome, ModelSnapshot, PreloadModelRequest,
+        RollbackModelRequest, UnloadModelRequest,
         avai_model_management_server::AvaiModelManagement,
     },
-    common::v1::{ErrorDetail, OperationRef},
+    common::v1::{ErrorDetail, ModelDeliveryCorrelation, ModelVariantSelector, OperationRef},
 };
 use tonic::{Request, Response, Status};
 
@@ -27,7 +28,7 @@ use crate::{
         ClaimOperation, InstalledModel, ModelError, ModelIdentity, ModelManager, ModelObservation,
         ModelRepository, ModelResult, ModelState, OperationClaimRequest, OperationReceipt,
         OperationReceiptLimits, OperationReceiptState, PackagePolicy, RuntimeCallContext,
-        verify_package,
+        verify_package_for_selector,
     },
     observability::Observability,
     task::TaskManager,
@@ -38,6 +39,7 @@ const MAX_PAGE_SIZE: usize = 200;
 const MAX_ID_BYTES: usize = 128;
 const MAX_DEADLINE_AHEAD_MS: i64 = 2 * 60 * 60 * 1_000;
 const MAX_RECEIPT_CAPACITY: usize = 4_096;
+const EXACT_MODEL_IMPORT_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub struct ModelManagementConfig {
@@ -428,6 +430,15 @@ impl AvaiModelManagementRpc {
 
 #[tonic::async_trait]
 impl AvaiModelManagement for AvaiModelManagementRpc {
+    async fn get_management_capabilities(
+        &self,
+        _request: Request<GetManagementCapabilitiesRequest>,
+    ) -> Result<Response<GetManagementCapabilitiesResponse>, Status> {
+        Ok(Response::new(GetManagementCapabilitiesResponse {
+            exact_model_import_contract_version: EXACT_MODEL_IMPORT_CONTRACT_VERSION,
+        }))
+    }
+
     async fn list_models(
         &self,
         request: Request<ListModelsRequest>,
@@ -526,6 +537,30 @@ impl AvaiModelManagement for AvaiModelManagementRpc {
                 )));
             }
         };
+        let correlation = match validate_correlation(request.correlation) {
+            Ok(correlation) => correlation,
+            Err(error) => {
+                return Ok(Response::new(mutation_failure(
+                    "",
+                    error.code,
+                    false,
+                    now_epoch_ms(),
+                    None,
+                )));
+            }
+        };
+        let selector = match validate_selector(request.expected_selector) {
+            Ok(selector) => selector,
+            Err(error) => {
+                return Ok(Response::new(mutation_failure(
+                    "",
+                    error.code,
+                    false,
+                    now_epoch_ms(),
+                    None,
+                )));
+            }
+        };
         Ok(Response::new(
             self.execute_mutation(
                 request.operation,
@@ -534,6 +569,8 @@ impl AvaiModelManagement for AvaiModelManagementRpc {
                     stage_id: request.stage_id,
                     identity,
                     manifest_sha256: request.expected_manifest_sha256,
+                    correlation,
+                    selector,
                 },
             )
             .await,
@@ -664,6 +701,8 @@ enum MutationCommand {
         stage_id: String,
         identity: ModelIdentity,
         manifest_sha256: String,
+        correlation: ModelDeliveryCorrelation,
+        selector: ModelVariantSelector,
     },
     Preload(ModelIdentity),
     Activate(ModelIdentity),
@@ -704,10 +743,14 @@ impl MutationCommand {
                 stage_id,
                 identity,
                 manifest_sha256,
+                correlation,
+                selector,
             } => {
                 hash_part(&mut hash, stage_id.as_bytes());
                 hash_identity(&mut hash, identity);
                 hash_part(&mut hash, manifest_sha256.as_bytes());
+                hash_correlation(&mut hash, correlation);
+                hash_selector(&mut hash, selector);
             }
             Self::Preload(identity) | Self::Activate(identity) | Self::Unload(identity) => {
                 hash_identity(&mut hash, identity)
@@ -725,9 +768,19 @@ impl MutationCommand {
             Self::Import {
                 identity,
                 manifest_sha256,
+                selector,
                 ..
             } => match service.repository.get(identity).await? {
-                Some(model) if model.manifest_sha256.eq_ignore_ascii_case(manifest_sha256) => {
+                Some(model)
+                    if model.manifest_sha256.eq_ignore_ascii_case(manifest_sha256)
+                        && model.selected_variant.as_ref().is_some_and(|selected| {
+                            selected.runtime == selector.runtime
+                                && selected.runtime_contract_version
+                                    == selector.runtime_contract_version
+                                && selected.architecture == selector.architecture
+                                && selected.accelerator == selector.accelerator
+                        }) =>
+                {
                     Ok(true)
                 }
                 Some(_) => Err(ModelError::new(
@@ -783,6 +836,8 @@ impl MutationCommand {
                 stage_id,
                 identity,
                 manifest_sha256,
+                selector,
+                ..
             } => {
                 if !valid_stage_id(&stage_id) || !valid_sha256(&manifest_sha256) {
                     return Err(ModelError::new(
@@ -794,7 +849,13 @@ impl MutationCommand {
                     return if existing
                         .manifest_sha256
                         .eq_ignore_ascii_case(&manifest_sha256)
-                    {
+                        && existing.selected_variant.as_ref().is_some_and(|selected| {
+                            selected.runtime == selector.runtime
+                                && selected.runtime_contract_version
+                                    == selector.runtime_contract_version
+                                && selected.architecture == selector.architecture
+                                && selected.accelerator == selector.accelerator
+                        }) {
                         Ok(())
                     } else {
                         Err(ModelError::new(
@@ -807,12 +868,12 @@ impl MutationCommand {
                 let candidate =
                     trusted_stage_candidate(&service.config.trusted_import_root, &stage_id)?;
                 let policy = service.config.package_policy.clone();
-                let package =
-                    base::tokio::task::spawn_blocking(move || verify_package(&candidate, &policy))
-                        .await
-                        .map_err(|error| {
-                            ModelError::new("model_verify_failed", error.to_string())
-                        })??;
+                let expected_selector = selector.clone();
+                let package = base::tokio::task::spawn_blocking(move || {
+                    verify_package_for_selector(&candidate, &policy, &expected_selector)
+                })
+                .await
+                .map_err(|error| ModelError::new("model_verify_failed", error.to_string()))??;
                 if package.manifest.metadata != identity
                     || !package
                         .manifest_sha256
@@ -823,6 +884,9 @@ impl MutationCommand {
                         "verified package does not match expected immutable identity",
                     ));
                 }
+                service
+                    .manager
+                    .validate_selector(&package.selected_variant)?;
                 ensure_before_deadline(deadline_epoch_ms)?;
                 let repository = service.repository.clone();
                 let runtime = base::tokio::runtime::Handle::current();
@@ -985,7 +1049,7 @@ fn rpc_identity(identity: Option<RpcModelIdentity>) -> ModelResult<ModelIdentity
         .ok_or_else(|| ModelError::new("model_identity_invalid", "model identity is required"))?;
     if [&identity.model_id, &identity.version, &identity.revision]
         .iter()
-        .any(|part| !valid_bounded_token(part))
+        .any(|part| !valid_model_identifier(part))
     {
         return Err(ModelError::new(
             "model_identity_invalid",
@@ -997,6 +1061,59 @@ fn rpc_identity(identity: Option<RpcModelIdentity>) -> ModelResult<ModelIdentity
         version: identity.version,
         revision: identity.revision,
     })
+}
+
+fn validate_correlation(
+    correlation: Option<ModelDeliveryCorrelation>,
+) -> ModelResult<ModelDeliveryCorrelation> {
+    let correlation = correlation.ok_or_else(|| {
+        ModelError::new(
+            "model_delivery_correlation_invalid",
+            "model delivery correlation is required",
+        )
+    })?;
+    if [
+        &correlation.deployment_id,
+        &correlation.installation_id,
+        &correlation.host_id,
+        &correlation.component_id,
+        &correlation.assignment_id,
+    ]
+    .iter()
+    .any(|value| !valid_model_identifier(value))
+    {
+        return Err(ModelError::new(
+            "model_delivery_correlation_invalid",
+            "model delivery correlation contains an invalid identifier",
+        ));
+    }
+    Ok(correlation)
+}
+
+fn validate_selector(selector: Option<ModelVariantSelector>) -> ModelResult<ModelVariantSelector> {
+    let selector = selector.ok_or_else(|| {
+        ModelError::new("model_selector_missing", "exact model selector is required")
+    })?;
+    if !valid_model_identifier(&selector.runtime)
+        || selector.runtime_contract_version == 0
+        || !valid_model_identifier(&selector.architecture)
+        || (!selector.accelerator.is_empty() && !valid_model_identifier(&selector.accelerator))
+    {
+        return Err(ModelError::new(
+            "model_selector_invalid",
+            "exact model selector is invalid",
+        ));
+    }
+    Ok(selector)
+}
+
+fn valid_model_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_ID_BYTES
+        && value.is_ascii()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn valid_bounded_token(value: &str) -> bool {
@@ -1133,6 +1250,22 @@ fn hash_identity(hash: &mut Sha256, identity: &ModelIdentity) {
     hash_part(hash, identity.model_id.as_bytes());
     hash_part(hash, identity.version.as_bytes());
     hash_part(hash, identity.revision.as_bytes());
+}
+
+fn hash_correlation(hash: &mut Sha256, correlation: &ModelDeliveryCorrelation) {
+    hash_part(hash, correlation.deployment_id.as_bytes());
+    hash_part(hash, &correlation.target_ordinal.to_be_bytes());
+    hash_part(hash, correlation.installation_id.as_bytes());
+    hash_part(hash, correlation.host_id.as_bytes());
+    hash_part(hash, correlation.component_id.as_bytes());
+    hash_part(hash, correlation.assignment_id.as_bytes());
+}
+
+fn hash_selector(hash: &mut Sha256, selector: &ModelVariantSelector) {
+    hash_part(hash, selector.runtime.as_bytes());
+    hash_part(hash, &selector.runtime_contract_version.to_be_bytes());
+    hash_part(hash, selector.architecture.as_bytes());
+    hash_part(hash, selector.accelerator.as_bytes());
 }
 
 fn model_snapshot(

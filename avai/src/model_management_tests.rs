@@ -11,12 +11,15 @@ use base::{
 use gmv_nodec::component_management::UnsupportedDrainOwner;
 use gmv_protocol::{
     avai::model_management::v1::{
-        ActivateModelRequest, ImportStagedModelRequest, InspectModelRequest, ListModelsRequest,
-        ModelHealth, ModelIdentity as RpcIdentity, PreloadModelRequest, RollbackModelRequest,
-        UnloadModelRequest, avai_model_management_client::AvaiModelManagementClient,
+        ActivateModelRequest, GetManagementCapabilitiesRequest, ImportStagedModelRequest,
+        InspectModelRequest, ListModelsRequest, ModelHealth, ModelIdentity as RpcIdentity,
+        PreloadModelRequest, RollbackModelRequest, UnloadModelRequest,
+        avai_model_management_client::AvaiModelManagementClient,
         avai_model_management_server::AvaiModelManagement,
     },
-    common::v1::{NodeIdentity, NodeKind, OperationRef},
+    common::v1::{
+        ModelDeliveryCorrelation, ModelVariantSelector, NodeIdentity, NodeKind, OperationRef,
+    },
     component_management::v1::{
         ComponentProbeRequest, component_management_client::ComponentManagementClient,
     },
@@ -53,6 +56,26 @@ fn node_identity() -> NodeIdentity {
         node_id: "avai-test".into(),
         instance_id: "instance-test".into(),
         kind: NodeKind::Avai as i32,
+    }
+}
+
+fn correlation(assignment_id: &str) -> ModelDeliveryCorrelation {
+    ModelDeliveryCorrelation {
+        deployment_id: "deployment-test".into(),
+        target_ordinal: 0,
+        installation_id: "installation-test".into(),
+        host_id: "host-test".into(),
+        component_id: "avai-test".into(),
+        assignment_id: assignment_id.into(),
+    }
+}
+
+fn selector() -> ModelVariantSelector {
+    ModelVariantSelector {
+        runtime: "fake".into(),
+        runtime_contract_version: 1,
+        architecture: std::env::consts::ARCH.into(),
+        accelerator: "cpu".into(),
     }
 }
 
@@ -185,7 +208,10 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             .unwrap();
     let manager = ModelManager::open(
         repository.clone(),
-        Vec::new(),
+        vec![Arc::new(FakeRuntimeProvider::new(
+            "fake",
+            FakeRuntimeBehavior::default(),
+        ))],
         ModelManagerConfig::default(),
     )
     .await
@@ -243,12 +269,23 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
     assert_eq!(probe.component_id, "avai");
 
     let mut model = AvaiModelManagementClient::new(channel);
+    assert_eq!(
+        model
+            .get_management_capabilities(GetManagementCapabilitiesRequest {})
+            .await
+            .unwrap()
+            .into_inner()
+            .exact_model_import_contract_version,
+        1
+    );
     let import = ImportStagedModelRequest {
         operation: Some(operation("import-a")),
         deadline_epoch_ms: deadline(),
         stage_id: "stage-a".into(),
         expected_identity: Some(rpc_identity("model-a", "1", "rev-a")),
         expected_manifest_sha256: manifest_hash,
+        correlation: Some(correlation("import-a")),
+        expected_selector: Some(selector()),
     };
     let first = model
         .import_staged_model(import.clone())
@@ -269,8 +306,21 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
     assert!(replay.replayed);
     assert_eq!(replay.error, None);
     assert_eq!(telemetry.snapshot()["installed_models"], "1");
+    let mut conflict = import.clone();
+    conflict.expected_selector.as_mut().unwrap().accelerator = String::new();
+    assert_eq!(
+        model
+            .import_staged_model(conflict)
+            .await
+            .unwrap()
+            .into_inner()
+            .error
+            .unwrap()
+            .code,
+        "model_operation_conflict"
+    );
     let mut conflict = import;
-    conflict.stage_id = "stage-b".into();
+    conflict.correlation.as_mut().unwrap().assignment_id = "assignment-other".into();
     assert_eq!(
         model
             .import_staged_model(conflict)
@@ -294,7 +344,7 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .into_inner()
         .model
         .unwrap();
-    assert!(!inspected.runtime_available);
+    assert!(inspected.runtime_available);
     let live_inspected = model
         .inspect_model(InspectModelRequest {
             identity: Some(rpc_identity("model-a", "1", "rev-a")),
@@ -306,11 +356,8 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .into_inner()
         .model
         .unwrap();
-    assert_eq!(live_inspected.health, ModelHealth::Unavailable as i32);
-    assert_eq!(
-        live_inspected.error.unwrap().code,
-        "model_runtime_unavailable"
-    );
+    assert_eq!(live_inspected.health, ModelHealth::Unknown as i32);
+    assert_eq!(live_inspected.error, None);
     assert_eq!(
         model
             .preload_model(PreloadModelRequest {
@@ -321,10 +368,8 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             .await
             .unwrap()
             .into_inner()
-            .error
-            .unwrap()
-            .code,
-        "model_runtime_unavailable"
+            .error,
+        None
     );
     let stage_b = import_root.join("stage-b");
     std::fs::create_dir_all(&stage_b).unwrap();
@@ -341,6 +386,8 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
                 stage_id: "stage-b".into(),
                 expected_identity: Some(rpc_identity("model-b", "1", "rev-b")),
                 expected_manifest_sha256: manifest_b,
+                correlation: Some(correlation("import-b")),
+                expected_selector: Some(selector()),
             })
             .await
             .unwrap()
@@ -377,7 +424,11 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         ),
     ] {
         assert_eq!(response.operation_id, operation_id);
-        assert_eq!(response.error.unwrap().code, "model_runtime_unavailable");
+        if operation_id == "activate-no-provider" {
+            assert_eq!(response.error, None);
+        } else {
+            assert_eq!(response.error.unwrap().code, "model_runtime_unavailable");
+        }
     }
     for (page_size, expected_error) in [(0, false), (200, false), (201, true)] {
         let page = model
@@ -435,6 +486,8 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             stage_id: "../escape".into(),
             expected_identity: Some(rpc_identity("x", "1", "r")),
             expected_manifest_sha256: "0".repeat(64),
+            correlation: Some(correlation("traversal")),
+            expected_selector: Some(selector()),
         })
         .await
         .unwrap()
@@ -451,11 +504,70 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             stage_id: "link-stage".into(),
             expected_identity: Some(rpc_identity("x", "1", "r")),
             expected_manifest_sha256: "0".repeat(64),
+            correlation: Some(correlation("symlink")),
+            expected_selector: Some(selector()),
         })
         .await
         .unwrap()
         .into_inner();
     assert_eq!(linked.error.unwrap().code, "model_stage_insecure");
+
+    let colon_stage = import_root.join("stage-colon");
+    std::fs::create_dir_all(&colon_stage).unwrap();
+    write_package(&colon_stage, "detector:prod", "1.0", "r:1");
+    let colon_manifest_hash = format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(colon_stage.join("manifest.yaml")).unwrap())
+    );
+    let colon_import = model
+        .import_staged_model(ImportStagedModelRequest {
+            operation: Some(operation("import-colon")),
+            deadline_epoch_ms: deadline(),
+            stage_id: "stage-colon".into(),
+            expected_identity: Some(rpc_identity("detector:prod", "1.0", "r:1")),
+            expected_manifest_sha256: colon_manifest_hash,
+            correlation: Some(correlation("import-colon")),
+            expected_selector: Some(selector()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(colon_import.error, None);
+    assert!(
+        repository
+            .get(&identity("detector:prod", "1.0", "r:1"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    for (index, unsafe_model_id) in [
+        "../detector",
+        "https://models.invalid/detector",
+        "detector;shutdown",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = model
+            .import_staged_model(ImportStagedModelRequest {
+                operation: Some(operation(&format!("unsafe-identity-{index}"))),
+                deadline_epoch_ms: deadline(),
+                stage_id: "stage-a".into(),
+                expected_identity: Some(rpc_identity(unsafe_model_id, "1.0", "r:1")),
+                expected_manifest_sha256: "0".repeat(64),
+                correlation: Some(correlation(&format!("unsafe-identity-{index}"))),
+                expected_selector: Some(selector()),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            rejected.error.unwrap().code,
+            "model_identity_invalid",
+            "{unsafe_model_id}"
+        );
+    }
 
     cancel.cancel();
     server.await.unwrap().unwrap();
@@ -486,10 +598,15 @@ async fn real_sqlite_pending_import_reconciles_after_crash_and_terminal_replay_i
             stage_id: "stage-a".into(),
             expected_identity: Some(rpc_identity("model-a", "1", "rev-a")),
             expected_manifest_sha256: manifest_hash.clone(),
+            correlation: Some(correlation("crash-import")),
+            expected_selector: Some(selector()),
         };
         let manager = ModelManager::open(
             repository.clone(),
-            Vec::new(),
+            vec![Arc::new(FakeRuntimeProvider::new(
+                "fake",
+                FakeRuntimeBehavior::default(),
+            ))],
             ModelManagerConfig::default(),
         )
         .await

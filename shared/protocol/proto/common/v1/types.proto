@@ -75,6 +75,22 @@ message OperationRef {
   string idempotency_key = 2;
 }
 
+message ModelVariantSelector {
+  string runtime = 1;
+  uint32 runtime_contract_version = 2;
+  string architecture = 3;
+  string accelerator = 4;
+}
+
+message ModelDeliveryCorrelation {
+  string deployment_id = 1;
+  uint32 target_ordinal = 2;
+  string installation_id = 3;
+  string host_id = 4;
+  string component_id = 5;
+  string assignment_id = 6;
+}
+
 message ErrorDetail {
   string code = 1;
   string message = 2;

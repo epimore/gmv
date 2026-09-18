@@ -11,8 +11,8 @@ use std::{
 use avai::model::{
     FakeRuntimeBehavior, FakeRuntimeProvider, HealthReconcile, ModelIdentity, ModelManager,
     ModelManagerConfig, ModelPackageManifest, ModelRepository, ModelState, PackagePolicy,
-    RuntimeCallContext, RuntimeInput, RuntimeProvider, model_package_signing_payload,
-    verify_package,
+    RuntimeCallContext, RuntimeInput, RuntimeProvider, RuntimeVariant,
+    model_package_signing_payload, verify_package, verify_package_for_selector,
 };
 use avai::observability::Observability;
 use base::{
@@ -25,6 +25,7 @@ use base_db::{
     sqlx::Row,
 };
 use ed25519_dalek::{Signer, SigningKey};
+use gmv_protocol::common::v1::ModelVariantSelector;
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(1);
 const CAPABILITY: &str = "vehicle.detect";
@@ -96,7 +97,7 @@ pub(crate) fn write_package_with_capabilities(
         .collect::<Vec<_>>()
         .join("\n");
     let unsigned_manifest = format!(
-        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n{capabilities_yaml}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
+        "api_version: gmv.ai/v1\nkind: ModelPlugin\nmetadata:\n  model_id: {model_id}\n  version: {version}\n  revision: {revision}\ncapabilities:\n{capabilities_yaml}\nresult_schema:\n  name: gmv.vision.observation\n  version: 1\n  path: schema/result.schema.json\nvariants:\n  - runtime: fake\n    runtime_contract_version: 1\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\nresources:\n  memory_mb: 64\n  vram_mb: 0\n  max_batch: 4\nlicense:\n  spdx: Apache-2.0\n  commercial_use: true\n  redistribution: allowed\n  license_ref: \"\"\nself_test:\n  - input: tests/input.bin\n    expected: tests/expected.json\nfiles:\n{file_yaml}\nsigning:\n  key_id: test-key\n  signature: \"\"\n",
         std::env::consts::ARCH
     );
     let manifest = sign_manifest(&unsigned_manifest);
@@ -148,6 +149,55 @@ pub(crate) fn identity(model_id: &str, version: &str, revision: &str) -> ModelId
         version: version.to_string(),
         revision: revision.to_string(),
     }
+}
+
+#[test]
+fn exact_selector_never_substitutes_a_compatible_variant() {
+    let root = TestRoot::new("exact-selector");
+    write_package(root.path(), "model-a", "1", "rev-a");
+    let exact = ModelVariantSelector {
+        runtime: "fake".into(),
+        runtime_contract_version: 1,
+        architecture: std::env::consts::ARCH.into(),
+        accelerator: "cpu".into(),
+    };
+    let verified = verify_package_for_selector(root.path(), &policy(), &exact).unwrap();
+    assert_eq!(verified.selected_variant.runtime, "fake");
+    assert_eq!(verified.selected_variant.accelerator, "cpu");
+
+    let missing = ModelVariantSelector {
+        accelerator: String::new(),
+        ..exact
+    };
+    assert_eq!(
+        verify_package_for_selector(root.path(), &policy(), &missing)
+            .unwrap_err()
+            .code,
+        "model_variant_selector_not_found"
+    );
+}
+
+#[tokio::test]
+async fn configured_name_without_registered_provider_is_unavailable() {
+    let root = TestRoot::new("selector-provider-absence");
+    let repository =
+        ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
+            .await
+            .unwrap();
+    let manager = ModelManager::open(repository.clone(), vec![], ModelManagerConfig::default())
+        .await
+        .unwrap();
+    let error = manager
+        .validate_selector(&RuntimeVariant {
+            runtime: "fake".into(),
+            runtime_contract_version: 1,
+            architecture: std::env::consts::ARCH.into(),
+            accelerator: "cpu".into(),
+            artifact: "model/model.bin".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "model_runtime_unavailable");
+    repository.close().await;
 }
 
 async fn repository_with_models(root: &TestRoot) -> ModelRepository {
@@ -344,14 +394,14 @@ fn package_verifier_rejects_untrusted_and_malformed_inputs() {
     );
 
     let variant = format!(
-        "  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
+        "  - runtime: fake\n    runtime_contract_version: 1\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
         std::env::consts::ARCH
     );
     let ambiguous = valid.replace(&variant, &format!("{variant}{variant}"));
     std::fs::write(&manifest_path, resign_manifest(&ambiguous)).unwrap();
     assert_eq!(
         verify_package(root.path(), &policy()).unwrap_err().code,
-        "model_variant_ambiguous"
+        "invalid_model_manifest"
     );
     std::fs::write(&manifest_path, &valid).unwrap();
 
@@ -520,7 +570,7 @@ async fn legacy_ambiguous_selected_variant_recovery_fails_closed() {
     let manifest_path = installed.installed_path.join("manifest.yaml");
     let manifest = std::fs::read_to_string(&manifest_path).unwrap();
     let variant = format!(
-        "  - runtime: fake\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
+        "  - runtime: fake\n    runtime_contract_version: 1\n    architecture: {}\n    accelerator: cpu\n    artifact: model/model.bin\n",
         std::env::consts::ARCH
     );
     let ambiguous = resign_manifest(&manifest.replace(&variant, &format!("{variant}{variant}")));

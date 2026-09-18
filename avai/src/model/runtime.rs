@@ -17,7 +17,8 @@ use base::tokio::sync::Notify;
 #[cfg(test)]
 use super::package::actual_model;
 use super::{
-    ExecutionContract, InstalledModel, ModelError, ModelIdentity, ModelResult, SelfTestCase,
+    ExecutionContract, InstalledModel, ModelError, ModelIdentity, ModelResult, RuntimeVariant,
+    SelfTestCase,
 };
 
 pub type RuntimeFuture<'a, T> = Pin<Box<dyn Future<Output = ModelResult<T>> + Send + 'a>>;
@@ -76,6 +77,8 @@ pub struct RuntimeInput {
 
 pub trait RuntimeProvider: Send + Sync {
     fn descriptor(&self) -> RuntimeDescriptor;
+
+    fn validate_selector(&self, selector: &RuntimeVariant) -> ModelResult<()>;
 
     fn preload<'a>(
         &'a self,
@@ -336,6 +339,17 @@ impl FakeRuntimeProvider {
 impl RuntimeProvider for FakeRuntimeProvider {
     fn descriptor(&self) -> RuntimeDescriptor {
         self.descriptor.clone()
+    }
+
+    fn validate_selector(&self, selector: &RuntimeVariant) -> ModelResult<()> {
+        if selector.runtime == self.descriptor.runtime {
+            Ok(())
+        } else {
+            Err(ModelError::new(
+                "model_runtime_unavailable",
+                "requested runtime provider is not registered",
+            ))
+        }
     }
 
     fn preload<'a>(

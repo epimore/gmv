@@ -16,6 +16,7 @@ pub use gmv_model_package::{
     PostprocessContract, PreprocessContract, ResourceHints, ResultSchema, RuntimeVariant,
     SelfTestCase, SelfTestOracle, SigningSpec, TensorContract, model_package_signing_payload,
 };
+use gmv_protocol::common::v1::ModelVariantSelector;
 
 use super::{InstalledModel, ModelError, ModelResult};
 
@@ -118,6 +119,8 @@ pub struct SelectedRuntimeVariant {
     pub accelerator: String,
     pub artifact: String,
     pub artifact_sha256: String,
+    #[serde(default)]
+    pub artifact_size: u64,
 }
 
 impl SelectedRuntimeVariant {
@@ -145,6 +148,7 @@ impl SelectedRuntimeVariant {
                 .sha256
                 .trim_start_matches("sha256:")
                 .to_ascii_lowercase(),
+            artifact_size: file.size,
         })
     }
 }
@@ -189,6 +193,23 @@ pub(crate) fn load_installed_execution_contract(
                 return Err(ModelError::new(
                     "model_package_changed",
                     "persisted selected variant no longer matches the immutable manifest",
+                ));
+            }
+            let declared_size = manifest
+                .files
+                .iter()
+                .find(|file| file.path == selected.artifact)
+                .map(|file| file.size)
+                .ok_or_else(|| {
+                    ModelError::new(
+                        "model_package_changed",
+                        "persisted selected artifact is not hash-declared",
+                    )
+                })?;
+            if selected.artifact_size != 0 && selected.artifact_size != declared_size {
+                return Err(ModelError::new(
+                    "model_package_changed",
+                    "persisted selected artifact size does not match the immutable manifest",
                 ));
             }
             selected.clone()
@@ -282,6 +303,7 @@ fn selected_from_manifest(
             .sha256
             .trim_start_matches("sha256:")
             .to_ascii_lowercase(),
+        artifact_size: file.size,
     })
 }
 
@@ -332,7 +354,13 @@ fn verify_installed_file(
 
 impl VerifiedModelPackage {
     pub(crate) fn verify_staged_copy(&self, root: &Path) -> ModelResult<()> {
-        let staged = verify_package(root, &self.policy)?;
+        let selector = ModelVariantSelector {
+            runtime: self.selected_variant.runtime.clone(),
+            runtime_contract_version: self.selected_variant.runtime_contract_version,
+            architecture: self.selected_variant.architecture.clone(),
+            accelerator: self.selected_variant.accelerator.clone(),
+        };
+        let staged = verify_package_for_selector(root, &self.policy, &selector)?;
         if staged.manifest.metadata != self.manifest.metadata
             || staged.manifest_sha256 != self.manifest_sha256
             || staged.selected_variant.runtime != self.selected_variant.runtime
@@ -348,6 +376,22 @@ impl VerifiedModelPackage {
 }
 
 pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<VerifiedModelPackage> {
+    verify_package_inner(root, policy, None)
+}
+
+pub fn verify_package_for_selector(
+    root: &Path,
+    policy: &PackagePolicy,
+    selector: &ModelVariantSelector,
+) -> ModelResult<VerifiedModelPackage> {
+    verify_package_inner(root, policy, Some(selector))
+}
+
+fn verify_package_inner(
+    root: &Path,
+    policy: &PackagePolicy,
+    expected_selector: Option<&ModelVariantSelector>,
+) -> ModelResult<VerifiedModelPackage> {
     let root_metadata = std::fs::symlink_metadata(root)
         .map_err(|error| ModelError::io("inspect package root", error))?;
     if !root_metadata.is_dir() || root_metadata.file_type().is_symlink() {
@@ -440,23 +484,43 @@ pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<Verifi
         )
     })?;
 
-    let compatible_variants = manifest
+    let candidates = manifest
         .variants
         .iter()
-        .filter(|variant| {
-            variant.architecture == policy.architecture
-                && policy.available_runtimes.contains(&variant.runtime)
-                && (variant.accelerator.is_empty()
-                    || policy.available_accelerators.contains(&variant.accelerator))
+        .filter(|variant| match expected_selector {
+            Some(selector) => {
+                variant.runtime == selector.runtime
+                    && variant.runtime_contract_version == selector.runtime_contract_version
+                    && variant.architecture == selector.architecture
+                    && variant.accelerator == selector.accelerator
+            }
+            None => {
+                variant.architecture == policy.architecture
+                    && policy.available_runtimes.contains(&variant.runtime)
+                    && (variant.accelerator.is_empty()
+                        || policy.available_accelerators.contains(&variant.accelerator))
+            }
         })
         .cloned()
         .collect::<Vec<_>>();
-    let selected_variant = match compatible_variants.as_slice() {
+    let selected_variant = match candidates.as_slice() {
         [selected] => selected.clone(),
+        [] if expected_selector.is_some() => {
+            return Err(ModelError::new(
+                "model_variant_selector_not_found",
+                "the signed model bundle does not contain the exact requested selector",
+            ));
+        }
         [] => {
             return Err(ModelError::new(
                 "model_runtime_incompatible",
                 "no model variant matches this architecture and available runtime",
+            ));
+        }
+        _ if expected_selector.is_some() => {
+            return Err(ModelError::new(
+                "model_variant_selector_ambiguous",
+                "the signed model bundle contains duplicate exact selectors",
             ));
         }
         _ => {
@@ -466,6 +530,12 @@ pub fn verify_package(root: &Path, policy: &PackagePolicy) -> ModelResult<Verifi
             ));
         }
     };
+    if expected_selector.is_some() && selected_variant.architecture != policy.architecture {
+        return Err(ModelError::new(
+            "model_architecture_unsupported",
+            "the exact requested selector does not match local architecture",
+        ));
+    }
     Ok(VerifiedModelPackage {
         root: root.to_path_buf(),
         manifest,

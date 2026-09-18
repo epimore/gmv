@@ -194,12 +194,32 @@ fn validate_config(config: OnnxCpuConfig) -> ModelResult<()> {
     Ok(())
 }
 
+fn validate_onnx_cpu_selector(selector: &super::RuntimeVariant) -> ModelResult<()> {
+    if selector.runtime_contract_version != ONNX_CONTRACT_VERSION {
+        return Err(ModelError::new(
+            "model_runtime_contract_unsupported",
+            "onnx-cpu supports only runtime contract version 1",
+        ));
+    }
+    if selector.accelerator != "cpu" {
+        return Err(ModelError::new(
+            "model_accelerator_unavailable",
+            "onnx-cpu requires the exact cpu accelerator selector",
+        ));
+    }
+    Ok(())
+}
+
 impl RuntimeProvider for OnnxCpuProvider {
     fn descriptor(&self) -> RuntimeDescriptor {
         RuntimeDescriptor {
             runtime: ONNX_CPU_RUNTIME.to_string(),
             version: ONNX_RUNTIME_VERSION.to_string(),
         }
+    }
+
+    fn validate_selector(&self, selector: &super::RuntimeVariant) -> ModelResult<()> {
+        validate_onnx_cpu_selector(selector)
     }
 
     fn preload<'a>(
@@ -990,6 +1010,30 @@ impl NativeExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selector_requires_exact_contract_and_cpu_accelerator() {
+        let mut selector = super::super::RuntimeVariant {
+            runtime: ONNX_CPU_RUNTIME.into(),
+            runtime_contract_version: ONNX_CONTRACT_VERSION,
+            architecture: std::env::consts::ARCH.into(),
+            accelerator: "cpu".into(),
+            artifact: "model.onnx".into(),
+        };
+        validate_onnx_cpu_selector(&selector).unwrap();
+
+        selector.runtime_contract_version += 1;
+        assert_eq!(
+            validate_onnx_cpu_selector(&selector).unwrap_err().code,
+            "model_runtime_contract_unsupported"
+        );
+        selector.runtime_contract_version = ONNX_CONTRACT_VERSION;
+        selector.accelerator = "gpu".into();
+        assert_eq!(
+            validate_onnx_cpu_selector(&selector).unwrap_err().code,
+            "model_accelerator_unavailable"
+        );
+    }
 
     #[tokio::test]
     async fn shutdown_reports_incomplete_for_non_cooperative_native_job() {
