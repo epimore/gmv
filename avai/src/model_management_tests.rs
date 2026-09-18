@@ -512,6 +512,63 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .into_inner();
     assert_eq!(linked.error.unwrap().code, "model_stage_insecure");
 
+    let colon_stage = import_root.join("stage-colon");
+    std::fs::create_dir_all(&colon_stage).unwrap();
+    write_package(&colon_stage, "detector:prod", "1.0", "r:1");
+    let colon_manifest_hash = format!(
+        "{:x}",
+        Sha256::digest(std::fs::read(colon_stage.join("manifest.yaml")).unwrap())
+    );
+    let colon_import = model
+        .import_staged_model(ImportStagedModelRequest {
+            operation: Some(operation("import-colon")),
+            deadline_epoch_ms: deadline(),
+            stage_id: "stage-colon".into(),
+            expected_identity: Some(rpc_identity("detector:prod", "1.0", "r:1")),
+            expected_manifest_sha256: colon_manifest_hash,
+            correlation: Some(correlation("import-colon")),
+            expected_selector: Some(selector()),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(colon_import.error, None);
+    assert!(
+        repository
+            .get(&identity("detector:prod", "1.0", "r:1"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    for (index, unsafe_model_id) in [
+        "../detector",
+        "https://models.invalid/detector",
+        "detector;shutdown",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let rejected = model
+            .import_staged_model(ImportStagedModelRequest {
+                operation: Some(operation(&format!("unsafe-identity-{index}"))),
+                deadline_epoch_ms: deadline(),
+                stage_id: "stage-a".into(),
+                expected_identity: Some(rpc_identity(unsafe_model_id, "1.0", "r:1")),
+                expected_manifest_sha256: "0".repeat(64),
+                correlation: Some(correlation(&format!("unsafe-identity-{index}"))),
+                expected_selector: Some(selector()),
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(
+            rejected.error.unwrap().code,
+            "model_identity_invalid",
+            "{unsafe_model_id}"
+        );
+    }
+
     cancel.cancel();
     server.await.unwrap().unwrap();
     assert!(!socket.exists());

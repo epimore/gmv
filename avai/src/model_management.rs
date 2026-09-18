@@ -1049,7 +1049,7 @@ fn rpc_identity(identity: Option<RpcModelIdentity>) -> ModelResult<ModelIdentity
         .ok_or_else(|| ModelError::new("model_identity_invalid", "model identity is required"))?;
     if [&identity.model_id, &identity.version, &identity.revision]
         .iter()
-        .any(|part| !valid_bounded_token(part))
+        .any(|part| !valid_model_identifier(part))
     {
         return Err(ModelError::new(
             "model_identity_invalid",
