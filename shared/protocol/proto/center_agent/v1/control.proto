@@ -80,6 +80,7 @@ message ComponentObservation {
   ComponentActualRevisionState actual_revision_state = 8;
   string actual_revision_reason = 9;
   uint32 avai_model_import_contract_version = 10;
+  uint32 ai_model_delivery_contract_version = 11;
 }
 
 message AiModelDesired {
