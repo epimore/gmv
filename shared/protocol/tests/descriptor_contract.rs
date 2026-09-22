@@ -45,6 +45,12 @@ struct LegacyCommandReceipt {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct LegacyComponentObservationV10 {
+    #[prost(uint32, tag = "10")]
+    avai_model_import_contract_version: u32,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct LegacyArtifactManifest {
     #[prost(string, tag = "1")]
     artifact_id: String,
@@ -877,6 +883,23 @@ fn model_delivery_selector_and_correlation_are_additive_and_wire_compatible() {
         ),
         Some(10)
     );
+    assert_eq!(
+        descriptor_field_number(
+            descriptor_message(center, "ComponentObservation"),
+            "ai_model_delivery_contract_version"
+        ),
+        Some(11)
+    );
+
+    let legacy_observation = LegacyComponentObservationV10 {
+        avai_model_import_contract_version: 1,
+    };
+    let decoded_observation = gmv_protocol::gmv_center_agent::v1::ComponentObservation::decode(
+        legacy_observation.encode_to_vec().as_slice(),
+    )
+    .unwrap();
+    assert_eq!(decoded_observation.avai_model_import_contract_version, 1);
+    assert_eq!(decoded_observation.ai_model_delivery_contract_version, 0);
 
     let current = DesiredState {
         assignment_id: "assignment-1".into(),

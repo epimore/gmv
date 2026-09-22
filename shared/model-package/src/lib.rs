@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    io::{Read, Seek},
+    io::{Read, Seek, Write},
     path::{Component, Path, PathBuf},
 };
 
@@ -384,6 +384,42 @@ pub fn verify_model_bundle<R: Read + Seek>(
     trusted_signing_keys: &HashMap<String, Vec<u8>>,
     limits: BundleLimits,
 ) -> ModelPackageResult<VerifiedModelBundle> {
+    verify_or_materialize_model_bundle(reader, trusted_signing_keys, limits, None)
+}
+
+pub fn materialize_model_bundle<R: Read + Seek>(
+    reader: R,
+    destination: &Path,
+    trusted_signing_keys: &HashMap<String, Vec<u8>>,
+    limits: BundleLimits,
+) -> ModelPackageResult<VerifiedModelBundle> {
+    let metadata = std::fs::symlink_metadata(destination).map_err(bundle_io)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(ModelPackageError::new(
+            "model_materialization_invalid",
+            "model materialization destination must be a real directory",
+        ));
+    }
+    if std::fs::read_dir(destination)
+        .map_err(bundle_io)?
+        .next()
+        .is_some()
+    {
+        return Err(ModelPackageError::new(
+            "model_materialization_invalid",
+            "model materialization destination must be empty",
+        ));
+    }
+    let destination = destination.canonicalize().map_err(bundle_io)?;
+    verify_or_materialize_model_bundle(reader, trusted_signing_keys, limits, Some(&destination))
+}
+
+fn verify_or_materialize_model_bundle<R: Read + Seek>(
+    reader: R,
+    trusted_signing_keys: &HashMap<String, Vec<u8>>,
+    limits: BundleLimits,
+    destination: Option<&Path>,
+) -> ModelPackageResult<VerifiedModelBundle> {
     let mut archive = tar::Archive::new(reader);
     let entries = archive.entries().map_err(bundle_io)?;
     let mut paths = HashSet::new();
@@ -485,6 +521,9 @@ pub fn verify_model_bundle<R: Read + Seek>(
                 }
             }
             manifest_sha256 = Some(format!("{:x}", Sha256::digest(&bytes)));
+            if let Some(destination) = destination {
+                write_materialized_file(destination, &path, &bytes)?;
+            }
             manifest = Some(parsed);
             continue;
         }
@@ -516,6 +555,9 @@ pub fn verify_model_bundle<R: Read + Seek>(
         } else {
             None
         };
+        let mut output = destination
+            .map(|destination| create_materialized_file(destination, &path))
+            .transpose()?;
         let mut buffer = [0_u8; 64 * 1024];
         loop {
             let read = entry.read(&mut buffer).map_err(bundle_io)?;
@@ -523,6 +565,9 @@ pub fn verify_model_bundle<R: Read + Seek>(
                 break;
             }
             hasher.update(&buffer[..read]);
+            if let Some(output) = &mut output {
+                output.write_all(&buffer[..read]).map_err(bundle_io)?;
+            }
             if let Some(bytes) = &mut schema_bytes {
                 bytes.extend_from_slice(&buffer[..read]);
             }
@@ -533,6 +578,9 @@ pub fn verify_model_bundle<R: Read + Seek>(
                 "model_file_hash_mismatch",
                 format!("model file hash mismatch: {path_text}"),
             ));
+        }
+        if let Some(output) = output {
+            output.sync_all().map_err(bundle_io)?;
         }
         seen_files.insert(path.clone());
         if let Some(bytes) = schema_bytes {
@@ -578,6 +626,31 @@ pub fn verify_model_bundle<R: Read + Seek>(
             ModelPackageError::new("invalid_result_schema", "bundle is missing result schema")
         })?,
     })
+}
+
+fn create_materialized_file(root: &Path, relative: &Path) -> ModelPackageResult<std::fs::File> {
+    let destination = root.join(relative);
+    if let Some(parent) = destination.parent() {
+        std::fs::create_dir_all(parent).map_err(bundle_io)?;
+        let resolved_parent = parent.canonicalize().map_err(bundle_io)?;
+        if !resolved_parent.starts_with(root) {
+            return Err(ModelPackageError::new(
+                "model_path_invalid",
+                "materialized model path escaped the destination",
+            ));
+        }
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .map_err(bundle_io)
+}
+
+fn write_materialized_file(root: &Path, relative: &Path, bytes: &[u8]) -> ModelPackageResult<()> {
+    let mut output = create_materialized_file(root, relative)?;
+    output.write_all(bytes).map_err(bundle_io)?;
+    output.sync_all().map_err(bundle_io)
 }
 
 fn validate_identifier(value: &str) -> ModelPackageResult<()> {
@@ -748,6 +821,119 @@ mod tests {
         .unwrap();
         assert_eq!(verified.manifest.metadata, value.metadata);
         assert_eq!(verified.result_schema["type"], "object");
+    }
+
+    #[test]
+    fn materializes_only_exact_verified_package_files() {
+        let value = manifest();
+        let root = std::env::temp_dir().join(format!(
+            "gmv-model-materialize-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let verified = materialize_model_bundle(
+            Cursor::new(bundle(&value, false)),
+            &root,
+            &trusted_keys(),
+            BundleLimits::default(),
+        )
+        .unwrap();
+
+        assert_eq!(verified.manifest.metadata, value.metadata);
+        assert_eq!(
+            std::fs::read(root.join("models/model.onnx")).unwrap(),
+            b"model"
+        );
+        assert_eq!(
+            std::fs::read(root.join("schemas/result.json")).unwrap(),
+            br#"{"type":"object"}"#
+        );
+        let manifest_bytes = std::fs::read(root.join(MODEL_PACKAGE_MANIFEST_PATH)).unwrap();
+        assert_eq!(
+            verified.manifest_sha256,
+            format!("{:x}", Sha256::digest(&manifest_bytes))
+        );
+        assert!(!root.join("bundle.gmvp").exists());
+        assert!(!root.join("stage-metadata.json").exists());
+
+        assert_eq!(
+            materialize_model_bundle(
+                Cursor::new(bundle(&value, false)),
+                &root,
+                &trusted_keys(),
+                BundleLimits::default(),
+            )
+            .unwrap_err()
+            .code,
+            "model_materialization_invalid"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn materialization_rejects_tampered_member() {
+        let value = manifest();
+        let mut builder = tar::Builder::new(Vec::new());
+        append(
+            &mut builder,
+            MODEL_PACKAGE_MANIFEST_PATH,
+            base::serde_yaml::to_string(&value).unwrap().as_bytes(),
+        );
+        append(&mut builder, "schemas/result.json", br#"{"type":"object"}"#);
+        append(&mut builder, "models/model.onnx", b"other");
+        append(&mut builder, "tests/input.bin", b"input");
+        append(&mut builder, "tests/expected.json", b"expected");
+
+        let root = std::env::temp_dir().join(format!(
+            "gmv-model-tampered-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let error = materialize_model_bundle(
+            Cursor::new(builder.into_inner().unwrap()),
+            &root,
+            &trusted_keys(),
+            BundleLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "model_file_hash_mismatch");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn materialization_rejects_symlink_destination() {
+        let base = std::env::temp_dir().join(format!(
+            "gmv-model-symlink-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&base).unwrap();
+        let target = base.join("target");
+        let link = base.join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = materialize_model_bundle(
+            Cursor::new(bundle(&manifest(), false)),
+            &link,
+            &trusted_keys(),
+            BundleLimits::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "model_materialization_invalid");
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none());
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
