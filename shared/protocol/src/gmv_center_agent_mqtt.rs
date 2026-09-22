@@ -10,13 +10,13 @@ pub struct GmvCenterAgentTopics {
 impl GmvCenterAgentTopics {
     pub fn new(prefix: &str, installation_id: &str, host_id: &str) -> Result<Self, &'static str> {
         let prefix = prefix.trim_matches('/');
-        if !valid_topic_part(prefix, true) {
+        if !valid_topic_prefix_part(prefix) {
             return Err("invalid MQTT topic prefix");
         }
-        if !valid_topic_part(installation_id, false) {
+        if !valid_identity_topic_part(installation_id) {
             return Err("invalid installation_id for MQTT topic");
         }
-        if !valid_topic_part(host_id, false) {
+        if !valid_identity_topic_part(host_id) {
             return Err("invalid host_id for MQTT topic");
         }
         Ok(Self {
@@ -55,7 +55,7 @@ impl GmvCenterAgentTopics {
     }
 
     pub fn component_desired(&self, component_id: &str) -> Result<String, &'static str> {
-        if !valid_topic_part(component_id, false) {
+        if !valid_identity_topic_part(component_id) {
             return Err("invalid component_id for MQTT topic");
         }
         Ok(self.downstream(&format!("components/{component_id}/desired")))
@@ -67,7 +67,7 @@ impl GmvCenterAgentTopics {
             self.prefix, self.installation_id, self.host_id
         );
         let component_id = topic.strip_prefix(&prefix)?.strip_suffix("/desired")?;
-        valid_topic_part(component_id, false).then_some(component_id)
+        valid_identity_topic_part(component_id).then_some(component_id)
     }
 
     pub fn command(&self) -> String {
@@ -106,7 +106,7 @@ impl GmvCenterAgentTopics {
 
 pub fn center_upstream_filter(prefix: &str) -> Result<String, &'static str> {
     let prefix = prefix.trim_matches('/');
-    if !valid_topic_part(prefix, true) {
+    if !valid_topic_prefix_part(prefix) {
         return Err("invalid MQTT topic prefix");
     }
     Ok(format!("{prefix}/installations/+/hosts/+/up/#"))
@@ -122,8 +122,8 @@ pub fn identity_from_upstream_topic<'a>(
         .strip_prefix("/installations/")?;
     let (installation_id, rest) = rest.split_once("/hosts/")?;
     let (host_id, suffix) = rest.split_once("/up/")?;
-    if valid_topic_part(installation_id, false)
-        && valid_topic_part(host_id, false)
+    if valid_identity_topic_part(installation_id)
+        && valid_identity_topic_part(host_id)
         && !suffix.is_empty()
     {
         Some((installation_id, host_id))
@@ -132,19 +132,22 @@ pub fn identity_from_upstream_topic<'a>(
     }
 }
 
-fn valid_topic_part(value: &str, allow_slash: bool) -> bool {
-    let valid_segment = |segment: &str| {
+fn valid_topic_prefix_part(value: &str) -> bool {
+    value.split('/').all(|segment| {
         !segment.is_empty()
             && segment.len() <= 128
             && segment
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-    };
-    if allow_slash {
-        value.split('/').all(valid_segment)
-    } else {
-        valid_segment(value)
-    }
+    })
+}
+
+fn valid_identity_topic_part(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 #[cfg(test)]
@@ -203,5 +206,55 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn colon_bearing_identifiers_roundtrip_byte_exactly() {
+        let topics =
+            GmvCenterAgentTopics::new("gmvc/v1", "installation:prod", "host:edge-01").unwrap();
+        assert_eq!(
+            topics.receipt(),
+            "gmvc/v1/installations/installation:prod/hosts/host:edge-01/up/receipt"
+        );
+        assert_eq!(
+            identity_from_upstream_topic(DEFAULT_TOPIC_PREFIX, &topics.receipt()),
+            Some(("installation:prod", "host:edge-01"))
+        );
+        let desired = topics.component_desired("avai:primary").unwrap();
+        assert_eq!(
+            desired,
+            "gmvc/v1/installations/installation:prod/hosts/host:edge-01/down/components/avai:primary/desired"
+        );
+        assert_eq!(
+            topics.component_id_from_desired_topic(&desired),
+            Some("avai:primary")
+        );
+        assert!(GmvCenterAgentTopics::new("gmvc:prod/v1", "site", "host").is_err());
+        assert!(center_upstream_filter("gmvc:prod/v1").is_err());
+    }
+
+    #[test]
+    fn rejects_unsafe_identity_segments_in_every_topic_path() {
+        let topics = GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site", "host").unwrap();
+        for invalid in [
+            "", "a/b", "a\\b", "a+b", "a#b", "a b", "a\t", "a\n", "a?b", "a%b", "a@b", "é",
+        ] {
+            assert!(GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, invalid, "host").is_err());
+            assert!(GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site", invalid).is_err());
+            assert!(topics.component_desired(invalid).is_err());
+            let upstream = format!("gmvc/v1/installations/{invalid}/hosts/host/up/receipt");
+            assert!(identity_from_upstream_topic(DEFAULT_TOPIC_PREFIX, &upstream).is_none());
+            let desired =
+                format!("gmvc/v1/installations/site/hosts/host/down/components/{invalid}/desired");
+            assert!(topics.component_id_from_desired_topic(&desired).is_none());
+        }
+        let too_long = "a".repeat(129);
+        assert!(GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, &too_long, "host").is_err());
+        assert!(topics.component_desired(&too_long).is_err());
+        let upstream = format!("gmvc/v1/installations/site/hosts/{too_long}/up/receipt");
+        assert!(identity_from_upstream_topic(DEFAULT_TOPIC_PREFIX, &upstream).is_none());
+        let desired =
+            format!("gmvc/v1/installations/site/hosts/host/down/components/{too_long}/desired");
+        assert!(topics.component_id_from_desired_topic(&desired).is_none());
     }
 }
