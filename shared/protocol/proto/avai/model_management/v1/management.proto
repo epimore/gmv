@@ -19,12 +19,18 @@ message GetManagementCapabilitiesRequest {}
 
 message GetManagementCapabilitiesResponse {
   uint32 exact_model_import_contract_version = 1;
+  uint32 exact_model_observation_contract_version = 2;
 }
 
 message ModelIdentity {
   string model_id = 1;
   string version = 2;
   string revision = 3;
+}
+
+message ModelCapabilityGeneration {
+  string capability = 1;
+  uint64 generation = 2;
 }
 
 message ModelSnapshot {
@@ -42,6 +48,9 @@ message ModelSnapshot {
   string manifest_sha256 = 12;
   gmv.common.v1.ErrorDetail error = 13;
   int64 observed_at_epoch_ms = 14;
+  gmv.common.v1.ModelVariantSelector selected_variant = 15;
+  repeated ModelCapabilityGeneration active_bindings = 16;
+  repeated ModelCapabilityGeneration previous_bindings = 17;
 }
 
 message ListModelsRequest {

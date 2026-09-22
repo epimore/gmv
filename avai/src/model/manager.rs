@@ -54,8 +54,16 @@ pub struct ModelObservation {
     pub runtime_available: bool,
     pub active_capabilities: Vec<String>,
     pub previous_capabilities: Vec<String>,
+    pub active_bindings: Vec<CapabilityGeneration>,
+    pub previous_bindings: Vec<CapabilityGeneration>,
     pub generation: Option<u64>,
     pub in_flight_tasks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityGeneration {
+    pub capability: String,
+    pub generation: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1465,24 +1473,34 @@ impl ModelManager {
         let candidate = loaded.get(identity);
         let mut active_capabilities = Vec::new();
         let mut previous_capabilities = Vec::new();
+        let mut active_bindings = Vec::new();
+        let mut previous_bindings = Vec::new();
         let mut generation = None;
         for (capability, slot) in slots.iter() {
             if let Some(active) = &slot.active
                 && active.loaded.model.identity == *identity
             {
                 active_capabilities.push(capability.clone());
+                active_bindings.push(CapabilityGeneration {
+                    capability: capability.clone(),
+                    generation: active.generation,
+                });
                 generation = Some(active.generation);
             }
-            if slot
-                .previous
-                .as_ref()
-                .is_some_and(|previous| previous.loaded.model.identity == *identity)
+            if let Some(previous) = &slot.previous
+                && previous.loaded.model.identity == *identity
             {
                 previous_capabilities.push(capability.clone());
+                previous_bindings.push(CapabilityGeneration {
+                    capability: capability.clone(),
+                    generation: previous.generation,
+                });
             }
         }
         active_capabilities.sort();
         previous_capabilities.sort();
+        active_bindings.sort_by(|left, right| left.capability.cmp(&right.capability));
+        previous_bindings.sort_by(|left, right| left.capability.cmp(&right.capability));
         ModelObservation {
             loaded: candidate.is_some(),
             runtime_available: candidate.map_or_else(
@@ -1491,6 +1509,8 @@ impl ModelManager {
             ),
             active_capabilities,
             previous_capabilities,
+            active_bindings,
+            previous_bindings,
             generation,
             in_flight_tasks: candidate
                 .map(|loaded| loaded.in_flight.load(Ordering::Acquire))

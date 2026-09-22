@@ -14,10 +14,10 @@ use gmv_protocol::{
     avai::model_management::v1::{
         ActivateModelRequest, GetManagementCapabilitiesRequest, GetManagementCapabilitiesResponse,
         ImportStagedModelRequest, InspectModelRequest, InspectModelResponse, ListModelsRequest,
-        ListModelsResponse, ModelHealth, ModelIdentity as RpcModelIdentity, ModelLifecycleState,
-        ModelMutationResponse, ModelOperationOutcome, ModelSnapshot, PreloadModelRequest,
-        RollbackModelRequest, UnloadModelRequest,
-        avai_model_management_server::AvaiModelManagement,
+        ListModelsResponse, ModelCapabilityGeneration, ModelHealth,
+        ModelIdentity as RpcModelIdentity, ModelLifecycleState, ModelMutationResponse,
+        ModelOperationOutcome, ModelSnapshot, PreloadModelRequest, RollbackModelRequest,
+        UnloadModelRequest, avai_model_management_server::AvaiModelManagement,
     },
     common::v1::{ErrorDetail, ModelDeliveryCorrelation, ModelVariantSelector, OperationRef},
 };
@@ -40,6 +40,7 @@ const MAX_ID_BYTES: usize = 128;
 const MAX_DEADLINE_AHEAD_MS: i64 = 2 * 60 * 60 * 1_000;
 const MAX_RECEIPT_CAPACITY: usize = 4_096;
 const EXACT_MODEL_IMPORT_CONTRACT_VERSION: u32 = 1;
+const EXACT_MODEL_OBSERVATION_CONTRACT_VERSION: u32 = 1;
 
 #[derive(Clone)]
 pub struct ModelManagementConfig {
@@ -436,6 +437,7 @@ impl AvaiModelManagement for AvaiModelManagementRpc {
     ) -> Result<Response<GetManagementCapabilitiesResponse>, Status> {
         Ok(Response::new(GetManagementCapabilitiesResponse {
             exact_model_import_contract_version: EXACT_MODEL_IMPORT_CONTRACT_VERSION,
+            exact_model_observation_contract_version: EXACT_MODEL_OBSERVATION_CONTRACT_VERSION,
         }))
     }
 
@@ -1276,6 +1278,15 @@ fn model_snapshot(
     error: Option<ErrorDetail>,
     observed_at_epoch_ms: i64,
 ) -> ModelSnapshot {
+    let selected_variant = model
+        .selected_variant
+        .as_ref()
+        .map(|variant| ModelVariantSelector {
+            runtime: variant.runtime.clone(),
+            runtime_contract_version: variant.runtime_contract_version,
+            architecture: variant.architecture.clone(),
+            accelerator: variant.accelerator.clone(),
+        });
     ModelSnapshot {
         identity: Some(RpcModelIdentity {
             model_id: model.identity.model_id,
@@ -1301,6 +1312,23 @@ fn model_snapshot(
         manifest_sha256: model.manifest_sha256,
         error,
         observed_at_epoch_ms,
+        selected_variant,
+        active_bindings: observation
+            .active_bindings
+            .into_iter()
+            .map(|binding| ModelCapabilityGeneration {
+                capability: binding.capability,
+                generation: binding.generation,
+            })
+            .collect(),
+        previous_bindings: observation
+            .previous_bindings
+            .into_iter()
+            .map(|binding| ModelCapabilityGeneration {
+                capability: binding.capability,
+                generation: binding.generation,
+            })
+            .collect(),
     }
 }
 

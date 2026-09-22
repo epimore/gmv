@@ -345,6 +345,9 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .model
         .unwrap();
     assert!(inspected.runtime_available);
+    assert_eq!(inspected.selected_variant, Some(selector()));
+    assert!(inspected.active_bindings.is_empty());
+    assert!(inspected.previous_bindings.is_empty());
     let live_inspected = model
         .inspect_model(InspectModelRequest {
             identity: Some(rpc_identity("model-a", "1", "rev-a")),

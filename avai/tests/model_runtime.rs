@@ -1054,14 +1054,13 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
         ModelRepository::open(&root.path().join("avai.db"), &root.path().join("models"))
             .await
             .unwrap();
-    install_test_model(&repository, &root, "model-a", "1", "rev-a", &[CAPABILITY]).await;
     install_test_model(
         &repository,
         &root,
-        "model-c",
+        "model-a",
         "1",
-        "rev-c",
-        &[SECOND_CAPABILITY],
+        "rev-a",
+        &[CAPABILITY, SECOND_CAPABILITY],
     )
     .await;
     install_test_model(
@@ -1083,12 +1082,10 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
     .unwrap();
     let model_a = identity("model-a", "1", "rev-a");
     let model_b = identity("model-b", "2", "rev-b");
-    let model_c = identity("model-c", "1", "rev-c");
-    for model in [&model_a, &model_c, &model_b] {
+    for model in [&model_a, &model_b] {
         manager.preload(model, 50).await.unwrap();
     }
     manager.activate(&model_a, 51).await.unwrap();
-    manager.activate(&model_c, 52).await.unwrap();
     manager.activate(&model_b, 53).await.unwrap();
     fake.set_model_unhealthy("model-b", true);
 
@@ -1113,7 +1110,7 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
             .any(|recovery| { recovery.capability == CAPABILITY && recovery.identity == model_a })
     );
     assert!(restored.iter().any(|recovery| {
-        recovery.capability == SECOND_CAPABILITY && recovery.identity == model_c
+        recovery.capability == SECOND_CAPABILITY && recovery.identity == model_a
     }));
     assert_eq!(
         manager.capture(CAPABILITY).await.unwrap().identity(),
@@ -1121,7 +1118,13 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
     );
     assert_eq!(
         manager.capture(SECOND_CAPABILITY).await.unwrap().identity(),
-        &model_c
+        &model_a
+    );
+    let observation = manager.observation(&model_a).await;
+    assert_eq!(observation.active_bindings.len(), 2);
+    assert_ne!(
+        observation.active_bindings[0].generation,
+        observation.active_bindings[1].generation
     );
     assert_eq!(
         repository.get(&model_b).await.unwrap().unwrap().state,
@@ -1129,7 +1132,7 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
     );
     assert_eq!(
         manager.active_identities().await,
-        HashSet::from([model_a.clone(), model_c.clone()])
+        HashSet::from([model_a.clone()])
     );
     drop(manager);
 
@@ -1153,7 +1156,7 @@ async fn unhealthy_multi_capability_model_recovers_every_active_slot() {
             .await
             .unwrap()
             .identity(),
-        &model_c
+        &model_a
     );
     repository.close().await;
 }

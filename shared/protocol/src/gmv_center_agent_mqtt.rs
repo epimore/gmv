@@ -38,6 +38,10 @@ impl GmvCenterAgentTopics {
         self.upstream("inventory")
     }
 
+    pub fn model_actual(&self) -> String {
+        self.upstream("model-actual")
+    }
+
     pub fn receipt(&self) -> String {
         self.upstream("receipt")
     }
@@ -76,6 +80,10 @@ impl GmvCenterAgentTopics {
 
     pub fn receipt_ack(&self) -> String {
         self.downstream("receipt-ack")
+    }
+
+    pub fn model_actual_policy(&self) -> String {
+        self.downstream("model-actual-policy")
     }
 
     pub fn upgrade_decision(&self) -> String {
