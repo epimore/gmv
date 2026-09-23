@@ -118,6 +118,59 @@ struct LegacyModelRef {
     runtime: String,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct LegacyModelActualObservation {
+    #[prost(string, tag = "1")]
+    component_id: String,
+    #[prost(uint32, tag = "2")]
+    contract_version: u32,
+    #[prost(int32, tag = "3")]
+    probe_state: i32,
+    #[prost(int64, tag = "4")]
+    collection_started_at_epoch_ms: i64,
+    #[prost(int64, tag = "5")]
+    collection_completed_at_epoch_ms: i64,
+    #[prost(int64, tag = "6")]
+    list_observed_at_epoch_ms: i64,
+    #[prost(string, tag = "7")]
+    stable_error_code: String,
+    #[prost(message, repeated, tag = "8")]
+    models: Vec<gmv_protocol::gmv_center_agent::v1::ModelActualRow>,
+}
+
+#[test]
+fn model_actual_assignment_marker_is_additive() {
+    use gmv_protocol::gmv_center_agent::v1::ModelActualObservation;
+
+    let descriptor = descriptor();
+    let center = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    let message = descriptor_message(center, "ModelActualObservation");
+    assert_eq!(
+        descriptor_field_number(message, "completed_model_assignment_id"),
+        Some(9)
+    );
+
+    let legacy = LegacyModelActualObservation {
+        component_id: "avai-1".into(),
+        contract_version: 1,
+        probe_state: 1,
+        collection_started_at_epoch_ms: 1,
+        collection_completed_at_epoch_ms: 2,
+        list_observed_at_epoch_ms: 2,
+        stable_error_code: String::new(),
+        models: Vec::new(),
+    };
+    let decoded = ModelActualObservation::decode(legacy.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(decoded.completed_model_assignment_id, "");
+    let current = ModelActualObservation {
+        completed_model_assignment_id: "assignment-1".into(),
+        ..decoded
+    };
+    let old_reader =
+        LegacyModelActualObservation::decode(current.encode_to_vec().as_slice()).unwrap();
+    assert_eq!(old_reader, legacy);
+}
+
 fn descriptor() -> FileDescriptorSet {
     FileDescriptorSet::decode(gmv_protocol::FILE_DESCRIPTOR_SET).unwrap()
 }

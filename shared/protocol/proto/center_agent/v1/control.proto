@@ -127,6 +127,7 @@ message ModelActualObservation {
   int64 list_observed_at_epoch_ms = 6;
   string stable_error_code = 7;
   repeated ModelActualRow models = 8;
+  string completed_model_assignment_id = 9;
 }
 
 message InventorySnapshot {
