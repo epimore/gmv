@@ -345,6 +345,9 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
         .model
         .unwrap();
     assert!(inspected.runtime_available);
+    assert_eq!(inspected.selected_variant, Some(selector()));
+    assert!(inspected.active_bindings.is_empty());
+    assert!(inspected.previous_bindings.is_empty());
     let live_inspected = model
         .inspect_model(InspectModelRequest {
             identity: Some(rpc_identity("model-a", "1", "rev-a")),
@@ -430,6 +433,138 @@ async fn real_uds_combines_both_services_and_enforces_security_and_replay() {
             assert_eq!(response.error.unwrap().code, "model_runtime_unavailable");
         }
     }
+    let active_a = model
+        .inspect_model(InspectModelRequest {
+            identity: Some(rpc_identity("model-a", "1", "rev-a")),
+            observe_live_health: false,
+            deadline_epoch_ms: deadline(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .model
+        .unwrap();
+    assert_eq!(active_a.selected_variant, Some(selector()));
+    assert!(!active_a.active_bindings.is_empty());
+    assert!(active_a.previous_bindings.is_empty());
+    let first_a_generation = active_a.active_bindings[0].generation;
+    assert!(
+        active_a
+            .active_bindings
+            .iter()
+            .all(|binding| binding.generation == first_a_generation)
+    );
+    assert_eq!(
+        model
+            .preload_model(PreloadModelRequest {
+                operation: Some(operation("preload-b")),
+                deadline_epoch_ms: deadline(),
+                identity: Some(rpc_identity("model-b", "1", "rev-b")),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .error,
+        None
+    );
+    assert_eq!(
+        model
+            .activate_model(ActivateModelRequest {
+                operation: Some(operation("activate-b")),
+                deadline_epoch_ms: deadline(),
+                identity: Some(rpc_identity("model-b", "1", "rev-b")),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .error,
+        None
+    );
+    let previous_a = model
+        .inspect_model(InspectModelRequest {
+            identity: Some(rpc_identity("model-a", "1", "rev-a")),
+            observe_live_health: false,
+            deadline_epoch_ms: deadline(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .model
+        .unwrap();
+    let active_b = model
+        .inspect_model(InspectModelRequest {
+            identity: Some(rpc_identity("model-b", "1", "rev-b")),
+            observe_live_health: false,
+            deadline_epoch_ms: deadline(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .model
+        .unwrap();
+    assert!(previous_a.active_bindings.is_empty());
+    assert!(!previous_a.previous_bindings.is_empty());
+    assert!(
+        previous_a
+            .previous_bindings
+            .iter()
+            .all(|binding| binding.generation == first_a_generation)
+    );
+    assert!(!active_b.active_bindings.is_empty());
+    assert!(active_b.previous_bindings.is_empty());
+    let b_generation = active_b.active_bindings[0].generation;
+    assert_ne!(b_generation, first_a_generation);
+    assert_eq!(
+        model
+            .rollback_model(RollbackModelRequest {
+                operation: Some(operation("rollback-b-to-a")),
+                deadline_epoch_ms: deadline(),
+                from_identity: Some(rpc_identity("model-b", "1", "rev-b")),
+                to_identity: Some(rpc_identity("model-a", "1", "rev-a")),
+            })
+            .await
+            .unwrap()
+            .into_inner()
+            .error,
+        None
+    );
+    let recovered_a = model
+        .inspect_model(InspectModelRequest {
+            identity: Some(rpc_identity("model-a", "1", "rev-a")),
+            observe_live_health: false,
+            deadline_epoch_ms: deadline(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .model
+        .unwrap();
+    let previous_b = model
+        .inspect_model(InspectModelRequest {
+            identity: Some(rpc_identity("model-b", "1", "rev-b")),
+            observe_live_health: false,
+            deadline_epoch_ms: deadline(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .model
+        .unwrap();
+    assert!(!recovered_a.active_bindings.is_empty());
+    assert!(recovered_a.previous_bindings.is_empty());
+    assert!(
+        recovered_a
+            .active_bindings
+            .iter()
+            .all(|binding| binding.generation != first_a_generation)
+    );
+    assert!(previous_b.active_bindings.is_empty());
+    assert!(
+        previous_b
+            .previous_bindings
+            .iter()
+            .all(|binding| binding.generation == b_generation)
+    );
     for (page_size, expected_error) in [(0, false), (200, false), (201, true)] {
         let page = model
             .list_models(ListModelsRequest {

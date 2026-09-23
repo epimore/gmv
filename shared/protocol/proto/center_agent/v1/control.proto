@@ -20,6 +20,7 @@ message GmvCenterAgentToCenterMessage {
     CommandReceipt command_receipt = 14;
     UpgradeRequest upgrade_request = 15;
     GmvCenterAgentPresence presence = 16;
+    ModelActualObservation model_actual_observation = 17;
   }
 }
 
@@ -36,6 +37,7 @@ message CenterToGmvCenterAgentMessage {
     TypedCommand command = 11;
     ReceiptAck receipt_ack = 12;
     UpgradeDecision upgrade_decision = 13;
+    ModelActualObservationPolicy model_actual_policy = 14;
   }
 }
 
@@ -56,11 +58,75 @@ message GmvCenterAgentHeartbeat {
   string current_revision = 2;
   string desired_revision = 3;
   string staged_revision = 4;
+  uint32 model_actual_observation_contract_version = 5;
 }
 
 message GmvCenterAgentPresence {
   bool online = 1;
   int64 observed_at_epoch_ms = 2;
+}
+
+message ModelActualObservationPolicy {
+  uint32 contract_version = 1;
+  bool enabled = 2;
+  int64 expires_at_epoch_ms = 3;
+}
+
+enum ModelActualProbeState {
+  MODEL_ACTUAL_PROBE_STATE_UNSPECIFIED = 0;
+  MODEL_ACTUAL_PROBE_STATE_SUCCESS = 1;
+  MODEL_ACTUAL_PROBE_STATE_FAILED = 2;
+}
+
+message ModelActualCapabilityBinding {
+  string capability = 1;
+  uint64 generation = 2;
+}
+
+enum ModelActualLifecycleState {
+  MODEL_ACTUAL_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  MODEL_ACTUAL_LIFECYCLE_STATE_INSTALLED = 1;
+  MODEL_ACTUAL_LIFECYCLE_STATE_READY = 2;
+  MODEL_ACTUAL_LIFECYCLE_STATE_ACTIVE = 3;
+  MODEL_ACTUAL_LIFECYCLE_STATE_RETIRED = 4;
+  MODEL_ACTUAL_LIFECYCLE_STATE_FAILED = 5;
+}
+
+enum ModelActualHealth {
+  MODEL_ACTUAL_HEALTH_UNSPECIFIED = 0;
+  MODEL_ACTUAL_HEALTH_UNKNOWN = 1;
+  MODEL_ACTUAL_HEALTH_HEALTHY = 2;
+  MODEL_ACTUAL_HEALTH_UNHEALTHY = 3;
+  MODEL_ACTUAL_HEALTH_UNAVAILABLE = 4;
+}
+
+message ModelActualRow {
+  string model_id = 1;
+  string version = 2;
+  string revision = 3;
+  gmv.common.v1.ModelVariantSelector selector = 4;
+  ModelActualLifecycleState lifecycle_state = 5;
+  bool runtime_available = 6;
+  bool loaded = 7;
+  ModelActualHealth health = 8;
+  string stable_error_code = 9;
+  repeated string capabilities = 10;
+  repeated ModelActualCapabilityBinding active_bindings = 11;
+  repeated ModelActualCapabilityBinding previous_bindings = 12;
+  uint64 in_flight_tasks = 13;
+  string manifest_sha256 = 14;
+  int64 source_observed_at_epoch_ms = 15;
+}
+
+message ModelActualObservation {
+  string component_id = 1;
+  uint32 contract_version = 2;
+  ModelActualProbeState probe_state = 3;
+  int64 collection_started_at_epoch_ms = 4;
+  int64 collection_completed_at_epoch_ms = 5;
+  int64 list_observed_at_epoch_ms = 6;
+  string stable_error_code = 7;
+  repeated ModelActualRow models = 8;
 }
 
 message InventorySnapshot {

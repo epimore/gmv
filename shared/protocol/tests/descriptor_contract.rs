@@ -51,6 +51,18 @@ struct LegacyComponentObservationV10 {
 }
 
 #[derive(Clone, PartialEq, Message)]
+struct LegacyGmvCenterAgentHeartbeatV4 {
+    #[prost(int64, tag = "1")]
+    observed_at_epoch_ms: i64,
+    #[prost(string, tag = "2")]
+    current_revision: String,
+    #[prost(string, tag = "3")]
+    desired_revision: String,
+    #[prost(string, tag = "4")]
+    staged_revision: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
 struct LegacyArtifactManifest {
     #[prost(string, tag = "1")]
     artifact_id: String,
@@ -510,6 +522,10 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
         descriptor_field_number(center_message, "upgrade_decision"),
         Some(13)
     );
+    assert_eq!(
+        descriptor_field_number(center_message, "model_actual_policy"),
+        Some(14)
+    );
     let gmv_center_agent_message =
         descriptor_message(gmv_center_agent, "GmvCenterAgentToCenterMessage");
     assert_eq!(
@@ -521,6 +537,10 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
         Some(16)
     );
     assert_eq!(
+        descriptor_field_number(gmv_center_agent_message, "model_actual_observation"),
+        Some(17)
+    );
+    assert_eq!(
         descriptor_field_number(gmv_center_agent_message, "host_id"),
         Some(7)
     );
@@ -528,6 +548,25 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
     assert_eq!(
         descriptor_field_number(receipt_ack, "receipt_message_id"),
         Some(1)
+    );
+    let heartbeat = descriptor_message(gmv_center_agent, "GmvCenterAgentHeartbeat");
+    assert_eq!(
+        descriptor_field_number(heartbeat, "model_actual_observation_contract_version"),
+        Some(5)
+    );
+    let legacy_heartbeat = LegacyGmvCenterAgentHeartbeatV4 {
+        observed_at_epoch_ms: 1,
+        current_revision: "current".into(),
+        desired_revision: "desired".into(),
+        staged_revision: "staged".into(),
+    };
+    let current_heartbeat = gmv_protocol::gmv_center_agent::v1::GmvCenterAgentHeartbeat::decode(
+        legacy_heartbeat.encode_to_vec().as_slice(),
+    )
+    .unwrap();
+    assert_eq!(
+        current_heartbeat.model_actual_observation_contract_version,
+        0
     );
     let command = descriptor_message(gmv_center_agent, "TypedCommand");
     for (field, number) in [
@@ -2018,6 +2057,26 @@ fn avai_local_model_management_is_typed_bounded_and_not_public_avai_control() {
             "exact_model_import_contract_version"
         ),
         Some(1)
+    );
+    assert_eq!(
+        descriptor_field_number(
+            descriptor_message(file, "GetManagementCapabilitiesResponse"),
+            "exact_model_observation_contract_version"
+        ),
+        Some(2)
+    );
+    let snapshot = descriptor_message(file, "ModelSnapshot");
+    assert_eq!(
+        descriptor_field_number(snapshot, "selected_variant"),
+        Some(15)
+    );
+    assert_eq!(
+        descriptor_field_number(snapshot, "active_bindings"),
+        Some(16)
+    );
+    assert_eq!(
+        descriptor_field_number(snapshot, "previous_bindings"),
+        Some(17)
     );
 
     let current = gmv_protocol::avai::model_management::v1::ImportStagedModelRequest {
