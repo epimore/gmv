@@ -3,6 +3,7 @@ use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use avai::feedback::FeedbackConfig;
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
 use avai::model::{
     ExecutionLimits, ModelManager, ModelManagerConfig, ModelRepository, ONNX_CPU_RUNTIME,
@@ -243,6 +244,7 @@ pub struct App {
     guard: GuardConf,
     server: ServerConf,
     model: ModelConf,
+    feedback: FeedbackConfig,
 }
 
 pub struct Bootstrap {
@@ -260,6 +262,16 @@ impl Daemon<Bootstrap> for App {
         let guard = GuardConf::try_conf().map_err(config_error)?;
         let server = ServerConf::try_conf().map_err(config_error)?;
         let model = ModelConf::try_conf().map_err(config_error)?;
+        let feedback = FeedbackConfig::try_conf().map_err(config_error)?;
+        let feedback_root = std::path::absolute(&feedback.spool_root).map_err(external_error)?;
+        for owned_root in [&server.object_root, &model.root] {
+            let owned_root = std::path::absolute(owned_root).map_err(external_error)?;
+            if feedback_root.starts_with(&owned_root) || owned_root.starts_with(&feedback_root) {
+                return Err(global_error(
+                    "feedback.spool_root must be independent of object and model roots",
+                ));
+            }
+        }
         if model.native_worker_count > server.task_worker_count {
             return Err(global_error(
                 "model.native_worker_count must not exceed server.task_worker_count",
@@ -280,6 +292,7 @@ impl Daemon<Bootstrap> for App {
                 guard,
                 server,
                 model,
+                feedback,
             },
             Bootstrap {
                 grpc_listener,
@@ -310,6 +323,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         guard,
         server,
         model,
+        feedback,
     } = app;
     let capabilities = server.capabilities.clone();
     let task_database_path = PathBuf::from(&server.task_database_path);
@@ -381,7 +395,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     )
     .await
     .map_err(external_error)?;
-    let manager = TaskManager::open_with_model_manager_and_observability(
+    let manager = TaskManager::open_with_feedback(
         node.identity.clone(),
         capabilities.clone(),
         TaskManagerConfig {
@@ -401,6 +415,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         Some(model_manager.clone()),
         &runtime,
         observability.clone(),
+        Some((feedback, node.installation_id.clone(), node.host_id.clone())),
     )
     .await
     .map_err(external_error)?;

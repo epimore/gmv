@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package gmv.avai.feedback.v1;
+
+import "avai/v1/control.proto";
+
+service AvaiFeedback {
+  rpc GetFeedbackCapabilities(GetFeedbackCapabilitiesRequest) returns (GetFeedbackCapabilitiesResponse);
+  rpc ListPendingFeedback(ListPendingFeedbackRequest) returns (ListPendingFeedbackResponse);
+  rpc ReadFeedbackEvidence(ReadFeedbackEvidenceRequest) returns (stream ReadFeedbackEvidenceResponse);
+  rpc AckFeedback(AckFeedbackRequest) returns (AckFeedbackResponse);
+}
+
+enum FeedbackTriggerKind {
+  FEEDBACK_TRIGGER_KIND_UNSPECIFIED = 0;
+  FEEDBACK_TRIGGER_KIND_SAMPLED = 1;
+}
+
+enum FeedbackOriginKind {
+  FEEDBACK_ORIGIN_KIND_UNSPECIFIED = 0;
+  FEEDBACK_ORIGIN_KIND_AVAI_RUNTIME = 1;
+}
+
+enum FeedbackTerminalOutcome {
+  FEEDBACK_TERMINAL_OUTCOME_UNSPECIFIED = 0;
+  FEEDBACK_TERMINAL_OUTCOME_ACCEPTED = 1;
+  FEEDBACK_TERMINAL_OUTCOME_REPLAYED = 2;
+  FEEDBACK_TERMINAL_OUTCOME_REJECTED_POLICY = 3;
+  FEEDBACK_TERMINAL_OUTCOME_CONFLICT = 4;
+}
+
+message FeedbackPackage {
+  string feedback_id = 1;
+  string content_hash = 2;
+  FeedbackOriginKind origin_kind = 3;
+  FeedbackTriggerKind trigger_kind = 4;
+  string installation_id = 5;
+  string host_id = 6;
+  string avai_node_id = 7;
+  string avai_instance_id = 8;
+  string task_id = 9;
+  string route_id = 10;
+  string capability = 11;
+  string source_ref = 12;
+  string result_schema_name = 13;
+  uint32 result_schema_version = 14;
+  string result_sha256 = 15;
+  gmv.avai.v1.ModelRef actual_model = 16;
+  string evidence_sha256 = 17;
+  uint64 evidence_size_bytes = 18;
+  string evidence_media_type = 19;
+  int64 completed_at_epoch_ms = 20;
+  int64 created_at_epoch_ms = 21;
+  int64 expires_at_epoch_ms = 22;
+}
+
+message GetFeedbackCapabilitiesRequest {}
+
+message GetFeedbackCapabilitiesResponse {
+  uint32 contract_version = 1;
+  bool enabled = 2;
+  uint32 max_page_size = 3;
+  uint32 max_evidence_chunk_bytes = 4;
+  uint64 max_evidence_bytes = 5;
+  repeated FeedbackTriggerKind supported_trigger_kinds = 6;
+}
+
+message ListPendingFeedbackRequest {
+  uint32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListPendingFeedbackResponse {
+  repeated FeedbackPackage packages = 1;
+  string next_page_token = 2;
+}
+
+message ReadFeedbackEvidenceRequest {
+  string feedback_id = 1;
+  string content_hash = 2;
+  string evidence_sha256 = 3;
+  uint64 expected_size = 4;
+}
+
+message ReadFeedbackEvidenceResponse {
+  bytes chunk = 1;
+}
+
+message AckFeedbackRequest {
+  string feedback_id = 1;
+  string content_hash = 2;
+  FeedbackTerminalOutcome terminal_outcome = 3;
+}
+
+message AckFeedbackResponse {
+  bool replayed = 1;
+}

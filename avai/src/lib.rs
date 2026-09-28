@@ -1,5 +1,6 @@
 extern crate self as avai;
 
+pub mod feedback;
 pub mod guard_integration;
 pub mod model;
 pub mod model_management;
@@ -8,6 +9,9 @@ pub mod source;
 pub mod task;
 pub mod upload;
 
+#[cfg(test)]
+#[path = "../tests/feedback.rs"]
+mod feedback_tests;
 #[cfg(test)]
 mod model_management_tests;
 #[cfg(test)]

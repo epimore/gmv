@@ -27,6 +27,18 @@ server:
   allow_private_image_urls: false
   allowed_internal_hosts: []
 
+feedback:
+  enabled: false
+  spool_root: ./data/feedback-spool
+  capabilities: []
+  sample_permyriad: 0
+  max_pending_items: 1024
+  max_total_bytes: 536870912
+  ttl_ms: 86400000
+  evidence_chunk_bytes: 65536
+  ack_receipt_capacity: 4096
+  ack_receipt_retention_ms: 86400000
+
 model:
   database_path: ./data/avai-model.db
   root: ./data/models
