@@ -1263,3 +1263,127 @@ fn invalid_feedback_bounds_are_rejected() {
         .is_err()
     );
 }
+#[tokio::test]
+async fn byte_bound_and_source_failure_leave_task_truth_authoritative() {
+    use crate::{
+        observability::Observability,
+        source::SourcePolicy,
+        task::{TaskManager, TaskManagerConfig},
+    };
+    use base::utils::rt::{GlobalRuntime, RuntimeType};
+    use gmv_protocol::{
+        avai::v1::{AiTaskState, CreateTaskRequest, QueryTaskRequest},
+        common::v1::OperationRef,
+    };
+    use std::{
+        sync::Arc,
+        time::{Duration, SystemTime, UNIX_EPOCH},
+    };
+
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "avai-feedback-byte-limit-{}-{id}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let runtime = GlobalRuntime::register_default(RuntimeType::Custom(format!(
+        "avai-feedback-byte-limit-{id}"
+    )))
+    .unwrap();
+    let identity = NodeIdentity {
+        node_id: "node".into(),
+        instance_id: "instance".into(),
+        kind: 4,
+    };
+    let manager = TaskManager::open_with_feedback(
+        identity.clone(),
+        vec!["image.metadata.inspect".into()],
+        TaskManagerConfig {
+            database_path: root.join("tasks.db"),
+            queue_size: 4,
+            worker_count: 1,
+            source_policy: SourcePolicy {
+                allow_private_image_urls: true,
+                ..Default::default()
+            },
+            max_result_bytes: 1024,
+        },
+        None,
+        &runtime,
+        Arc::new(Observability::new()),
+        Some((
+            FeedbackConfig {
+                enabled: true,
+                spool_root: root.join("spool"),
+                capabilities: HashSet::from(["image.metadata.inspect".into()]),
+                sample_permyriad: 10_000,
+                max_total_bytes: 1,
+                ..Default::default()
+            },
+            "installation".into(),
+            "host".into(),
+        )),
+    )
+    .await
+    .unwrap();
+    let png = base::base64::Engine::decode(&base::base64::engine::general_purpose::STANDARD,
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=").unwrap();
+    for (task_id, bytes, expected) in [
+        ("byte-full", png, AiTaskState::Succeeded),
+        (
+            "source-failure",
+            b"not a valid PNG".to_vec(),
+            AiTaskState::Failed,
+        ),
+    ] {
+        let (url, server) = image_server(bytes).await;
+        let request = CreateTaskRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("op-{task_id}"),
+                idempotency_key: format!("idem-{task_id}"),
+            }),
+            task_id: task_id.into(),
+            capability: "image.metadata.inspect".into(),
+            expected_avai: Some(identity.clone()),
+            source: Some(SourceSpec {
+                source: Some(Source::ImageUrl(ImageUrlSource {
+                    url,
+                    expected: None,
+                    max_bytes: 1024,
+                })),
+            }),
+            ..Default::default()
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        manager.create_task(request, now).await;
+        let state = base::tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = manager
+                    .query_task(QueryTaskRequest {
+                        task_id: task_id.into(),
+                    })
+                    .await
+                    .state;
+                if state != AiTaskState::Pending as i32 && state != AiTaskState::Running as i32 {
+                    break state;
+                }
+                base::tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(state, expected as i32);
+        server.await.unwrap();
+    }
+    assert!(
+        list(&manager.feedback_manager().unwrap())
+            .await
+            .packages
+            .is_empty()
+    );
+    manager.close_and_wait().await.unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+}
