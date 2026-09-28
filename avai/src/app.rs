@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use avai::feedback::FeedbackConfig;
 use avai::guard_integration::{AvaiControlRpc, AvaiGuardNode};
 use avai::model::{
     ExecutionLimits, ModelManager, ModelManagerConfig, ModelRepository, ONNX_CPU_RUNTIME,
@@ -243,6 +244,7 @@ pub struct App {
     guard: GuardConf,
     server: ServerConf,
     model: ModelConf,
+    feedback: FeedbackConfig,
 }
 
 pub struct Bootstrap {
@@ -260,6 +262,7 @@ impl Daemon<Bootstrap> for App {
         let guard = GuardConf::try_conf().map_err(config_error)?;
         let server = ServerConf::try_conf().map_err(config_error)?;
         let model = ModelConf::try_conf().map_err(config_error)?;
+        let feedback = FeedbackConfig::try_conf().map_err(config_error)?;
         if model.native_worker_count > server.task_worker_count {
             return Err(global_error(
                 "model.native_worker_count must not exceed server.task_worker_count",
@@ -280,6 +283,7 @@ impl Daemon<Bootstrap> for App {
                 guard,
                 server,
                 model,
+                feedback,
             },
             Bootstrap {
                 grpc_listener,
@@ -310,6 +314,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         guard,
         server,
         model,
+        mut feedback,
     } = app;
     let capabilities = server.capabilities.clone();
     let task_database_path = PathBuf::from(&server.task_database_path);
@@ -333,6 +338,8 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     )
     .await
     .map_err(external_error)?;
+    feedback.spool_root =
+        validate_feedback_root(&feedback.spool_root, &object_root, Path::new(&model.root))?;
     let observability = Arc::new(Observability::new());
     match model_repository.count_models().await {
         Ok(count) => observability.set_installed_models(count),
@@ -381,7 +388,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
     )
     .await
     .map_err(external_error)?;
-    let manager = TaskManager::open_with_model_manager_and_observability(
+    let manager = TaskManager::open_with_feedback(
         node.identity.clone(),
         capabilities.clone(),
         TaskManagerConfig {
@@ -401,6 +408,7 @@ async fn run_service(app: App, bootstrap: Bootstrap, runtime: GlobalRuntime) -> 
         Some(model_manager.clone()),
         &runtime,
         observability.clone(),
+        Some((feedback, node.installation_id.clone(), node.host_id.clone())),
     )
     .await
     .map_err(external_error)?;
@@ -738,10 +746,102 @@ fn global_error(message: &str) -> GlobalError {
     GlobalError::new_sys_error(message, |_| {})
 }
 
+fn validate_feedback_root(feedback: &Path, object: &Path, model: &Path) -> GlobalResult<PathBuf> {
+    if feedback
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(global_error("invalid_feedback_config"));
+    }
+    std::fs::create_dir_all(object).map_err(external_error)?;
+    std::fs::create_dir_all(feedback).map_err(external_error)?;
+    if !std::fs::symlink_metadata(feedback)
+        .map_err(external_error)?
+        .file_type()
+        .is_dir()
+    {
+        return Err(global_error("invalid_feedback_config"));
+    }
+    let feedback = feedback.canonicalize().map_err(external_error)?;
+    for owned in [object, model] {
+        let owned = owned.canonicalize().map_err(external_error)?;
+        if feedback.starts_with(&owned) || owned.starts_with(&feedback) {
+            return Err(global_error("feedback_spool_root_overlap"));
+        }
+    }
+    Ok(feedback)
+}
+
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| {
             duration.as_millis().min(i64::MAX as u128) as i64
         })
+}
+
+#[cfg(test)]
+mod feedback_root_tests {
+    use super::*;
+
+    fn test_root() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "avai-feedback-root-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn rejects_direct_overlap_in_both_directions() {
+        let root = test_root();
+        let object = root.join("objects");
+        let model = root.join("models");
+        std::fs::create_dir_all(&model).unwrap();
+        for feedback in [
+            object.clone(),
+            object.join("feedback"),
+            root.clone(),
+            model.clone(),
+            model.join("feedback"),
+        ] {
+            assert!(validate_feedback_root(&feedback, &object, &model).is_err());
+        }
+        let child_object = root.join("feedback/objects");
+        let child_model = root.join("feedback/models");
+        assert!(validate_feedback_root(&root.join("feedback"), &child_object, &model).is_err());
+        std::fs::create_dir_all(&child_model).unwrap();
+        assert!(validate_feedback_root(&root.join("feedback"), &object, &child_model).is_err());
+        let independent = root.join("independent");
+        assert_eq!(
+            validate_feedback_root(&independent, &object, &model).unwrap(),
+            independent.canonicalize().unwrap()
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_parent_symlink_alias() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root();
+        let object = root.join("objects");
+        let model = root.join("models");
+        std::fs::create_dir_all(&object).unwrap();
+        std::fs::create_dir_all(&model).unwrap();
+        let alias = root.join("object-alias");
+        symlink(&object, &alias).unwrap();
+        assert!(validate_feedback_root(&alias.join("feedback"), &object, &model).is_err());
+        let model_alias = root.join("model-alias");
+        symlink(&model, &model_alias).unwrap();
+        assert!(validate_feedback_root(&model_alias.join("feedback"), &object, &model).is_err());
+        let final_link = root.join("feedback-link");
+        symlink(&object, &final_link).unwrap();
+        assert!(validate_feedback_root(&final_link, &object, &model).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

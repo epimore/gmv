@@ -34,6 +34,9 @@ use gmv_protocol::{
 };
 use prost::Message;
 
+use crate::feedback::{
+    FeedbackConfig, FeedbackManager, FeedbackMaterial, safe_source_ref, sampled,
+};
 use crate::model::{
     ActiveModel, ModelError, ModelIdentity, ModelManager, RuntimeCallContext, RuntimeInput,
 };
@@ -99,6 +102,7 @@ pub struct TaskManager {
     identity: NodeIdentity,
     capabilities: Arc<HashSet<String>>,
     repository: TaskRepository,
+    feedback: Option<Arc<FeedbackManager>>,
     queue: mpsc::Sender<String>,
     cancel: CancellationToken,
     workers: Arc<Mutex<Vec<base::tokio::task::JoinHandle<()>>>>,
@@ -155,6 +159,27 @@ impl TaskManager {
         runtime: &GlobalRuntime,
         observability: Arc<Observability>,
     ) -> Result<Self, TaskError> {
+        Self::open_with_feedback(
+            identity,
+            capabilities,
+            config,
+            model_manager,
+            runtime,
+            observability,
+            None,
+        )
+        .await
+    }
+
+    pub async fn open_with_feedback(
+        identity: NodeIdentity,
+        capabilities: Vec<String>,
+        config: TaskManagerConfig,
+        model_manager: Option<ModelManager>,
+        runtime: &GlobalRuntime,
+        observability: Arc<Observability>,
+        feedback_config: Option<(FeedbackConfig, String, String)>,
+    ) -> Result<Self, TaskError> {
         if config.queue_size == 0 || config.worker_count == 0 || config.max_result_bytes == 0 {
             return Err(TaskError::new(
                 "invalid_task_config",
@@ -164,6 +189,28 @@ impl TaskManager {
         let repository =
             TaskRepository::open_with_observability(&config.database_path, observability).await?;
         repository.recover_interrupted().await?;
+        let feedback = if let Some((settings, installation_id, host_id)) = feedback_config {
+            match FeedbackManager::open(
+                &config.database_path,
+                settings,
+                installation_id,
+                host_id,
+                identity.clone(),
+            )
+            .await
+            {
+                Ok(manager) => Some(Arc::new(manager)),
+                Err(error) => {
+                    base::log::warn!(
+                        "AVAI feedback disabled: action=feedback, reason={}",
+                        error.code
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
         let pending = repository.pending_task_ids().await?;
         let resolver = SourceResolver::new(identity.clone(), config.source_policy, runtime)
             .map_err(source_task_error)?;
@@ -182,10 +229,29 @@ impl TaskManager {
         let running = Arc::new(AtomicUsize::new(0));
         let runtime_health = ComponentRuntimeHealth::default();
 
+        if let Some(feedback) = feedback.clone() {
+            let sweep_cancel = cancel.clone();
+            let handle = runtime.spawn("avai-feedback-expiry", async move {
+                let mut interval = base::tokio::time::interval(Duration::from_secs(60));
+                interval.tick().await;
+                loop {
+                    base::tokio::select! {
+                        _ = sweep_cancel.cancelled() => break,
+                        _ = interval.tick() => {
+                            if let Err(error) = feedback.sweep().await {
+                                base::log::warn!("AVAI feedback expiry deferred: action=feedback, reason={}", error.code);
+                            }
+                        }
+                    }
+                }
+            }).map_err(|error| TaskError::internal("spawn_feedback_expiry", error))?;
+            workers.lock().await.push(handle);
+        }
         for worker_id in 0..config.worker_count {
             let context = WorkerContext {
                 identity: identity.clone(),
                 repository: repository.clone(),
+                feedback: feedback.clone(),
                 resolver: resolver.clone(),
                 provider: provider.clone(),
                 receiver: receiver.clone(),
@@ -208,6 +274,7 @@ impl TaskManager {
             identity,
             capabilities,
             repository,
+            feedback,
             queue,
             cancel,
             workers,
@@ -243,6 +310,12 @@ impl TaskManager {
             manager.workers.lock().await.push(recovery);
         }
         Ok(manager)
+    }
+
+    pub fn feedback_manager(&self) -> Option<FeedbackManager> {
+        self.feedback
+            .as_ref()
+            .map(|manager| manager.as_ref().clone())
     }
 
     pub async fn set_event_sender(&self, sender: NodeEventSender) {
@@ -543,6 +616,7 @@ impl ComponentDrainBehavior for AvaiDrainBehavior {
 struct WorkerContext {
     identity: NodeIdentity,
     repository: TaskRepository,
+    feedback: Option<Arc<FeedbackManager>>,
     resolver: SourceResolver,
     provider: Arc<ProviderRegistry>,
     receiver: Arc<Mutex<mpsc::Receiver<String>>>,
@@ -594,6 +668,14 @@ async fn process_task(
     }
     let request = CreateTaskRequest::decode(record.request.as_slice())
         .map_err(|error| TaskError::internal("decode_request", error))?;
+    let selected = context.feedback.as_ref().is_some_and(|feedback| {
+        sampled(
+            feedback.config(),
+            &record.capability,
+            task_id,
+            &record.request_hash,
+        )
+    });
     if request.deadline_epoch_ms != 0 && request.deadline_epoch_ms <= now_epoch_ms() {
         return context
             .repository
@@ -722,6 +804,21 @@ async fn process_task(
                 .await;
         }
     };
+    let evidence = selected.then(|| {
+        (
+            image.bytes.clone(),
+            image.sha256.clone(),
+            image.content_type.clone(),
+        )
+    });
+    let source_ref = if selected {
+        request.source.as_ref().and_then(safe_source_ref)
+    } else {
+        None
+    };
+    if selected && source_ref.is_none() {
+        base::log::warn!("AVAI feedback skipped: action=feedback, reason=unsafe_source_ref");
+    }
     let runtime_cancel = CancellationToken::new();
     let runtime_context = RuntimeCallContext {
         deadline: runtime_deadline(request.deadline_epoch_ms),
@@ -751,7 +848,47 @@ async fn process_task(
         },
         output = &mut inference => {
             let terminal = match output {
-                Ok(output) => context.repository.succeed(task_id, output, now_epoch_ms()).await,
+                Ok(output) => {
+                    let prepared = if let (Some(feedback), Some((bytes, sha, media_type)), Some(source_ref)) =
+                        (&context.feedback, &evidence, &source_ref)
+                    {
+                        let actual = output.result.actual_model.as_ref();
+                        let schema = output.result.output.as_ref();
+                        let binding = captured.binding();
+                        if actual.is_some_and(|model| model.model_id == binding.model_id
+                            && model.version == binding.model_version
+                            && model.revision == binding.revision && model.runtime == binding.runtime)
+                            && schema.is_some_and(|value| value.schema == binding.result_schema_name
+                                && value.version == binding.result_schema_version)
+                        {
+                            let material = FeedbackMaterial {
+                                task_id: task_id.to_string(), request_hash: record.request_hash.clone(),
+                                route_id: record.route_id.clone(), capability: record.capability.clone(),
+                                source_ref: source_ref.clone(), result: output.result.clone(),
+                                evidence: bytes.clone(), evidence_sha256: sha.clone(),
+                                evidence_media_type: media_type.clone(),
+                            };
+                            match feedback.prepare(material).await {
+                                Ok(id) => id,
+                                Err(error) => { base::log::warn!("AVAI feedback skipped: action=feedback, reason={}", error.code); None },
+                            }
+                        } else {
+                            base::log::warn!("AVAI feedback skipped: action=feedback, reason=result_binding_mismatch");
+                            None
+                        }
+                    } else { None };
+                    let terminal = context.repository.succeed(task_id, output, now_epoch_ms()).await;
+                    if let (Some(feedback), Some(id)) = (&context.feedback, prepared) {
+                        if matches!(&terminal, Ok(Some(record)) if record.state == AiTaskState::Succeeded) {
+                            if let Err(error) = feedback.promote(&id).await {
+                                base::log::warn!("AVAI feedback promotion deferred: action=feedback, reason={}", error.code);
+                            }
+                        } else if let Err(error) = feedback.discard(&id).await {
+                            base::log::warn!("AVAI feedback discard deferred: action=feedback, reason={}", error.code);
+                        }
+                    }
+                    terminal
+                },
                 Err(error) => context.repository.fail_running(
                     task_id,
                     error.code,

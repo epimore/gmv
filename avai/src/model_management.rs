@@ -1400,13 +1400,17 @@ pub async fn serve_uds<O: gmv_nodec::component_management::ComponentDrainOwner>(
     model_rpc: AvaiModelManagementRpc,
     cancel: base::tokio_util::sync::CancellationToken,
 ) -> base::exception::GlobalResult<()> {
+    use crate::feedback::AvaiFeedbackRpc;
     use gmv_nodec::component_management::{ComponentManagementRpc, OwnedUdsListener};
+    use gmv_protocol::avai::feedback::v1::avai_feedback_server::AvaiFeedbackServer;
     use gmv_protocol::avai::model_management::v1::avai_model_management_server::AvaiModelManagementServer;
     use gmv_protocol::component_management::v1::component_management_server::ComponentManagementServer;
 
     let owned = OwnedUdsListener::bind(socket).await?;
     let incoming = owned.incoming();
+    let feedback_rpc = AvaiFeedbackRpc::new(model_rpc.tasks.feedback_manager());
     let result = tonic::transport::Server::builder()
+        .add_service(AvaiFeedbackServer::new(feedback_rpc))
         .add_service(ComponentManagementServer::new(ComponentManagementRpc::new(
             owner,
         )))

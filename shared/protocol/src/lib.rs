@@ -26,6 +26,12 @@ pub mod stream {
 }
 
 pub mod avai {
+    pub mod feedback {
+        pub mod v1 {
+            tonic::include_proto!("gmv.avai.feedback.v1");
+        }
+    }
+
     pub mod v1 {
         tonic::include_proto!("gmv.avai.v1");
     }
