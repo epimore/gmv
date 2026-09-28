@@ -1378,6 +1378,87 @@ async fn byte_bound_and_source_failure_leave_task_truth_authoritative() {
         assert_eq!(state, expected as i32);
         server.await.unwrap();
     }
+    for (task_id, deadline) in [("cancelled", false), ("deadline", true)] {
+        use base::tokio::io::AsyncReadExt;
+        let listener = base::tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let (entered_tx, entered_rx) = base::tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = base::tokio::sync::oneshot::channel::<()>();
+        let server = base::tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = connection.read(&mut request).await.unwrap();
+            let _ = entered_tx.send(());
+            let _ = release_rx.await;
+        });
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let request = CreateTaskRequest {
+            operation: Some(OperationRef {
+                operation_id: format!("op-{task_id}"),
+                idempotency_key: format!("idem-{task_id}"),
+            }),
+            task_id: task_id.into(),
+            capability: "image.metadata.inspect".into(),
+            expected_avai: Some(identity.clone()),
+            deadline_epoch_ms: if deadline { now + 250 } else { now + 5_000 },
+            source: Some(SourceSpec {
+                source: Some(Source::ImageUrl(ImageUrlSource {
+                    url: format!("http://{address}/image.png"),
+                    expected: None,
+                    max_bytes: 1024,
+                })),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            manager.create_task(request, now).await.state,
+            AiTaskState::Pending as i32
+        );
+        base::tokio::time::timeout(Duration::from_secs(5), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        if !deadline {
+            let cancelled = manager
+                .cancel_task(gmv_protocol::avai::v1::CancelTaskRequest {
+                    task_id: task_id.into(),
+                    ..Default::default()
+                })
+                .await;
+            assert_eq!(cancelled.state, AiTaskState::Cancelled as i32);
+        }
+        let state = base::tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = manager
+                    .query_task(QueryTaskRequest {
+                        task_id: task_id.into(),
+                    })
+                    .await
+                    .state;
+                if state != AiTaskState::Pending as i32 && state != AiTaskState::Running as i32 {
+                    break state;
+                }
+                base::tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            state,
+            (if deadline {
+                AiTaskState::Failed
+            } else {
+                AiTaskState::Cancelled
+            }) as i32
+        );
+        release_tx.send(()).unwrap();
+        server.await.unwrap();
+    }
     assert!(
         list(&manager.feedback_manager().unwrap())
             .await
