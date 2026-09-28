@@ -42,6 +42,10 @@ impl GmvCenterAgentTopics {
         self.upstream("model-actual")
     }
 
+    pub fn feedback(&self) -> String {
+        self.upstream("feedback")
+    }
+
     pub fn receipt(&self) -> String {
         self.upstream("receipt")
     }
@@ -76,6 +80,10 @@ impl GmvCenterAgentTopics {
 
     pub fn command(&self) -> String {
         self.downstream("command")
+    }
+
+    pub fn feedback_ack(&self) -> String {
+        self.downstream("feedback-ack")
     }
 
     pub fn receipt_ack(&self) -> String {
@@ -166,6 +174,14 @@ mod tests {
     fn creates_stable_device_topics() {
         let topics = GmvCenterAgentTopics::new("/gmvc/v1/", "site-01", "host-01").unwrap();
         assert_eq!(
+            topics.feedback(),
+            "gmvc/v1/installations/site-01/hosts/host-01/up/feedback"
+        );
+        assert_eq!(
+            topics.feedback_ack(),
+            "gmvc/v1/installations/site-01/hosts/host-01/down/feedback-ack"
+        );
+        assert_eq!(
             topics.hello(),
             "gmvc/v1/installations/site-01/hosts/host-01/up/hello"
         );
@@ -228,6 +244,10 @@ mod tests {
             identity_from_upstream_topic(DEFAULT_TOPIC_PREFIX, &topics.receipt()),
             Some(("installation:prod", "host:edge-01"))
         );
+        assert_eq!(
+            identity_from_upstream_topic(DEFAULT_TOPIC_PREFIX, &topics.feedback()),
+            Some(("installation:prod", "host:edge-01"))
+        );
         let desired = topics.component_desired("avai:primary").unwrap();
         assert_eq!(
             desired,
@@ -239,6 +259,27 @@ mod tests {
         );
         assert!(GmvCenterAgentTopics::new("gmvc:prod/v1", "site", "host").is_err());
         assert!(center_upstream_filter("gmvc:prod/v1").is_err());
+    }
+
+    #[test]
+    fn feedback_topics_are_covered_by_existing_wildcards() {
+        let topics = GmvCenterAgentTopics::new(DEFAULT_TOPIC_PREFIX, "site-01", "host-01").unwrap();
+        let upstream_filter = center_upstream_filter(DEFAULT_TOPIC_PREFIX).unwrap();
+        assert_eq!(upstream_filter, "gmvc/v1/installations/+/hosts/+/up/#");
+        assert_eq!(
+            topics.downstream_filter(),
+            "gmvc/v1/installations/site-01/hosts/host-01/down/#"
+        );
+        assert!(
+            topics
+                .feedback()
+                .starts_with("gmvc/v1/installations/site-01/hosts/host-01/up/")
+        );
+        assert!(
+            topics
+                .feedback_ack()
+                .starts_with(topics.downstream_filter().trim_end_matches('#'))
+        );
     }
 
     #[test]

@@ -714,6 +714,147 @@ fn gmv_center_agent_contract_has_stable_identity_and_typed_commands() {
 }
 
 #[test]
+fn gmv_center_agent_feedback_contract_is_additive_and_metadata_only() {
+    use prost_types::field_descriptor_proto::Type;
+
+    let descriptor = descriptor();
+    let file = descriptor_file(&descriptor, "gmv.center_agent.v1");
+    let upstream = descriptor_message(file, "GmvCenterAgentToCenterMessage");
+    let downstream = descriptor_message(file, "CenterToGmvCenterAgentMessage");
+    for (message, fields) in [
+        (
+            upstream,
+            &[
+                ("hello", 10),
+                ("heartbeat", 11),
+                ("inventory", 12),
+                ("delivery_receipt", 13),
+                ("command_receipt", 14),
+                ("upgrade_request", 15),
+                ("presence", 16),
+                ("model_actual_observation", 17),
+                ("feedback_intake", 18),
+            ][..],
+        ),
+        (
+            downstream,
+            &[
+                ("desired_state", 10),
+                ("command", 11),
+                ("receipt_ack", 12),
+                ("upgrade_decision", 13),
+                ("model_actual_policy", 14),
+                ("feedback_intake_ack", 15),
+            ][..],
+        ),
+    ] {
+        assert_eq!(message.oneof_decl[0].name.as_deref(), Some("payload"));
+        for (name, number) in fields {
+            let field = message
+                .field
+                .iter()
+                .find(|field| field.name.as_deref() == Some(name))
+                .unwrap();
+            assert_eq!(field.number, Some(*number));
+            assert_eq!(field.oneof_index, Some(0));
+        }
+        assert_eq!(
+            message
+                .field
+                .iter()
+                .filter(|field| field.oneof_index == Some(0))
+                .count(),
+            fields.len()
+        );
+    }
+
+    let intake = descriptor_message(file, "FeedbackIntake");
+    assert_eq!(descriptor_field_number(intake, "component_id"), Some(1));
+    let package = intake
+        .field
+        .iter()
+        .find(|field| field.name.as_deref() == Some("package"))
+        .unwrap();
+    assert_eq!(package.number, Some(2));
+    assert_eq!(
+        package.type_name.as_deref(),
+        Some(".gmv.avai.feedback.v1.FeedbackPackage")
+    );
+    let avai_file = descriptor_file(&descriptor, "gmv.avai.feedback.v1");
+    descriptor_message(avai_file, "FeedbackPackage");
+
+    let status = file
+        .enum_type
+        .iter()
+        .find(|item| item.name.as_deref() == Some("FeedbackIntakeStatus"))
+        .unwrap();
+    let status_values: Vec<_> = status
+        .value
+        .iter()
+        .map(|value| (value.name.as_deref().unwrap(), value.number.unwrap()))
+        .collect();
+    assert_eq!(
+        status_values,
+        [
+            ("FEEDBACK_INTAKE_STATUS_UNSPECIFIED", 0),
+            ("FEEDBACK_INTAKE_STATUS_ACCEPTED", 1),
+            ("FEEDBACK_INTAKE_STATUS_REPLAYED", 2),
+            ("FEEDBACK_INTAKE_STATUS_UPLOAD_REQUIRED", 3),
+            ("FEEDBACK_INTAKE_STATUS_REJECTED_POLICY", 4),
+            ("FEEDBACK_INTAKE_STATUS_CONFLICT", 5),
+        ]
+    );
+
+    let grant = descriptor_message(file, "FeedbackUploadGrant");
+    for (name, number) in [
+        ("upload_id", 1),
+        ("upload_url", 2),
+        ("upload_token", 3),
+        ("expires_at_epoch_ms", 4),
+        ("feedback_id", 5),
+        ("content_hash", 6),
+        ("evidence_sha256", 7),
+        ("evidence_size_bytes", 8),
+        ("evidence_media_type", 9),
+        ("installation_id", 10),
+        ("host_id", 11),
+        ("component_id", 12),
+        ("expected_gmv_center_agent_instance_id", 13),
+    ] {
+        assert_eq!(descriptor_field_number(grant, name), Some(number));
+    }
+    assert_eq!(grant.field.len(), 13);
+
+    let ack = descriptor_message(file, "FeedbackIntakeAck");
+    for (name, number) in [
+        ("feedback_id", 1),
+        ("content_hash", 2),
+        ("status", 3),
+        ("stable_error_code", 4),
+        ("upload_grant", 5),
+    ] {
+        assert_eq!(descriptor_field_number(ack, name), Some(number));
+    }
+    assert_eq!(ack.field.len(), 5);
+    assert_eq!(
+        ack.field[2].type_name.as_deref(),
+        Some(".gmv.center_agent.v1.FeedbackIntakeStatus")
+    );
+    assert_eq!(
+        ack.field[4].type_name.as_deref(),
+        Some(".gmv.center_agent.v1.FeedbackUploadGrant")
+    );
+    for message in [intake, ack, grant] {
+        assert!(
+            message
+                .field
+                .iter()
+                .all(|field| field.r#type != Some(Type::Bytes as i32))
+        );
+    }
+}
+
+#[test]
 fn artifact_compatibility_contract_is_additive_typed_and_safe() {
     let descriptor = descriptor();
     let file = descriptor_file(&descriptor, "gmv.center_agent.v1");
