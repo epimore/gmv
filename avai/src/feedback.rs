@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    ffi::OsStr,
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
@@ -255,6 +256,25 @@ fn valid_hash(hash: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+fn owned_spool_filename(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let stem = name
+        .strip_suffix(".evidence")
+        .or_else(|| name.strip_suffix(".tmp"));
+    stem.and_then(|stem| stem.split_once('_'))
+        .is_some_and(|(id, sha)| valid_hash(id) && valid_hash(sha))
+}
+
+async fn remove_regular_file(path: &Path) {
+    if let Ok(metadata) = fs::symlink_metadata(path).await
+        && metadata.file_type().is_file()
+    {
+        let _ = fs::remove_file(path).await;
+    }
+}
+
 impl FeedbackManager {
     pub async fn open(
         database_path: &Path,
@@ -281,6 +301,9 @@ impl FeedbackManager {
         if !metadata.file_type().is_dir() {
             return Err(FeedbackError::new("invalid_feedback_config"));
         }
+        let root = fs::canonicalize(&root)
+            .await
+            .map_err(FeedbackError::storage)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -356,7 +379,7 @@ impl FeedbackManager {
                 .try_get("evidence_sha256")
                 .map_err(FeedbackError::storage)?;
             if let Ok(path) = self.evidence_path(&id, &sha) {
-                let _ = fs::remove_file(path).await;
+                remove_regular_file(&path).await;
             }
         }
         Ok(())
@@ -469,7 +492,7 @@ impl FeedbackManager {
                     .execute(&self.pool)
                     .await
                     .map_err(FeedbackError::storage)?;
-                let _ = fs::remove_file(path).await;
+                remove_regular_file(&path).await;
             }
         }
         let mut entries = fs::read_dir(&self.root)
@@ -482,15 +505,22 @@ impl FeedbackManager {
                 .await
                 .map_err(FeedbackError::storage)?
                 .is_file()
+                && owned_spool_filename(&entry.file_name())
                 && !live_files.contains(&path)
             {
-                let _ = fs::remove_file(path).await;
+                remove_regular_file(&path).await;
             }
         }
         Ok(())
     }
 
     async fn file_valid(&self, path: &Path, sha: &str, size: u64) -> bool {
+        if !fs::symlink_metadata(path)
+            .await
+            .is_ok_and(|metadata| metadata.file_type().is_file())
+        {
+            return false;
+        }
         let Ok(mut file) = fs::File::open(path).await else {
             return false;
         };
@@ -626,7 +656,7 @@ impl FeedbackManager {
         }
         .await;
         if let Err(error) = write_result {
-            let _ = fs::remove_file(&temp).await;
+            remove_regular_file(&temp).await;
             return Err(FeedbackError::storage(error));
         }
         let inserted = sqlx::query("INSERT INTO avai_feedback_outbox(feedback_id,content_hash,task_id,package,evidence_sha256,evidence_size_bytes,evidence_media_type,state,created_at_ms,expires_at_ms) VALUES(?,?,?,?,?,?,?,'PREPARED',?,?)")
@@ -634,7 +664,7 @@ impl FeedbackManager {
             .bind(&package.evidence_sha256).bind(size as i64).bind(&package.evidence_media_type)
             .bind(now).bind(package.expires_at_epoch_ms).execute(&self.pool).await;
         if let Err(error) = inserted {
-            let _ = fs::remove_file(path).await;
+            remove_regular_file(&path).await;
             return Err(FeedbackError::storage(error));
         }
         Ok(Some(id))
@@ -662,7 +692,7 @@ impl FeedbackManager {
             .await
             .map_err(FeedbackError::storage)?;
             if let Ok(path) = self.evidence_path(id, &sha) {
-                let _ = fs::remove_file(path).await;
+                remove_regular_file(&path).await;
             }
         }
         Ok(())
@@ -809,7 +839,7 @@ impl FeedbackManager {
             .map_err(FeedbackError::storage)?;
         transaction.commit().await.map_err(FeedbackError::storage)?;
         if let Ok(path) = self.evidence_path(&request.feedback_id, &sha) {
-            let _ = fs::remove_file(path).await;
+            remove_regular_file(&path).await;
         }
         Ok(false)
     }

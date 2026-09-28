@@ -200,8 +200,34 @@ async fn prepared_recovery_and_orphan_cleanup() {
         .unwrap()
         .unwrap();
     assert!(list(&fixture.manager).await.packages.is_empty());
-    let orphan = fixture.config.spool_root.join("orphan.evidence");
+    let unknown = fixture.config.spool_root.join("orphan.evidence");
+    std::fs::write(&unknown, b"unrelated").unwrap();
+    let valid_id = "a".repeat(64);
+    let valid_sha = "b".repeat(64);
+    let orphan = fixture
+        .config
+        .spool_root
+        .join(format!("{valid_id}_{valid_sha}.evidence"));
+    let temp = fixture
+        .config
+        .spool_root
+        .join(format!("{valid_id}_{valid_sha}.tmp"));
     std::fs::write(&orphan, b"orphan").unwrap();
+    std::fs::write(&temp, b"temp").unwrap();
+    let unrelated = [
+        "notes.txt".to_string(),
+        "README".to_string(),
+        "abc.tmp".to_string(),
+        format!("{}_{valid_sha}.evidence", "a".repeat(63)),
+        format!("{valid_id}_{}.evidence", "b".repeat(63)),
+        format!("{}_{valid_sha}.evidence", "A".repeat(64)),
+        format!("{valid_id}_{valid_sha}.evidence.bak"),
+        format!("x_{valid_id}_{valid_sha}.evidence"),
+        format!("{valid_id}_{valid_sha}.TMP"),
+    ];
+    for name in &unrelated {
+        std::fs::write(fixture.config.spool_root.join(name), b"unrelated").unwrap();
+    }
     let pool = base_db::dbx::sqlitex::build_sqlite_pool(
         SqliteConnectionConfig::new(&fixture.database),
         DatabasePoolConfig::default(),
@@ -227,8 +253,79 @@ async fn prepared_recovery_and_orphan_cleanup() {
     .unwrap();
     assert_eq!(list(&reopened).await.packages[0].feedback_id, id);
     assert!(!orphan.exists());
+    assert!(!temp.exists());
+    assert_eq!(std::fs::read(&unknown).unwrap(), b"unrelated");
+    for name in &unrelated {
+        assert_eq!(
+            std::fs::read(fixture.config.spool_root.join(name)).unwrap(),
+            b"unrelated"
+        );
+    }
+    assert_eq!(
+        std::fs::read_dir(&fixture.config.spool_root)
+            .unwrap()
+            .count(),
+        11
+    );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn recovery_does_not_follow_or_remove_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = fixture().await;
+    let target = fixture.root.join("outside-target.txt");
+    std::fs::write(&target, b"preserved").unwrap();
+    let link =
+        fixture
+            .config
+            .spool_root
+            .join(format!("{}_{}.evidence", "a".repeat(64), "b".repeat(64)));
+    symlink(&target, &link).unwrap();
+    fixture.manager.recover().await.unwrap();
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(std::fs::read(&target).unwrap(), b"preserved");
+}
+#[cfg(unix)]
+#[tokio::test]
+async fn spool_io_uses_canonical_parent_alias() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = fixture().await;
+    let real_parent = fixture.root.join("real-parent");
+    std::fs::create_dir_all(&real_parent).unwrap();
+    let alias = fixture.root.join("parent-alias");
+    symlink(&real_parent, &alias).unwrap();
+    let mut config = fixture.config.clone();
+    config.spool_root = alias.join("spool");
+    let manager = FeedbackManager::open(
+        &fixture.database,
+        config,
+        "installation".into(),
+        "host".into(),
+        NodeIdentity {
+            node_id: "node".into(),
+            instance_id: "instance".into(),
+            kind: 4,
+        },
+    )
+    .await
+    .unwrap();
+    std::fs::remove_file(&alias).unwrap();
+    manager.prepare(material(b"evidence")).await.unwrap();
+    assert_eq!(
+        std::fs::read_dir(real_parent.join("spool"))
+            .unwrap()
+            .count(),
+        1
+    );
+}
 #[tokio::test]
 async fn prepared_non_success_is_removed_on_restart() {
     let fixture = fixture().await;
