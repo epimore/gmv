@@ -3,6 +3,7 @@ syntax = "proto3";
 package gmv.center_agent.v1;
 
 import "common/v1/types.proto";
+import "avai/feedback/v1/feedback.proto";
 
 message GmvCenterAgentToCenterMessage {
   string message_id = 1;
@@ -21,6 +22,7 @@ message GmvCenterAgentToCenterMessage {
     UpgradeRequest upgrade_request = 15;
     GmvCenterAgentPresence presence = 16;
     ModelActualObservation model_actual_observation = 17;
+    FeedbackIntake feedback_intake = 18;
   }
 }
 
@@ -38,7 +40,48 @@ message CenterToGmvCenterAgentMessage {
     ReceiptAck receipt_ack = 12;
     UpgradeDecision upgrade_decision = 13;
     ModelActualObservationPolicy model_actual_policy = 14;
+    FeedbackIntakeAck feedback_intake_ack = 15;
   }
+}
+
+message FeedbackIntake {
+  string component_id = 1;
+  gmv.avai.feedback.v1.FeedbackPackage package = 2;
+}
+
+enum FeedbackIntakeStatus {
+  FEEDBACK_INTAKE_STATUS_UNSPECIFIED = 0;
+  FEEDBACK_INTAKE_STATUS_ACCEPTED = 1;
+  FEEDBACK_INTAKE_STATUS_REPLAYED = 2;
+  FEEDBACK_INTAKE_STATUS_UPLOAD_REQUIRED = 3;
+  FEEDBACK_INTAKE_STATUS_REJECTED_POLICY = 4;
+  FEEDBACK_INTAKE_STATUS_CONFLICT = 5;
+}
+
+message FeedbackUploadGrant {
+  string upload_id = 1;
+  // The upload token is sent separately; it must not appear in the URL or its query.
+  string upload_url = 2;
+  string upload_token = 3;
+  int64 expires_at_epoch_ms = 4;
+  string feedback_id = 5;
+  string content_hash = 6;
+  string evidence_sha256 = 7;
+  uint64 evidence_size_bytes = 8;
+  string evidence_media_type = 9;
+  string installation_id = 10;
+  string host_id = 11;
+  string component_id = 12;
+  string expected_gmv_center_agent_instance_id = 13;
+}
+
+message FeedbackIntakeAck {
+  string feedback_id = 1;
+  string content_hash = 2;
+  // UPLOAD_REQUIRED is non-terminal and requires a grant; terminal outcomes do not.
+  FeedbackIntakeStatus status = 3;
+  string stable_error_code = 4;
+  FeedbackUploadGrant upload_grant = 5;
 }
 
 message ReceiptAck {
