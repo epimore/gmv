@@ -1,6 +1,8 @@
 #[cfg(unix)]
+#[path = "external/mod.rs"]
 mod external_provider;
 mod manager;
+#[path = "onnx/mod.rs"]
 mod onnx_cpu;
 mod package;
 mod repository;
