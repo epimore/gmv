@@ -10,7 +10,7 @@ pub mod task;
 pub mod upload;
 
 #[cfg(test)]
-#[path = "../tests/feedback.rs"]
+#[path = "../tests/unit/feedback/mod.rs"]
 mod feedback_tests;
 #[cfg(test)]
 mod model_management_tests;
