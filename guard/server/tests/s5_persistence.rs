@@ -66,14 +66,14 @@ guard:
             assert!(users[0].verify_password("first-password").unwrap());
 
             let mut second_config = config.clone();
-            second_config.bootstrap.admin.pass = "second-password".to_string();
+            second_config.bootstrap.admin.credentials.pass = "second-password".to_string();
             store.initialize(&second_config).await.unwrap();
             let users = store.load_users().await.unwrap();
             assert!(users[0].verify_password("first-password").unwrap());
             assert!(!users[0].verify_password("second-password").unwrap());
 
             let mut restart_config = config.clone();
-            restart_config.bootstrap.admin.pass.clear();
+            restart_config.bootstrap.admin.credentials.pass.clear();
             store.initialize(&restart_config).await.unwrap();
             let users = store.load_users().await.unwrap();
             assert!(users[0].verify_password("first-password").unwrap());

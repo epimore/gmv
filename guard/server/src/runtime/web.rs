@@ -49,8 +49,8 @@ impl WebServerConfig {
             session_ttl: Duration::from_secs(http.session_ttl_sec),
             login_window: Duration::from_secs(http.login_window_sec),
             max_failed_attempts: http.max_failed_attempts,
-            local_admin_username: config.bootstrap.admin.username.clone(),
-            local_admin_login_only: config.bootstrap.admin.local_login_only,
+            local_admin_username: config.bootstrap.admin.credentials.username.clone(),
+            local_admin_login_only: config.bootstrap.admin.credentials.local_login_only,
         };
         result.validate()?;
         Ok(result)

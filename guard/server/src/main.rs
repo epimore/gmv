@@ -94,7 +94,7 @@ fn crypto_command(args: &[String], action: CryptoAction) -> Result<(), Box<dyn s
 fn reset_admin_password(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (config_path, username, password) = reset_admin_password_args(args)?;
     let config = GuardAppConfig::load(config_path)?;
-    let username = username.unwrap_or_else(|| config.bootstrap.admin.username.clone());
+    let username = username.unwrap_or_else(|| config.bootstrap.admin.credentials.username.clone());
     let password_hash = hash_password(&password)?;
     base::tokio::runtime::Runtime::new()?.block_on(async {
         let persistent = PersistentStore::connect(&config).await?;

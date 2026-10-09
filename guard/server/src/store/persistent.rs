@@ -476,19 +476,23 @@ impl PersistentStore {
         }
         if self.load_users().await?.is_empty() {
             let hash = config.bootstrap.admin.password_hash()?;
-            UserAccount::new(&config.bootstrap.admin.username, Role::Admin, &hash)
-                .validate_password_hash()?;
+            UserAccount::new(
+                &config.bootstrap.admin.credentials.username,
+                Role::Admin,
+                &hash,
+            )
+            .validate_password_hash()?;
             match self {
                 #[cfg(feature = "db-mysql")]
                 Self::Mysql(store) => {
                     store
-                        .bootstrap_admin(&config.bootstrap.admin.username, &hash)
+                        .bootstrap_admin(&config.bootstrap.admin.credentials.username, &hash)
                         .await?;
                 }
                 #[cfg(feature = "db-sqlite")]
                 Self::Sqlite(store) => {
                     store
-                        .bootstrap_admin(&config.bootstrap.admin.username, &hash)
+                        .bootstrap_admin(&config.bootstrap.admin.credentials.username, &hash)
                         .await?;
                 }
             }

@@ -76,13 +76,12 @@ impl AuthState {
     }
 
     pub fn local_admin_login_allowed(&self, username: &str, remote_ip: Option<IpAddr>) -> bool {
-        if !self.policy.local_admin_login_only {
-            return true;
-        }
-        if self.policy.local_admin_username.as_deref() != Some(username) {
-            return true;
-        }
-        remote_ip.is_some_and(|ip| ip.is_loopback())
+        base::bootstrap::local_admin_login_allowed(
+            self.policy.local_admin_username.as_deref(),
+            self.policy.local_admin_login_only,
+            username,
+            remote_ip,
+        )
     }
 
     pub fn authenticate(&self, username: &str, password: &str) -> GuardResult<(String, UiSession)> {

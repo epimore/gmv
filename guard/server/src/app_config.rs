@@ -559,52 +559,30 @@ impl BootstrapConfig {
     }
 }
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 #[serde(crate = "base::serde")]
 pub struct BootstrapAdminConfig {
-    #[serde(default = "default_admin_username")]
-    pub username: String,
-    #[serde(default)]
-    pub pass_crypto_enable: bool,
-    #[serde(default)]
-    pub pass: String,
-    #[serde(default = "default_true")]
-    pub local_login_only: bool,
-}
-
-impl Default for BootstrapAdminConfig {
-    fn default() -> Self {
-        Self {
-            username: default_admin_username(),
-            pass_crypto_enable: false,
-            pass: String::new(),
-            local_login_only: true,
-        }
-    }
+    #[serde(flatten)]
+    pub credentials: base::bootstrap::AdminCredentials,
 }
 
 impl BootstrapAdminConfig {
     fn validate(&self) -> GuardResult<()> {
-        if self.username.trim().is_empty() {
-            return Err(GuardError::InvalidConfig(
-                "guard.bootstrap.admin username is required".to_string(),
-            ));
-        }
-        Ok(())
+        self.credentials.validate().map_err(|_| {
+            GuardError::InvalidConfig("guard.bootstrap.admin username is required".to_string())
+        })
     }
 
     pub fn password_hash(&self) -> GuardResult<String> {
-        if self.pass.is_empty() {
+        if self.credentials.pass.is_empty() {
             return Err(GuardError::InvalidConfig(
                 "guard.bootstrap.admin pass is required for empty guard_user".to_string(),
             ));
         }
-        let password = if self.pass_crypto_enable {
-            default_decrypt(&self.pass)
-                .map_err(|error| GuardError::InvalidConfig(error.to_string()))?
-        } else {
-            self.pass.clone()
-        };
+        let password = self
+            .credentials
+            .password()
+            .map_err(|error| GuardError::InvalidConfig(error.to_string()))?;
         hash_password(&password)
     }
 }
@@ -678,9 +656,6 @@ fn default_pool_idle_sec() -> u64 {
 fn default_mysql_port() -> u16 {
     3306
 }
-fn default_admin_username() -> String {
-    "admin".to_string()
-}
 #[cfg(test)]
 mod tests {
     use argon2::PasswordHash;
@@ -692,10 +667,12 @@ mod tests {
     #[test]
     fn bootstrap_admin_hashes_plaintext_password_source() {
         let config = BootstrapAdminConfig {
-            username: "admin".to_string(),
-            pass_crypto_enable: false,
-            pass: "admin-secret".to_string(),
-            local_login_only: true,
+            credentials: base::bootstrap::AdminCredentials {
+                username: "admin".to_string(),
+                pass_crypto_enable: false,
+                pass: "admin-secret".to_string(),
+                local_login_only: true,
+            },
         };
         let hash = config.password_hash().unwrap();
         let parsed = PasswordHash::new(&hash).unwrap();
@@ -708,10 +685,12 @@ mod tests {
     fn bootstrap_admin_hashes_encrypted_password_source() {
         let encrypted = default_encrypt("admin-secret").unwrap();
         let config = BootstrapAdminConfig {
-            username: "admin".to_string(),
-            pass_crypto_enable: true,
-            pass: encrypted,
-            local_login_only: true,
+            credentials: base::bootstrap::AdminCredentials {
+                username: "admin".to_string(),
+                pass_crypto_enable: true,
+                pass: encrypted,
+                local_login_only: true,
+            },
         };
         let hash = config.password_hash().unwrap();
         let parsed = PasswordHash::new(&hash).unwrap();
@@ -723,10 +702,12 @@ mod tests {
     #[test]
     fn bootstrap_admin_password_source_can_be_omitted_after_initialization() {
         let config = BootstrapAdminConfig {
-            username: "admin".to_string(),
-            pass_crypto_enable: false,
-            pass: String::new(),
-            local_login_only: true,
+            credentials: base::bootstrap::AdminCredentials {
+                username: "admin".to_string(),
+                pass_crypto_enable: false,
+                pass: String::new(),
+                local_login_only: true,
+            },
         };
 
         config.validate().unwrap();
@@ -796,10 +777,12 @@ mod tests {
     #[test]
     fn bootstrap_admin_password_hash_requires_source_when_consumed() {
         let config = BootstrapAdminConfig {
-            username: "admin".to_string(),
-            pass_crypto_enable: false,
-            pass: String::new(),
-            local_login_only: true,
+            credentials: base::bootstrap::AdminCredentials {
+                username: "admin".to_string(),
+                pass_crypto_enable: false,
+                pass: String::new(),
+                local_login_only: true,
+            },
         };
         let error = config.password_hash().unwrap_err();
         assert!(error.to_string().contains("empty guard_user"));
