@@ -50,6 +50,33 @@ impl Daemon<Bootstrap> for App {
         upload_listener
             .set_nonblocking(true)
             .map_err(external_error)?;
+        let grpc_addr = grpc_listener
+            .local_addr()
+            .map_err(external_error)?
+            .to_string();
+        let upload_addr = upload_listener
+            .local_addr()
+            .map_err(external_error)?
+            .to_string();
+        let address_width = grpc_addr.len().max(upload_addr.len()).max(32);
+        let address_border = "─".repeat(address_width + 2);
+        let address_header = "Address";
+        let banner_width = address_width + 53;
+        let separator = "=".repeat(banner_width);
+        let version = Self::cli_basic().version;
+        let title = format!("[GMV:AVAI]   Version: {version}");
+        base::log::info!(
+            r#"
+{separator}
+{title:^banner_width$}
+{separator}
+┌──────────────────┬{address_border}┬──────────────┬──────────────┐
+│ Service          │ {address_header:<address_width$} │ Protocols    │  Status      │
+├──────────────────┼{address_border}┼──────────────┼──────────────┤
+│ AVAI RPC         │ {grpc_addr:<address_width$} │ gRPC         │ 🟢 Listening │
+│ AVAI Upload HTTP │ {upload_addr:<address_width$} │ HTTP         │ 🟢 Listening │
+└──────────────────┴{address_border}┴──────────────┴──────────────┘"#
+        );
         Ok((
             Self {
                 guard,

@@ -20,8 +20,8 @@ guard:
   http:
     bind_addr: 0.0.0.0:8080
     origins:
-      - http://127.0.0.1:5173
-      - http://localhost:5173
+      - http://127.0.0.1:5174
+      - http://localhost:5174
       - http://127.0.0.1:8080
     ui_dist_dir: guard/ui/dist
     tls:
@@ -53,6 +53,8 @@ guard:
         kind: SESSION-GB28181 # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
       - id: "s1"
         kind: STREAM # SESSION-GB28181 | SESSION-ONVIF | STREAM | AVAI
+      - id: "avai-node-1"
+        kind: AVAI
 
   database:
     backend: sqlite # sqlite | mysql
