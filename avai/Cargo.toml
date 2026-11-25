@@ -32,6 +32,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 ed25519-dalek = "2"
+tar = "0.4"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
 
 [[test]]

@@ -125,12 +125,12 @@ pub async fn serve(
         .await?;
         axum_server::from_tcp_rustls(listener, rustls)?
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     } else {
         axum_server::from_tcp(listener)?
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     }
     base::log::debug!(
